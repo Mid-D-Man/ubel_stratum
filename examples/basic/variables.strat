@@ -1,0 +1,11 @@
+// Variable declarations
+
+fn main() {
+    let x = 42
+    let y: int = 100
+    let mut counter = 0
+    const PI = 3.14159
+    
+    // Short declaration
+    name := "Alice"
+}

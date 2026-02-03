@@ -1,0 +1,305 @@
+(* Ubel Stratum Programming Language - EBNF Grammar v1.0.0 *)
+(* File Extension: .strat *)
+(* Quantum-Ready Multi-Tier Systems Language *)
+
+(* ============================================================ *)
+(* PROGRAM STRUCTURE *)
+(* ============================================================ *)
+
+Program ::= PackageDecl? ImportList? ItemList?
+
+PackageDecl ::= "package" QualifiedIdent
+
+ImportList ::= Import+
+Import ::= "summon" ImportPath ("as" Ident)?
+         | "from" ImportPath "summon" ImportItems
+
+ImportPath ::= QualifiedIdent
+ImportItems ::= "[" IdentList "]" | Ident ("," Ident)*
+
+ItemList ::= Item+
+Item ::= FunctionDecl | StructDecl | EnumDecl | TraitDecl | ImplBlock | ConstDecl
+
+(* ============================================================ *)
+(* DECLARATIONS *)
+(* ============================================================ *)
+
+(* Functions *)
+FunctionDecl ::= Attributes? "async"? "fn" Ident FunctionSig Block
+
+FunctionSig ::= "(" ParamList? ")" ReturnType?
+
+ParamList ::= Param ("," Param)*
+Param ::= Ident TypeAnnotation? ("=" DefaultValue)?
+
+ReturnType ::= TypeExpr ("!")? | "Task" ("<" TypeExpr ">")?
+
+Attributes ::= Attribute+
+Attribute ::= "@" Ident ("(" AttributeArgs ")")?
+AttributeArgs ::= Expr ("," Expr)*
+
+(* Structs *)
+StructDecl ::= "pub"? "edge"? "struct" Ident GenericParams? "{" StructBody "}"
+
+StructBody ::= StructMember*
+StructMember ::= FieldDecl | MethodDecl | PropertyDecl
+
+FieldDecl ::= "pub"? Ident TypeAnnotation
+
+MethodDecl ::= "pub"? "async"? "fn" Ident FunctionSig Block
+
+PropertyDecl ::= "pub"? Ident TypeAnnotation PropertyAccessors
+PropertyAccessors ::= "{" PropertyGetter PropertySetter? "}"
+PropertyGetter ::= "get" Block
+PropertySetter ::= "set" Block
+
+(* Enums *)
+EnumDecl ::= "pub"? "enum" Ident GenericParams? "{" EnumVariants "}"
+
+EnumVariants ::= EnumVariant ("," EnumVariant)*
+EnumVariant ::= Ident EnumPayload?
+EnumPayload ::= "(" TypeList ")" | "{" FieldList "}"
+
+(* Traits *)
+TraitDecl ::= "pub"? "trait" Ident "{" TraitItem* "}"
+
+TraitItem ::= MethodSignature | AssociatedType
+MethodSignature ::= "fn" Ident FunctionSig ";"?
+AssociatedType ::= "type" Ident ";"
+
+(* Impl Blocks *)
+ImplBlock ::= "impl" TraitName? "for" TypeExpr "{" ImplItem* "}"
+
+ImplItem ::= MethodDecl
+
+(* Constants *)
+ConstDecl ::= "const" Ident TypeAnnotation? "=" Expr
+
+(* ============================================================ *)
+(* TYPES *)
+(* ============================================================ *)
+
+TypeAnnotation ::= ":" TypeExpr
+
+TypeExpr ::= PrimitiveType
+           | GenericType
+           | FunctionType
+           | TupleType
+           | ArrayType
+           | SliceType
+           | FallibleType
+           | TaskType
+
+PrimitiveType ::= "int" | "uint" | "long" | "ulong" | "short" | "ushort"
+                | "byte" | "ubyte" | "float" | "double" | "bool" | "char" | "string"
+                | "i8" | "i16" | "i32" | "i64" | "u8" | "u16" | "u32" | "u64"
+                | "f32" | "f64" | "isize" | "usize" | "void"
+
+GenericType ::= Ident "<" TypeList ">"
+TypeList ::= TypeExpr ("," TypeExpr)*
+
+FunctionType ::= "fn" "(" TypeList? ")" ReturnType?
+
+TupleType ::= "(" TypeList ")"
+
+ArrayType ::= "[" TypeExpr "]" | "[" Integer "]" TypeExpr
+
+SliceType ::= "[]" TypeExpr
+
+FallibleType ::= TypeExpr "!"
+
+TaskType ::= "Task" ("<" TypeExpr ">")?
+
+GenericParams ::= "<" GenericParam ("," GenericParam)* ">"
+GenericParam ::= Ident (":" TraitBound)?
+TraitBound ::= Ident ("+" Ident)*
+
+(* ============================================================ *)
+(* STATEMENTS *)
+(* ============================================================ *)
+
+Block ::= "{" Statement* "}"
+
+Statement ::= LetStmt
+            | ExprStmt
+            | ReturnStmt
+            | IfStmt
+            | MatchStmt
+            | ForStmt
+            | WhileStmt
+            | LoopStmt
+            | WithStmt
+            | TryBlock
+            | UnsafeBlock
+
+LetStmt ::= "let" "mut"? Ident TypeAnnotation? "=" Expr (";")?
+          | Ident ":=" Expr (";")?
+
+ExprStmt ::= Expr (";")?
+
+ReturnStmt ::= "return" Expr? (";")?
+
+(* Control Flow *)
+IfStmt ::= "if" Expr Block ("elif" Expr Block)* ("else" Block)?
+
+MatchStmt ::= "match" Expr "{" MatchArm* "}"
+MatchArm ::= Pattern ("where" Expr)? "=>" (Expr | Block)
+
+ForStmt ::= "for" Ident "in" Expr Block
+
+WhileStmt ::= "while" Expr Block
+
+LoopStmt ::= "loop" Block
+
+(* Memory Management *)
+WithStmt ::= "with" AllocatorExpr Block
+
+AllocatorExpr ::= "arena" "(" Expr ")"
+                | "pool" "<" TypeExpr ">" "(" Expr ")"
+                | "gc"
+                | "heap"
+
+(* Error Handling *)
+TryBlock ::= "try" Block CatchBlock?
+
+CatchBlock ::= "catch" "(" Ident ")" Block
+
+UnsafeBlock ::= "unsafe" Block
+
+(* ============================================================ *)
+(* EXPRESSIONS *)
+(* ============================================================ *)
+
+Expr ::= AssignExpr
+
+AssignExpr ::= OrExpr (AssignOp OrExpr)?
+
+AssignOp ::= "=" | "+=" | "-=" | "*=" | "/=" | "%="
+
+OrExpr ::= AndExpr ("or" AndExpr | "||" AndExpr)*
+
+AndExpr ::= CompareExpr ("and" CompareExpr | "&&" CompareExpr)*
+
+CompareExpr ::= AddExpr (CompareOp AddExpr)?
+
+CompareOp ::= "==" | "!=" | "<" | ">" | "<=" | ">="
+
+AddExpr ::= MultExpr (AddOp MultExpr)*
+
+AddOp ::= "+" | "-"
+
+MultExpr ::= UnaryExpr (MultOp UnaryExpr)*
+
+MultOp ::= "*" | "/" | "%"
+
+UnaryExpr ::= ("!" | "not" | "-" | "+" | "await") UnaryExpr
+            | PostfixExpr
+
+PostfixExpr ::= PrimaryExpr Postfix*
+
+Postfix ::= "(" ArgList? ")"
+          | "[" Expr "]"
+          | "." Ident
+          | "." Ident "(" ArgList? ")"
+          | "?"
+          | "?."
+
+PrimaryExpr ::= Literal
+              | Ident
+              | "self"
+              | LambdaExpr
+              | IfExpr
+              | MatchExpr
+              | BlockExpr
+              | "(" Expr ")"
+              | ArrayLit
+              | TupleLit
+              | StructLit
+
+(* Literals *)
+Literal ::= IntLit | FloatLit | StringLit | BoolLit | NullLit
+
+IntLit ::= Digit+ | "0x" HexDigit+ | "0b" BinDigit+
+
+FloatLit ::= Digit+ "." Digit* ("f" | "F")?
+           | Digit+ ("e" | "E") ("+" | "-")? Digit+ ("f" | "F")?
+
+StringLit ::= '"' StringChar* '"'
+            | "$" '"' InterpolatedChar* '"'
+            | "@" '"' VerbatimChar* '"'
+
+BoolLit ::= "true" | "false"
+
+NullLit ::= "null"
+
+(* Composite Literals *)
+ArrayLit ::= "[" ExprList? "]"
+
+TupleLit ::= "(" ExprList ")"
+
+StructLit ::= Ident "{" FieldInitList? "}"
+FieldInitList ::= FieldInit ("," FieldInit)*
+FieldInit ::= Ident "=" Expr
+
+(* Lambda Expressions *)
+LambdaExpr ::= "(" ParamList? ")" "=>" (Expr | Block)
+             | Ident "=>" Expr
+
+(* Expressions as Expressions *)
+IfExpr ::= "if" Expr Block ("elif" Expr Block)* ("else" Block)?
+
+MatchExpr ::= "match" Expr "{" MatchArm* "}"
+
+BlockExpr ::= Block
+
+(* ============================================================ *)
+(* PATTERNS *)
+(* ============================================================ *)
+
+Pattern ::= WildcardPattern
+          | LiteralPattern
+          | IdentPattern
+          | TuplePattern
+          | StructPattern
+          | EnumPattern
+
+WildcardPattern ::= "_"
+
+LiteralPattern ::= Literal
+
+IdentPattern ::= Ident
+
+TuplePattern ::= "(" PatternList ")"
+PatternList ::= Pattern ("," Pattern)*
+
+StructPattern ::= Ident "{" FieldPatternList? "}"
+FieldPatternList ::= FieldPattern ("," FieldPattern)*
+FieldPattern ::= Ident ("=" Pattern)?
+
+EnumPattern ::= Ident ("::" Ident)* ("(" PatternList ")" | "{" FieldPatternList "}")?
+
+(* ============================================================ *)
+(* HELPERS *)
+(* ============================================================ *)
+
+Ident ::= Letter (Letter | Digit | "_")*
+
+QualifiedIdent ::= Ident ("." Ident)*
+
+ExprList ::= Expr ("," Expr)*
+
+IdentList ::= Ident ("," Ident)*
+
+FieldList ::= FieldDecl ("," FieldDecl)*
+
+ArgList ::= Expr ("," Expr)*
+
+Letter ::= [a-zA-Z]
+Digit ::= [0-9]
+HexDigit ::= [0-9a-fA-F]
+BinDigit ::= [01]
+
+(* Comments *)
+LineComment ::= "//" (Character - LineTerminator)* LineTerminator
+BlockComment ::= "/*" (Character - "*/")* "*/"
+LineTerminator ::= "\n" | "\r\n"

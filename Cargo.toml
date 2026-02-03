@@ -1,0 +1,56 @@
+[package]
+name = "ubel_stratum"
+version = "0.1.0"
+edition = "2021"
+authors = ["Mid-D-Man"]
+license = "MIT OR Apache-2.0"
+description = "Ubel Stratum - Quantum-Ready Multi-Tier Systems Language"
+repository = "https://github.com/Mid-D-Man/ubel_stratum"
+
+[dependencies]
+# Lexer
+logos = "0.14"
+
+# Parser (for future)
+lalrpop-util = { version = "0.20", features = ["lexer"] }
+
+# CLI
+clap = { version = "4.5", features = ["derive"] }
+
+# Error handling
+thiserror = "1.0"
+miette = { version = "7.0", features = ["fancy"] }
+
+# Perfect hashing for keywords
+phf = { version = "0.11", features = ["macros"] }
+
+# Utilities
+lazy_static = "1.4"
+
+[build-dependencies]
+lalrpop = "0.20"
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+proptest = "1.4"
+
+[[bin]]
+name = "stratc"
+path = "src/main.rs"
+
+[lib]
+name = "ubel_stratum"
+path = "src/lib.rs"
+
+[[bench]]
+name = "lexer_bench"
+harness = false
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+
+[profile.bench]
+inherits = "release"

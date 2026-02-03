@@ -1,0 +1,6 @@
+// Hello World in Ubel Stratum
+
+fn main() {
+    let message = "Hello, Ubel Stratum!"
+    println(message)
+}

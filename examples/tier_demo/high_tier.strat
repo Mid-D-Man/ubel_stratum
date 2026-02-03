@@ -1,0 +1,8 @@
+// High-tier (GC mode) example
+
+@tier(high)
+fn process_request(data: string) string {
+    let parsed = parse_json(data)
+    let validated = validate(parsed)
+    return format_response(validated)
+}
