@@ -1,5 +1,5 @@
 //! Ubel Stratum Compiler CLI
-
+ 
 mod lexer;
 mod error_management;
 
