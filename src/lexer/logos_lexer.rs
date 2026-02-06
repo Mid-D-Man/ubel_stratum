@@ -135,6 +135,7 @@ enum LogosToken {
 
     #[regex(r"\n")] Newline,
 
+    // REMOVED: #[error] Error,  ← Logos 0.13+ doesn't need this!
 }
 
 // Parse helpers
@@ -153,12 +154,14 @@ fn parse_binary(lex: &mut logos::Lexer<LogosToken>) -> Option<i64> {
     i64::from_str_radix(&slice, 2).ok()
 }
 
+// FIXED: String lifetime issue
 fn parse_float(lex: &mut logos::Lexer<LogosToken>) -> Option<f64> {
     let slice = lex.slice();
     let binding = slice.replace('_', "");  // Create owned String first
     let cleaned = binding.trim_end_matches('f').trim_end_matches('F');  // Borrow from binding
     cleaned.parse().ok()
 }
+
 fn parse_simple_string(lex: &mut logos::Lexer<LogosToken>) -> Option<String> {
     let slice = lex.slice();
     let content = &slice[1..slice.len()-1];
