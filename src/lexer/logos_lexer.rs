@@ -156,10 +156,10 @@ fn parse_binary(lex: &mut logos::Lexer<LogosToken>) -> Option<i64> {
 
 fn parse_float(lex: &mut logos::Lexer<LogosToken>) -> Option<f64> {
     let slice = lex.slice();
-    let cleaned = slice.replace('_', "").trim_end_matches('f').trim_end_matches('F');
+    let binding = slice.replace('_', "");  // Create owned String first
+    let cleaned = binding.trim_end_matches('f').trim_end_matches('F');  // Borrow from binding
     cleaned.parse().ok()
 }
-
 fn parse_simple_string(lex: &mut logos::Lexer<LogosToken>) -> Option<String> {
     let slice = lex.slice();
     let content = &slice[1..slice.len()-1];
