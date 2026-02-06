@@ -4,6 +4,7 @@ use crate::error_management::error_types::LexicalError;
 use crate::error_management::logger::Logger;
 use crate::lexer::Span;
 
+#[derive(Debug)]  // ← ADDED THIS - Now ErrorManager implements Debug!
 pub struct ErrorManager {
     lexical_errors: Vec<LexicalError>,
     source: String,
