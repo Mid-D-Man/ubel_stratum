@@ -135,7 +135,6 @@ enum LogosToken {
 
     #[regex(r"\n")] Newline,
 
-    #[error] Error,
 }
 
 // Parse helpers
