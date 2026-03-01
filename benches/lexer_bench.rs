@@ -1,5 +1,5 @@
-
-criterion_main!(benches);use criterion::{
+// benches/lexer_bench.rs
+use criterion::{
     black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput,
 };
 use std::time::Duration;
@@ -113,9 +113,7 @@ fn main() {
 }
 "#;
 
-// ── keyword lookup bench uses the public helper from keywords module ──────────
-pub mod keywords {
-    use ubel_stratum::lexer::TokenType;
+mod keywords {
     use ubel_stratum::lexer::keywords::get_keyword;
 
     pub fn lookup_mix() {
@@ -133,10 +131,6 @@ pub mod keywords {
 fn lexer_benchmarks(c: &mut Criterion) {
     let mut group = c.benchmark_group("lexer");
 
-    // Hard caps so no single bench can run the runner out of time.
-    // small: generous — it's fast
-    // medium: 8 s is plenty
-    // large: 10 s max, 50 samples instead of 100
     group.measurement_time(Duration::from_secs(5));
     group.sample_size(100);
     group.throughput(Throughput::Bytes(SMALL_SOURCE.len() as u64));
@@ -155,8 +149,6 @@ fn lexer_benchmarks(c: &mut Criterion) {
         |b, input| b.iter(|| tokenize(black_box(input))),
     );
 
-    // Large gets capped: 10 s wall time, 50 samples.
-    // This prevents criterion from estimating "need 45 minutes" and getting killed.
     group.measurement_time(Duration::from_secs(10));
     group.sample_size(50);
     group.throughput(Throughput::Bytes(LARGE_SOURCE.len() as u64));
