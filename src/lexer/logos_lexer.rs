@@ -1,5 +1,4 @@
-//! Complete Logos lexer with all features
-
+// src/lexer/logos_lexer.rs
 use logos::Logos;
 use crate::lexer::{Token, TokenType, Span};
 use crate::error_management::{ErrorManager, error_types::LexicalError};
@@ -8,54 +7,56 @@ use crate::lexer::{keywords, string_parser::StringParser, comment_parser::Commen
 #[derive(Logos, Debug, Clone, PartialEq)]
 #[logos(skip r"[ \t]+")]
 enum LogosToken {
-    // Keywords
-    #[token("fn")] Fn,
-    #[token("let")] Let,
-    #[token("mut")] Mut,
-    #[token("const")] Const,
-    #[token("if")] If,
-    #[token("elif")] Elif,
-    #[token("else")] Else,
-    #[token("match")] Match,
-    #[token("where")] Where,
-    #[token("for")] For,
-    #[token("in")] In,
-    #[token("while")] While,
-    #[token("loop")] Loop,
-    #[token("break")] Break,
+    // ── Keywords ─────────────────────────────────────────────────
+    #[token("fn")]       Fn,
+    #[token("let")]      Let,
+    #[token("mut")]      Mut,
+    #[token("const")]    Const,
+    #[token("if")]       If,
+    #[token("elif")]     Elif,
+    #[token("else")]     Else,
+    #[token("match")]    Match,
+    #[token("where")]    Where,
+    #[token("for")]      For,
+    #[token("in")]       In,
+    #[token("while")]    While,
+    #[token("loop")]     Loop,
+    #[token("break")]    Break,
     #[token("continue")] Continue,
-    #[token("return")] Return,
-    #[token("summon")] Summon,
-    #[token("from")] From,
-    #[token("as")] As,
-    #[token("package")] Package,
-    #[token("async")] Async,
-    #[token("await")] Await,
-    #[token("try")] Try,
-    #[token("catch")] Catch,
-    #[token("fail")] Fail,
-    #[token("struct")] Struct,
-    #[token("enum")] Enum,
-    #[token("trait")] Trait,
-    #[token("impl")] Impl,
-    #[token("pub")] Pub,
-    #[token("edge")] Edge,
-    #[token("unsafe")] Unsafe,
-    #[token("with")] With,
-    #[token("defer")] Defer,
-    #[token("and")] And,
-    #[token("or")] Or,
-    #[token("not")] Not,
-    #[token("true")] True,
-    #[token("false")] False,
-    #[token("null")] Null,
-    #[token("self")] SelfKw,
-    #[token("get")] Get,
-    #[token("set")] Set,
+    #[token("return")]   Return,
+    #[token("summon")]   Summon,
+    #[token("from")]     From,
+    #[token("as")]       As,
+    #[token("package")]  Package,
+    #[token("async")]    Async,
+    #[token("await")]    Await,
+    #[token("Task")]     Task,
+    #[token("try")]      Try,
+    #[token("catch")]    Catch,
+    #[token("fail")]     Fail,
+    #[token("struct")]   Struct,
+    #[token("enum")]     Enum,
+    #[token("trait")]    Trait,
+    #[token("impl")]     Impl,
+    #[token("pub")]      Pub,
+    #[token("edge")]     Edge,
+    #[token("unsafe")]   Unsafe,
+    #[token("with")]     With,
+    #[token("defer")]    Defer,
+    #[token("and")]      And,
+    #[token("or")]       Or,
+    #[token("not")]      Not,
+    #[token("true")]     True,
+    #[token("false")]    False,
+    #[token("null")]     Null,
+    #[token("self")]     SelfKw,
+    #[token("get")]      Get,
+    #[token("set")]      Set,
 
-    // Operators (ORDER MATTERS!)
+    // ── Operators — ORDER MATTERS: longer tokens first ────────────
     #[token("<<=")] LeftShiftEqual,
     #[token(">>=")] RightShiftEqual,
+    #[token("|>")]  PipeArrow,        // pipe operator — before | and >
     #[token("<<")] LeftShift,
     #[token(">>")] RightShift,
     #[token("==")] EqualEqual,
@@ -76,6 +77,11 @@ enum LogosToken {
     #[token("|=")] PipeEqual,
     #[token("^=")] CaretEqual,
 
+    // Range / rest operators — longer first
+    #[token("..=")] DotDotEqual,   // ..=  inclusive range
+    #[token("...")] DotDotDot,     // ...  rest / spread
+    #[token("..")] DotDot,         // ..   exclusive range
+
     #[token("+")] Plus,
     #[token("-")] Minus,
     #[token("*")] Star,
@@ -91,7 +97,7 @@ enum LogosToken {
     #[token("?")] Question,
     #[token("=")] Equal,
 
-    // Delimiters
+    // ── Delimiters ────────────────────────────────────────────────
     #[token("(")] LeftParen,
     #[token(")")] RightParen,
     #[token("{")] LeftBrace,
@@ -104,13 +110,13 @@ enum LogosToken {
     #[token(";")] Semicolon,
     #[token("@")] At,
 
-    // Literals
+    // ── Literals ──────────────────────────────────────────────────
     #[regex(r"[0-9][0-9_]*", parse_decimal)]
     #[regex(r"0x[0-9a-fA-F][0-9a-fA-F_]*", parse_hex)]
     #[regex(r"0b[01][01_]*", parse_binary)]
     IntLit(i64),
 
-#[regex(r"[0-9][0-9_]*\.[0-9_]*[fF]?", parse_float)]
+    #[regex(r"[0-9][0-9_]*\.[0-9_]*[fF]?", parse_float)]
     #[regex(r"[0-9][0-9_]*\.[0-9_]*[eE][+-]?[0-9][0-9_]*[fF]?", parse_float)]
     #[regex(r"[0-9][0-9_]*[eE][+-]?[0-9][0-9_]*[fF]?", parse_float)]
     FloatLit(f64),
@@ -124,91 +130,80 @@ enum LogosToken {
     #[regex(r"[a-zA-Z_][a-zA-Z0-9_]*")]
     Ident,
 
-    // Special markers for hand-written parsers
+    // ── Hand-written parser triggers ──────────────────────────────
     #[regex(r#"\$@""#)] InterpolatedVerbatimStart,
-    #[regex(r#"\$""#)] InterpolatedStringStart,
-    #[regex(r#"@""#)] VerbatimStringStart,
+    #[regex(r#"\$""#)]  InterpolatedStringStart,
+    #[regex(r#"@""#)]   VerbatimStringStart,
 
-    #[regex(r"//[^\n]*")] LineComment,
-    #[regex(r"/\*\*")] DocCommentStar,
-    #[regex(r"/\*!")] DocCommentBang,
-    #[regex(r"/\*")] BlockCommentStart,
+    #[regex(r"//[^\n]*")]   LineComment,
+    #[regex(r"/\*\*")]      DocCommentStar,
+    #[regex(r"/\*!")]       DocCommentBang,
+    #[regex(r"/\*")]        BlockCommentStart,
 
     #[regex(r"\n")] Newline,
-
-    // REMOVED: #[error] Error,  ← Logos 0.13+ doesn't need this!
 }
 
-// Parse helpers
+// ── Parse helpers ─────────────────────────────────────────────────
+
 fn parse_decimal(lex: &mut logos::Lexer<LogosToken>) -> Option<i64> {
-    let slice = lex.slice().replace('_', "");
-    slice.parse().ok()
+    lex.slice().replace('_', "").parse().ok()
 }
 
 fn parse_hex(lex: &mut logos::Lexer<LogosToken>) -> Option<i64> {
-    let slice = lex.slice()[2..].replace('_', "");
-    i64::from_str_radix(&slice, 16).ok()
+    i64::from_str_radix(&lex.slice()[2..].replace('_', ""), 16).ok()
 }
 
 fn parse_binary(lex: &mut logos::Lexer<LogosToken>) -> Option<i64> {
-    let slice = lex.slice()[2..].replace('_', "");
-    i64::from_str_radix(&slice, 2).ok()
+    i64::from_str_radix(&lex.slice()[2..].replace('_', ""), 2).ok()
 }
 
-// FIXED: String lifetime issue
 fn parse_float(lex: &mut logos::Lexer<LogosToken>) -> Option<f64> {
-    let slice = lex.slice();
-    let binding = slice.replace('_', "");  // Create owned String first
-    let cleaned = binding.trim_end_matches('f').trim_end_matches('F');  // Borrow from binding
+    let binding = lex.slice().replace('_', "");
+    let cleaned = binding.trim_end_matches('f').trim_end_matches('F');
     cleaned.parse().ok()
 }
 
 fn parse_simple_string(lex: &mut logos::Lexer<LogosToken>) -> Option<String> {
     let slice = lex.slice();
-    let content = &slice[1..slice.len()-1];
-
+    let content = &slice[1..slice.len() - 1];
     let mut result = String::new();
     let mut chars = content.chars();
-
     while let Some(ch) = chars.next() {
         if ch == '\\' {
             match chars.next() {
-                Some('n') => result.push('\n'),
-                Some('t') => result.push('\t'),
-                Some('r') => result.push('\r'),
+                Some('n')  => result.push('\n'),
+                Some('t')  => result.push('\t'),
+                Some('r')  => result.push('\r'),
                 Some('\\') => result.push('\\'),
-                Some('"') => result.push('"'),
-                Some(c) => {
-                    result.push('\\');
-                    result.push(c);
-                }
-                None => result.push('\\'),
+                Some('"')  => result.push('"'),
+                Some(c)    => { result.push('\\'); result.push(c); }
+                None       => result.push('\\'),
             }
         } else {
             result.push(ch);
         }
     }
-
     Some(result)
 }
 
 fn parse_char_literal(lex: &mut logos::Lexer<LogosToken>) -> Option<char> {
     let slice = lex.slice();
-    let content = &slice[1..slice.len()-1];
-
+    let content = &slice[1..slice.len() - 1];
     if content.starts_with('\\') {
         match content.chars().nth(1) {
-            Some('n') => Some('\n'),
-            Some('t') => Some('\t'),
-            Some('r') => Some('\r'),
+            Some('n')  => Some('\n'),
+            Some('t')  => Some('\t'),
+            Some('r')  => Some('\r'),
             Some('\\') => Some('\\'),
             Some('\'') => Some('\''),
-            _ => None,
+            _          => None,
         }
     } else {
         content.chars().next()
     }
 }
+
+// ── LogosLexer ────────────────────────────────────────────────────
 
 pub struct LogosLexer<'a> {
     input: &'a str,
@@ -237,24 +232,16 @@ impl<'a> LogosLexer<'a> {
         while let Some(token_result) = self.logos_lex.next() {
             let span_range = self.logos_lex.span();
             let lexeme = self.logos_lex.slice().to_string();
-
             match token_result {
-                Ok(logos_token) => {
-                    self.handle_logos_token(logos_token, span_range, lexeme);
-                }
-                Err(_) => {
-                    self.handle_error(span_range, lexeme);
-                }
+                Ok(logos_token) => self.handle_logos_token(logos_token, span_range, lexeme),
+                Err(_)          => self.handle_error(span_range, lexeme),
             }
         }
-
-        // Add EOF token
         self.tokens.push(Token::new(
             TokenType::Eof,
             Span::new(self.position, self.position, self.line, self.column),
             String::new(),
         ));
-
         if self.error_manager.has_errors() {
             Err(self.error_manager)
         } else {
@@ -268,213 +255,182 @@ impl<'a> LogosLexer<'a> {
         span_range: std::ops::Range<usize>,
         lexeme: String,
     ) {
-        // Hand-written parsers for complex tokens
         match logos_token {
             LogosToken::InterpolatedStringStart => {
                 let mut parser = StringParser::new(self.input, span_range.start, self.line, self.column);
                 match parser.parse_interpolated_string() {
                     Ok((token, pos, line, col)) => {
                         self.tokens.push(token);
-                        self.position = pos;
-                        self.line = line;
-                        self.column = col;
-
-                        // Sync logos lexer
+                        self.position = pos; self.line = line; self.column = col;
                         self.logos_lex = LogosToken::lexer(&self.input[pos..]);
                     }
-                    Err(err) => {
-                        self.error_manager.add_lexical_error(err);
-                    }
+                    Err(err) => self.error_manager.add_lexical_error(err),
                 }
                 return;
             }
-
             LogosToken::VerbatimStringStart => {
                 let mut parser = StringParser::new(self.input, span_range.start, self.line, self.column);
                 match parser.parse_verbatim_string() {
                     Ok((token, pos, line, col)) => {
                         self.tokens.push(token);
-                        self.position = pos;
-                        self.line = line;
-                        self.column = col;
+                        self.position = pos; self.line = line; self.column = col;
                         self.logos_lex = LogosToken::lexer(&self.input[pos..]);
                     }
-                    Err(err) => {
-                        self.error_manager.add_lexical_error(err);
-                    }
+                    Err(err) => self.error_manager.add_lexical_error(err),
                 }
                 return;
             }
-
             LogosToken::InterpolatedVerbatimStart => {
                 let mut parser = StringParser::new(self.input, span_range.start, self.line, self.column);
                 match parser.parse_interpolated_verbatim_string() {
                     Ok((token, pos, line, col)) => {
                         self.tokens.push(token);
-                        self.position = pos;
-                        self.line = line;
-                        self.column = col;
+                        self.position = pos; self.line = line; self.column = col;
                         self.logos_lex = LogosToken::lexer(&self.input[pos..]);
                     }
-                    Err(err) => {
-                        self.error_manager.add_lexical_error(err);
-                    }
+                    Err(err) => self.error_manager.add_lexical_error(err),
                 }
                 return;
             }
-
             LogosToken::BlockCommentStart => {
                 let mut parser = CommentParser::new(self.input, span_range.start, self.line, self.column);
                 match parser.parse_block_comment() {
-                    Ok((token, pos, line, col)) => {
-                        // Don't add comment tokens to stream (just skip)
-                        self.position = pos;
-                        self.line = line;
-                        self.column = col;
+                    Ok((_token, pos, line, col)) => {
+                        // block comments discarded
+                        self.position = pos; self.line = line; self.column = col;
                         self.logos_lex = LogosToken::lexer(&self.input[pos..]);
                     }
-                    Err(err) => {
-                        self.error_manager.add_lexical_error(err);
-                    }
+                    Err(err) => self.error_manager.add_lexical_error(err),
                 }
                 return;
             }
-
             LogosToken::DocCommentStar | LogosToken::DocCommentBang => {
                 let marker = if matches!(logos_token, LogosToken::DocCommentStar) { "/**" } else { "/*!" };
                 let mut parser = CommentParser::new(self.input, span_range.start, self.line, self.column);
                 match parser.parse_doc_comment(marker) {
                     Ok((token, pos, line, col)) => {
                         self.tokens.push(token);
-                        self.position = pos;
-                        self.line = line;
-                        self.column = col;
+                        self.position = pos; self.line = line; self.column = col;
                         self.logos_lex = LogosToken::lexer(&self.input[pos..]);
                     }
-                    Err(err) => {
-                        self.error_manager.add_lexical_error(err);
-                    }
+                    Err(err) => self.error_manager.add_lexical_error(err),
                 }
                 return;
             }
-
             LogosToken::LineComment | LogosToken::Newline => {
-                // Skip (but update position)
                 self.update_position(&lexeme);
                 return;
             }
-
             _ => {}
         }
 
-        // Fast path: direct token mapping
         let span = Span::new(span_range.start, span_range.end, self.line, self.column);
         self.update_position(&lexeme);
-
         let token_type = self.map_logos_token(logos_token, &lexeme);
         self.tokens.push(Token::new(token_type, span, lexeme));
     }
 
     fn map_logos_token(&self, logos_token: LogosToken, lexeme: &str) -> TokenType {
         match logos_token {
-            // Keywords
-            LogosToken::Fn => TokenType::Fn,
-            LogosToken::Let => TokenType::Let,
-            LogosToken::Mut => TokenType::Mut,
-            LogosToken::Const => TokenType::Const,
-            LogosToken::If => TokenType::If,
-            LogosToken::Elif => TokenType::Elif,
-            LogosToken::Else => TokenType::Else,
-            LogosToken::Match => TokenType::Match,
-            LogosToken::Where => TokenType::Where,
-            LogosToken::For => TokenType::For,
-            LogosToken::In => TokenType::In,
-            LogosToken::While => TokenType::While,
-            LogosToken::Loop => TokenType::Loop,
-            LogosToken::Break => TokenType::Break,
-            LogosToken::Continue => TokenType::Continue,
-            LogosToken::Return => TokenType::Return,
-            LogosToken::Summon => TokenType::Summon,
-            LogosToken::From => TokenType::From,
-            LogosToken::As => TokenType::As,
-            LogosToken::Package => TokenType::Package,
-            LogosToken::Async => TokenType::Async,
-            LogosToken::Await => TokenType::Await,
-            LogosToken::Try => TokenType::Try,
-            LogosToken::Catch => TokenType::Catch,
-            LogosToken::Fail => TokenType::Fail,
-            LogosToken::Struct => TokenType::Struct,
-            LogosToken::Enum => TokenType::Enum,
-            LogosToken::Trait => TokenType::Trait,
-            LogosToken::Impl => TokenType::Impl,
-            LogosToken::Pub => TokenType::Pub,
-            LogosToken::Edge => TokenType::Edge,
-            LogosToken::Unsafe => TokenType::Unsafe,
-            LogosToken::With => TokenType::With,
-            LogosToken::Defer => TokenType::Defer,
-            LogosToken::And => TokenType::And,
-            LogosToken::Or => TokenType::Or,
-            LogosToken::Not => TokenType::Not,
-            LogosToken::True => TokenType::True,
-            LogosToken::False => TokenType::False,
-            LogosToken::Null => TokenType::Null,
-            LogosToken::SelfKw => TokenType::SelfKw,
-            LogosToken::Get => TokenType::Get,
-            LogosToken::Set => TokenType::Set,
+            LogosToken::Fn        => TokenType::Fn,
+            LogosToken::Let       => TokenType::Let,
+            LogosToken::Mut       => TokenType::Mut,
+            LogosToken::Const     => TokenType::Const,
+            LogosToken::If        => TokenType::If,
+            LogosToken::Elif      => TokenType::Elif,
+            LogosToken::Else      => TokenType::Else,
+            LogosToken::Match     => TokenType::Match,
+            LogosToken::Where     => TokenType::Where,
+            LogosToken::For       => TokenType::For,
+            LogosToken::In        => TokenType::In,
+            LogosToken::While     => TokenType::While,
+            LogosToken::Loop      => TokenType::Loop,
+            LogosToken::Break     => TokenType::Break,
+            LogosToken::Continue  => TokenType::Continue,
+            LogosToken::Return    => TokenType::Return,
+            LogosToken::Summon    => TokenType::Summon,
+            LogosToken::From      => TokenType::From,
+            LogosToken::As        => TokenType::As,
+            LogosToken::Package   => TokenType::Package,
+            LogosToken::Async     => TokenType::Async,
+            LogosToken::Await     => TokenType::Await,
+            LogosToken::Task      => TokenType::Task,
+            LogosToken::Try       => TokenType::Try,
+            LogosToken::Catch     => TokenType::Catch,
+            LogosToken::Fail      => TokenType::Fail,
+            LogosToken::Struct    => TokenType::Struct,
+            LogosToken::Enum      => TokenType::Enum,
+            LogosToken::Trait     => TokenType::Trait,
+            LogosToken::Impl      => TokenType::Impl,
+            LogosToken::Pub       => TokenType::Pub,
+            LogosToken::Edge      => TokenType::Edge,
+            LogosToken::Unsafe    => TokenType::Unsafe,
+            LogosToken::With      => TokenType::With,
+            LogosToken::Defer     => TokenType::Defer,
+            LogosToken::And       => TokenType::And,
+            LogosToken::Or        => TokenType::Or,
+            LogosToken::Not       => TokenType::Not,
+            LogosToken::True      => TokenType::True,
+            LogosToken::False     => TokenType::False,
+            LogosToken::Null      => TokenType::Null,
+            LogosToken::SelfKw    => TokenType::SelfKw,
+            LogosToken::Get       => TokenType::Get,
+            LogosToken::Set       => TokenType::Set,
 
-            // Operators
-            LogosToken::Plus => TokenType::Plus,
-            LogosToken::Minus => TokenType::Minus,
-            LogosToken::Star => TokenType::Star,
-            LogosToken::Slash => TokenType::Slash,
-            LogosToken::Percent => TokenType::Percent,
-            LogosToken::Amp => TokenType::Amp,
-            LogosToken::Pipe => TokenType::Pipe,
-            LogosToken::Caret => TokenType::Caret,
-            LogosToken::Tilde => TokenType::Tilde,
-            LogosToken::LeftShift => TokenType::LeftShift,
-            LogosToken::RightShift => TokenType::RightShift,
-            LogosToken::EqualEqual => TokenType::EqualEqual,
-            LogosToken::BangEqual => TokenType::BangEqual,
-            LogosToken::Less => TokenType::Less,
-            LogosToken::Greater => TokenType::Greater,
-            LogosToken::LessEqual => TokenType::LessEqual,
-            LogosToken::GreaterEqual => TokenType::GreaterEqual,
-            LogosToken::Bang => TokenType::Bang,
-            LogosToken::AmpAmp => TokenType::AmpAmp,
-            LogosToken::PipePipe => TokenType::PipePipe,
-            LogosToken::Equal => TokenType::Equal,
-            LogosToken::PlusEqual => TokenType::PlusEqual,
-            LogosToken::MinusEqual => TokenType::MinusEqual,
-            LogosToken::StarEqual => TokenType::StarEqual,
-            LogosToken::SlashEqual => TokenType::SlashEqual,
-            LogosToken::PercentEqual => TokenType::PercentEqual,
-            LogosToken::AmpEqual => TokenType::AmpEqual,
-            LogosToken::PipeEqual => TokenType::PipeEqual,
-            LogosToken::CaretEqual => TokenType::CaretEqual,
-            LogosToken::LeftShiftEqual => TokenType::LeftShiftEqual,
+            LogosToken::Plus          => TokenType::Plus,
+            LogosToken::Minus         => TokenType::Minus,
+            LogosToken::Star          => TokenType::Star,
+            LogosToken::Slash         => TokenType::Slash,
+            LogosToken::Percent       => TokenType::Percent,
+            LogosToken::Amp           => TokenType::Amp,
+            LogosToken::Pipe          => TokenType::Pipe,
+            LogosToken::Caret         => TokenType::Caret,
+            LogosToken::Tilde         => TokenType::Tilde,
+            LogosToken::LeftShift     => TokenType::LeftShift,
+            LogosToken::RightShift    => TokenType::RightShift,
+            LogosToken::EqualEqual    => TokenType::EqualEqual,
+            LogosToken::BangEqual     => TokenType::BangEqual,
+            LogosToken::Less          => TokenType::Less,
+            LogosToken::Greater       => TokenType::Greater,
+            LogosToken::LessEqual     => TokenType::LessEqual,
+            LogosToken::GreaterEqual  => TokenType::GreaterEqual,
+            LogosToken::Bang          => TokenType::Bang,
+            LogosToken::AmpAmp        => TokenType::AmpAmp,
+            LogosToken::PipePipe      => TokenType::PipePipe,
+            LogosToken::Equal         => TokenType::Equal,
+            LogosToken::PlusEqual     => TokenType::PlusEqual,
+            LogosToken::MinusEqual    => TokenType::MinusEqual,
+            LogosToken::StarEqual     => TokenType::StarEqual,
+            LogosToken::SlashEqual    => TokenType::SlashEqual,
+            LogosToken::PercentEqual  => TokenType::PercentEqual,
+            LogosToken::AmpEqual      => TokenType::AmpEqual,
+            LogosToken::PipeEqual     => TokenType::PipeEqual,
+            LogosToken::CaretEqual    => TokenType::CaretEqual,
+            LogosToken::LeftShiftEqual  => TokenType::LeftShiftEqual,
             LogosToken::RightShiftEqual => TokenType::RightShiftEqual,
-            LogosToken::Question => TokenType::Question,
-            LogosToken::QuestionDot => TokenType::QuestionDot,
-            LogosToken::FatArrow => TokenType::FatArrow,
-            LogosToken::ColonEqual => TokenType::ColonEqual,
+            LogosToken::Question      => TokenType::Question,
+            LogosToken::QuestionDot   => TokenType::QuestionDot,
+            LogosToken::FatArrow      => TokenType::FatArrow,
+            LogosToken::ColonEqual    => TokenType::ColonEqual,
+            LogosToken::PipeArrow     => TokenType::PipeArrow,
+            LogosToken::DotDot        => TokenType::DotDot,
+            LogosToken::DotDotEqual   => TokenType::DotDotEqual,
+            LogosToken::DotDotDot     => TokenType::DotDotDot,
 
-            // Delimiters
-            LogosToken::LeftParen => TokenType::LeftParen,
-            LogosToken::RightParen => TokenType::RightParen,
-            LogosToken::LeftBrace => TokenType::LeftBrace,
-            LogosToken::RightBrace => TokenType::RightBrace,
-            LogosToken::LeftBracket => TokenType::LeftBracket,
+            LogosToken::LeftParen    => TokenType::LeftParen,
+            LogosToken::RightParen   => TokenType::RightParen,
+            LogosToken::LeftBrace    => TokenType::LeftBrace,
+            LogosToken::RightBrace   => TokenType::RightBrace,
+            LogosToken::LeftBracket  => TokenType::LeftBracket,
             LogosToken::RightBracket => TokenType::RightBracket,
-            LogosToken::Comma => TokenType::Comma,
-            LogosToken::Dot => TokenType::Dot,
-            LogosToken::Colon => TokenType::Colon,
-            LogosToken::Semicolon => TokenType::Semicolon,
-            LogosToken::At => TokenType::At,
+            LogosToken::Comma        => TokenType::Comma,
+            LogosToken::Dot          => TokenType::Dot,
+            LogosToken::Colon        => TokenType::Colon,
+            LogosToken::Semicolon    => TokenType::Semicolon,
+            LogosToken::At           => TokenType::At,
 
-            // Literals
-            LogosToken::IntLit(n) => TokenType::IntLit(n),
-            LogosToken::FloatLit(f) => {
+            LogosToken::IntLit(n)    => TokenType::IntLit(n),
+            LogosToken::FloatLit(f)  => {
                 if lexeme.ends_with('f') || lexeme.ends_with('F') {
                     TokenType::FloatLit(f as f32)
                 } else {
@@ -482,11 +438,10 @@ impl<'a> LogosLexer<'a> {
                 }
             }
             LogosToken::StringLit(s) => TokenType::StringLit(s),
-            LogosToken::CharLit(c) => TokenType::CharLit(c),
-
-            // Identifier (check if keyword)
-            LogosToken::Ident => {
-                keywords::get_keyword(lexeme).unwrap_or_else(|| TokenType::Ident(lexeme.to_string()))
+            LogosToken::CharLit(c)   => TokenType::CharLit(c),
+            LogosToken::Ident        => {
+                keywords::get_keyword(lexeme)
+                    .unwrap_or_else(|| TokenType::Ident(lexeme.to_string()))
             }
 
             _ => TokenType::Error(format!("Unhandled token: {:?}", logos_token)),
@@ -496,18 +451,12 @@ impl<'a> LogosLexer<'a> {
     fn handle_error(&mut self, span_range: std::ops::Range<usize>, lexeme: String) {
         let span = Span::new(span_range.start, span_range.end, self.line, self.column);
         let ch = lexeme.chars().next().unwrap_or('\0');
-
         self.error_manager.add_lexical_error(LexicalError::UnexpectedChar {
             ch,
             span,
             suggestion: Some("Remove this character or check for typos".to_string()),
         });
-
-        self.tokens.push(Token::error(
-            format!("Unexpected character: '{}'", ch),
-            span,
-        ));
-
+        self.tokens.push(Token::error(format!("Unexpected character: '{}'", ch), span));
         self.update_position(&lexeme);
     }
 
@@ -522,4 +471,4 @@ impl<'a> LogosLexer<'a> {
             self.position += ch.len_utf8();
         }
     }
-}
+    }
