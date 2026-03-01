@@ -1,5 +1,16 @@
 // src/parser/mod.rs
 
+lalrpop_mod!(
+    #[allow(clippy::all)]
+    pub grammar,
+    "/parser/grammar.rs"
+);
+
+pub mod helpers;
+mod token_iter;
+
+use token_iter::TokenIter;
+
 use lalrpop_util::ParseError as LalrError;
 use crate::ast::root::Program;
 use crate::ast::arena::AstArena;
@@ -13,12 +24,12 @@ pub fn parse<'ast>(
 ) -> Result<Program<'ast>, ErrorManager> {
     let mut errors = ErrorManager::new(source);
 
-    // lalrpop generates a parser struct — call it here
-    // and map its errors immediately
-    match grammar::ProgramParser::new().parse(&arena, &mut errors, token_iter(&tokens)) {
+    let iter = TokenIter::new(&tokens);
+
+    match grammar::ProgramParser::new().parse(arena, &mut errors, iter) {
         Ok(program) => {
             if errors.has_errors() {
-                Err(errors)   // recovered but still had issues
+                Err(errors)
             } else {
                 Ok(program)
             }
@@ -30,11 +41,13 @@ pub fn parse<'ast>(
     }
 }
 
-fn lalr_to_parse_error(e: LalrError<usize, crate::lexer::TokenType, ParseError>) -> ParseError {
+fn lalr_to_parse_error(
+    e: LalrError<usize, crate::lexer::TokenType, ParseError>,
+) -> ParseError {
     match e {
         LalrError::InvalidToken { location } => ParseError::Raw {
             message: "Invalid token".to_string(),
-            span: crate::lexer::Span::new(location, location, 0, 0),
+            span:    crate::lexer::Span::new(location, location, 0, 0),
         },
         LalrError::UnrecognizedEof { location, expected } => ParseError::UnexpectedEof {
             expected,
@@ -43,18 +56,18 @@ fn lalr_to_parse_error(e: LalrError<usize, crate::lexer::TokenType, ParseError>)
         },
         LalrError::UnrecognizedToken { token: (lo, tok, hi), expected } => {
             ParseError::UnexpectedToken {
-                found:    tok,
+                found:   tok,
                 expected,
-                span:     crate::lexer::Span::new(lo, hi, 0, 0),
-                context:  ParseContext::TopLevel,
+                span:    crate::lexer::Span::new(lo, hi, 0, 0),
+                context: ParseContext::TopLevel,
             }
         }
         LalrError::ExtraToken { token: (lo, tok, hi) } => ParseError::UnexpectedToken {
-            found:    tok,
+            found:   tok,
             expected: vec![],
-            span:     crate::lexer::Span::new(lo, hi, 0, 0),
-            context:  ParseContext::TopLevel,
+            span:    crate::lexer::Span::new(lo, hi, 0, 0),
+            context: ParseContext::TopLevel,
         },
-        LalrError::User { error } => error,  // already a ParseError we emitted
+        LalrError::User { error } => error,
     }
-  }
+}
