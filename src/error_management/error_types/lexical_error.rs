@@ -40,6 +40,11 @@ pub enum LexicalError {
     },
 }
 
+/// Which string syntax was being parsed when an error occurred.
+/// `Normal` is kept for completeness — the parser phase will use it
+/// when reporting errors from simple `"..."` strings that go through
+/// a different code path than the hand-written parsers.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum StringType {
     Normal,
@@ -51,13 +56,13 @@ pub enum StringType {
 impl LexicalError {
     pub fn span(&self) -> Span {
         match self {
-            LexicalError::UnexpectedChar { span, .. } => *span,
-            LexicalError::UnterminatedString { span, .. } => *span,
+            LexicalError::UnexpectedChar { span, .. }           => *span,
+            LexicalError::UnterminatedString { span, .. }       => *span,
             LexicalError::UnterminatedBlockComment { span, .. } => *span,
-            LexicalError::InvalidNumber { span, .. } => *span,
-            LexicalError::InvalidEscape { span, .. } => *span,
-            LexicalError::InvalidInterpolation { span, .. } => *span,
-            LexicalError::InvalidCharLiteral { span, .. } => *span,
+            LexicalError::InvalidNumber { span, .. }            => *span,
+            LexicalError::InvalidEscape { span, .. }            => *span,
+            LexicalError::InvalidInterpolation { span, .. }     => *span,
+            LexicalError::InvalidCharLiteral { span, .. }       => *span,
         }
     }
 
@@ -68,9 +73,9 @@ impl LexicalError {
             }
             LexicalError::UnterminatedString { string_type, .. } => {
                 match string_type {
-                    StringType::Normal => "Unterminated string literal".to_string(),
-                    StringType::Interpolated => "Unterminated interpolated string".to_string(),
-                    StringType::Verbatim => "Unterminated verbatim string".to_string(),
+                    StringType::Normal               => "Unterminated string literal".to_string(),
+                    StringType::Interpolated         => "Unterminated interpolated string".to_string(),
+                    StringType::Verbatim             => "Unterminated verbatim string".to_string(),
                     StringType::InterpolatedVerbatim => "Unterminated interpolated verbatim string".to_string(),
                 }
             }
@@ -83,9 +88,7 @@ impl LexicalError {
             LexicalError::InvalidEscape { sequence, .. } => {
                 format!("Invalid escape sequence '{}'", sequence)
             }
-            LexicalError::InvalidInterpolation { message, .. } => {
-                message.clone()
-            }
+            LexicalError::InvalidInterpolation { message, .. } => message.clone(),
             LexicalError::InvalidCharLiteral { content, reason, .. } => {
                 format!("Invalid character literal '{}': {}", content, reason)
             }
@@ -97,9 +100,9 @@ impl LexicalError {
             LexicalError::UnexpectedChar { suggestion, .. } => suggestion.clone(),
             LexicalError::UnterminatedString { string_type, .. } => {
                 Some(match string_type {
-                    StringType::Normal => "Add closing quote \"".to_string(),
-                    StringType::Interpolated => "Add closing quote \" to interpolated string".to_string(),
-                    StringType::Verbatim => "Add closing quote \" to verbatim string".to_string(),
+                    StringType::Normal               => "Add closing quote \"".to_string(),
+                    StringType::Interpolated         => "Add closing quote \" to interpolated string".to_string(),
+                    StringType::Verbatim             => "Add closing quote \" to verbatim string".to_string(),
                     StringType::InterpolatedVerbatim => "Add closing quote \" to interpolated verbatim string".to_string(),
                 })
             }
@@ -107,7 +110,6 @@ impl LexicalError {
                 Some("Add closing */".to_string())
             }
             LexicalError::InvalidNumber { text, .. } => {
-                // Try to suggest fix based on common mistakes
                 if text.contains("..") {
                     Some("Remove extra decimal point".to_string())
                 } else if text.starts_with("0x") && text.len() == 2 {
@@ -121,9 +123,7 @@ impl LexicalError {
             LexicalError::InvalidEscape { valid_escapes, .. } => {
                 Some(format!("Valid escape sequences: {}", valid_escapes.join(", ")))
             }
-            LexicalError::InvalidInterpolation { suggestion, .. } => {
-                suggestion.clone()
-            }
+            LexicalError::InvalidInterpolation { suggestion, .. } => suggestion.clone(),
             LexicalError::InvalidCharLiteral { .. } => {
                 Some("Character literals must contain exactly one character".to_string())
             }
