@@ -867,60 +867,35 @@ fn dynamic_example() {
 
 ## 🏗️ Memory Management Details
 
-### The Three Tiers
+### Default Tier: HIGH
 
-#### HIGH Tier: Garbage Collection
-- **Algorithm**: Concurrent tri-color mark-and-sweep (like Go)
-- **Pauses**: <500μs (sub-millisecond)
-- **Overhead**: ~1-5% CPU
-- **Use For**: Business logic, APIs, web services
-- **Collections**: List, Dictionary, etc. are GC-managed
-
+Functions without a `@tier` annotation run in **HIGH tier** automatically.
+This is intentional — most application code is business logic that benefits
+from garbage collection and async support. You opt *down* into MID or LOW
+when you need the performance, not up into HIGH when you want convenience.
 ```strat
-@tier(high)
-fn business_logic(data: Data) Result {
-    let items = List.new()      // GC allocated
-    items.push(transform(data))  // GC allocated
-    return process(items)        // GC managed
+// This runs in HIGH tier — no annotation needed
+fn handle_request(req: Request) Response {
+    let user = fetch_user(req.user_id)
+    return Response.ok(user.to_json())
 }
-```
 
-#### MID Tier: Arena Allocation
-- **Algorithm**: Monotonic bump allocator
-- **Cleanup**: Instant (reset arena)
-- **Performance**: 2-10x faster than malloc
-- **Use For**: Request handlers, parsers, batch processing
-
-```strat
+// Explicitly opt into MID for a hot path
 @tier(mid)
-fn parse_request(body: string) ParsedData {
+fn parse_payload(body: string) ParsedData {
     with arena(1MB) {
-        let tokens = tokenize(body)      // Arena allocated
-        let ast = parse(tokens)           // Arena allocated
-        return extract_data(ast).to_gc()  // Copy to GC
-    }  // Arena freed - instant!
-}
-```
-
-#### LOW Tier: Manual Ownership
-- **Algorithm**: Rust-style ownership + borrow checker
-- **Safety**: Compile-time guarantees
-- **Performance**: Zero overhead
-- **Use For**: Systems code, drivers, hot paths
-
-```strat
-@tier(low)
-fn process_buffer[lifetime L](buf: &mut L [u8]) usize {
-    let mut written = 0
-    for byte in buf {
-        *byte = transform(*byte)
-        written += 1
+        // ...
     }
-    return written
+}
+
+// Explicitly opt into LOW for systems code
+@tier(low)
+fn write_packet(buf: &mut [u8]) usize {
+    // ...
 }
 ```
 
----
+### The Three Tiers
 
 ## 🛠️ Building Ubel Stratum
 
