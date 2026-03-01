@@ -3,13 +3,11 @@ use phf::phf_map;
 use crate::lexer::TokenType;
 
 pub static KEYWORDS: phf::Map<&'static str, TokenType> = phf_map! {
-    // Functions & Variables
+    // ── Core keywords ────────────────────────────────────────────
     "fn"       => TokenType::Fn,
     "let"      => TokenType::Let,
     "mut"      => TokenType::Mut,
     "const"    => TokenType::Const,
-
-    // Control Flow
     "if"       => TokenType::If,
     "elif"     => TokenType::Elif,
     "else"     => TokenType::Else,
@@ -22,53 +20,55 @@ pub static KEYWORDS: phf::Map<&'static str, TokenType> = phf_map! {
     "break"    => TokenType::Break,
     "continue" => TokenType::Continue,
     "return"   => TokenType::Return,
-
-    // Imports
     "summon"   => TokenType::Summon,
     "from"     => TokenType::From,
     "as"       => TokenType::As,
     "package"  => TokenType::Package,
-
-    // Async
     "async"    => TokenType::Async,
     "await"    => TokenType::Await,
     "Task"     => TokenType::Task,
-
-    // Error Handling
     "try"      => TokenType::Try,
     "catch"    => TokenType::Catch,
     "fail"     => TokenType::Fail,
-
-    // Types
     "struct"   => TokenType::Struct,
     "enum"     => TokenType::Enum,
     "trait"    => TokenType::Trait,
     "impl"     => TokenType::Impl,
-
-    // Modifiers
     "pub"      => TokenType::Pub,
     "edge"     => TokenType::Edge,
     "unsafe"   => TokenType::Unsafe,
     "with"     => TokenType::With,
     "defer"    => TokenType::Defer,
-
-    // Logical
     "and"      => TokenType::And,
     "or"       => TokenType::Or,
     "not"      => TokenType::Not,
-
-    // Literals
     "true"     => TokenType::True,
     "false"    => TokenType::False,
     "null"     => TokenType::Null,
     "self"     => TokenType::SelfKw,
-
-    // Properties
     "get"      => TokenType::Get,
     "set"      => TokenType::Set,
+
+    // ── Declaration / statement keywords (contextual in EBNF but
+    //    treated as hard keywords for simpler, conflict-free parsing) ──
+    "extend"   => TokenType::Extend,
+    "type"     => TokenType::TypeKw,
+    "extract"  => TokenType::Extract,
+    "using"    => TokenType::Using,
+    "lifetime" => TokenType::Lifetime,
+
+    // ── Tier system ──────────────────────────────────────────────
+    "tier"     => TokenType::Tier,
+    "high"     => TokenType::High,
+    "mid"      => TokenType::Mid,
+    "low"      => TokenType::Low,
+
+    // ── Allocator keywords ───────────────────────────────────────
+    "arena"    => TokenType::Arena,
+    "pool"     => TokenType::Pool,
 };
 
 #[inline]
 pub fn get_keyword(word: &str) -> Option<TokenType> {
     KEYWORDS.get(word).cloned()
-}
+                   }
