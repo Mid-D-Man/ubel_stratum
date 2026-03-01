@@ -1,62 +1,85 @@
 // benches/ast_bench.rs
-//
-// Benchmarks for AST arena allocation patterns.
-// We measure the things the parser will actually do:
-//   - allocating individual nodes
-//   - building Vec-then-slice lists
-//   - interning strings
-//   - constructing realistic sub-trees
-//   - full small/medium program ASTs
-
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use std::time::Duration;
 
 use ubel_stratum::ast::arena::AstArena;
 use ubel_stratum::ast::common::{BinOp, Span, TierAnnotation, Visibility};
 use ubel_stratum::ast::expressions::{
-    Arg, ArgKind, ElifBranch, Expr, ExprKind, FieldInit, IfExpr,
-    MatchArm, MatchArmBody, MatchExpr,
+    ElifBranch, Expr, ExprKind, FieldInit, IfExpr, MatchArm, MatchArmBody, MatchExpr,
 };
 use ubel_stratum::ast::literals::Literal;
 use ubel_stratum::ast::patterns::{Pattern, PatternKind};
-use ubel_stratum::ast::statements::{
-    AllocatorKind, BindingTarget, Block, SizeExpr, SizeUnit, Stmt, StmtKind,
-};
+use ubel_stratum::ast::statements::{BindingTarget, Block, Stmt, StmtKind};
 use ubel_stratum::ast::declarations::{
-    ConstDecl, EnumDecl, EnumVariant, EnumVariantPayload,
-    FieldDecl, FunctionDecl, MethodDecl, Param, ParamKind, ReturnType, StructDecl, StructMember,
+    ConstDecl, FieldDecl, FunctionDecl, MethodDecl, Param, ParamKind, ReturnType,
+    StructDecl, StructMember,
 };
 use ubel_stratum::ast::root::{Import, ImportItems, ImportKind, Item, PackageDecl, Program};
 use ubel_stratum::ast::types::{Type, TypeKind};
 
 // ── Shared helpers ────────────────────────────────────────────────
 
-/// A dummy span used everywhere — span construction cost is not what we're measuring.
 const DUMMY: Span = Span { start: 0, end: 0, line: 1, column: 1 };
 
-fn int_type(arena: &AstArena) -> &Type<'_> {
+fn int_type<'ast>(arena: &'ast AstArena) -> &'ast Type<'ast> {
     arena.alloc(Type { kind: TypeKind::Int, span: DUMMY })
 }
 
-fn bool_type(arena: &AstArena) -> &Type<'_> {
-    arena.alloc(Type { kind: TypeKind::Bool, span: DUMMY })
-}
-
-fn string_type(arena: &AstArena) -> &Type<'_> {
+fn string_type<'ast>(arena: &'ast AstArena) -> &'ast Type<'ast> {
     arena.alloc(Type { kind: TypeKind::Str, span: DUMMY })
 }
 
-fn int_lit(arena: &AstArena, n: i64) -> &Expr<'_> {
+fn int_lit<'ast>(arena: &'ast AstArena, n: i64) -> &'ast Expr<'ast> {
     arena.alloc(Expr { kind: ExprKind::Lit(Literal::Int(n)), span: DUMMY })
 }
 
-fn ident_expr<'a>(arena: &'a AstArena, name: &str) -> &'a Expr<'a> {
+fn ident_expr<'ast>(arena: &'ast AstArena, name: &str) -> &'ast Expr<'ast> {
     let s = arena.alloc_str(name);
     arena.alloc(Expr { kind: ExprKind::Ident(s), span: DUMMY })
 }
 
-fn empty_block() -> Block<'static> {
-    Block { stmts: &[], span: DUMMY }
+fn make_binop<'ast>(
+    arena: &'ast AstArena,
+    op: BinOp,
+    lhs: &'ast Expr<'ast>,
+    rhs: &'ast Expr<'ast>,
+) -> &'ast Expr<'ast> {
+    arena.alloc(Expr {
+        kind: ExprKind::BinOp { op, lhs, rhs },
+        span: DUMMY,
+    })
+}
+
+// Standalone function so the 'ast lifetime can be expressed properly.
+fn make_branch<'ast>(
+    arena: &'ast AstArena,
+    cond_name: &str,
+    ret_val: i64,
+) -> (&'ast Expr<'ast>, Block<'ast>) {
+    let cond = ident_expr(arena, cond_name);
+    let stmt = arena.alloc(Stmt {
+        kind: StmtKind::Return(Some(int_lit(arena, ret_val))),
+        span: DUMMY,
+    });
+    let stmts = arena.alloc_slice_copy(&[*stmt]);
+    (cond, Block { stmts, span: DUMMY })
+}
+
+// Standalone function so the 'ast lifetime can be expressed properly.
+fn make_named_param<'ast>(
+    arena: &'ast AstArena,
+    name: &str,
+    ty: &'ast Type<'ast>,
+) -> Param<'ast> {
+    Param {
+        kind: ParamKind::Named {
+            mutable: false,
+            name: arena.alloc_str(name),
+            ty: Some(ty),
+            default: None,
+        },
+        span: DUMMY,
+    }
 }
 
 // ── 1. Leaf node allocation ───────────────────────────────────────
@@ -104,7 +127,7 @@ fn bench_alloc_leaf(c: &mut Criterion) {
     group.finish();
 }
 
-// ── 2. Vec → slice (the primary list-building pattern) ───────────
+// ── 2. Vec → slice (the primary list-building pattern) ────────────
 
 fn bench_vec_to_slice(c: &mut Criterion) {
     let mut group = c.benchmark_group("ast/vec_to_slice");
@@ -137,20 +160,6 @@ fn bench_vec_to_slice(c: &mut Criterion) {
 }
 
 // ── 3. Binary expression tree ─────────────────────────────────────
-//
-// Builds `((1 + 2) * (3 - 4)) + (5 / 6)` — a balanced tree 3 levels deep.
-
-fn make_binop<'a>(
-    arena: &'a AstArena,
-    op: BinOp,
-    lhs: &'a Expr<'a>,
-    rhs: &'a Expr<'a>,
-) -> &'a Expr<'a> {
-    arena.alloc(Expr {
-        kind: ExprKind::BinOp { op, lhs, rhs },
-        span: DUMMY,
-    })
-}
 
 fn bench_binop_tree(c: &mut Criterion) {
     let mut group = c.benchmark_group("ast/binop_tree");
@@ -168,7 +177,6 @@ fn bench_binop_tree(c: &mut Criterion) {
         });
     });
 
-    // 7-level deep right-associative chain: 1 + (2 + (3 + ... ))
     group.bench_function("chain_128", |b| {
         b.iter(|| {
             let arena = AstArena::new();
@@ -189,7 +197,6 @@ fn bench_if_expr(c: &mut Criterion) {
     let mut group = c.benchmark_group("ast/if_expr");
     group.measurement_time(Duration::from_secs(4));
 
-    // Simple `if cond { return 1 } else { return 0 }`
     group.bench_function("simple_if_else", |b| {
         b.iter(|| {
             let arena = AstArena::new();
@@ -200,15 +207,19 @@ fn bench_if_expr(c: &mut Criterion) {
                 kind: StmtKind::Return(Some(int_lit(&arena, 1))),
                 span: DUMMY,
             });
-            let then_stmts = arena.alloc_slice_copy(&[*then_stmt]);
-            let then_block = Block { stmts: then_stmts, span: DUMMY };
+            let then_block = Block {
+                stmts: arena.alloc_slice_copy(&[*then_stmt]),
+                span: DUMMY,
+            };
 
             let else_stmt = arena.alloc(Stmt {
                 kind: StmtKind::Return(Some(int_lit(&arena, 0))),
                 span: DUMMY,
             });
-            let else_stmts = arena.alloc_slice_copy(&[*else_stmt]);
-            let else_block = Block { stmts: else_stmts, span: DUMMY };
+            let else_block = Block {
+                stmts: arena.alloc_slice_copy(&[*else_stmt]),
+                span: DUMMY,
+            };
 
             let if_expr = arena.alloc(IfExpr {
                 condition: cond,
@@ -222,20 +233,9 @@ fn bench_if_expr(c: &mut Criterion) {
         });
     });
 
-    // 4-branch if/elif/elif/else
     group.bench_function("if_3_elif_else", |b| {
         b.iter(|| {
             let arena = AstArena::new();
-
-            let make_branch = |arena: &AstArena, name: &str, ret: i64| {
-                let cond = ident_expr(arena, name);
-                let stmt = arena.alloc(Stmt {
-                    kind: StmtKind::Return(Some(int_lit(arena, ret))),
-                    span: DUMMY,
-                });
-                let stmts = arena.alloc_slice_copy(&[*stmt]);
-                (cond, Block { stmts, span: DUMMY })
-            };
 
             let (cond, then_block) = make_branch(&arena, "is_admin", 3);
             let (c1, b1) = make_branch(&arena, "is_mod", 2);
@@ -246,14 +246,7 @@ fn bench_if_expr(c: &mut Criterion) {
             elifs.push(ElifBranch { condition: c2, block: b2, span: DUMMY });
             let elif_branches = elifs.into_bump_slice();
 
-            let else_stmt = arena.alloc(Stmt {
-                kind: StmtKind::Return(Some(int_lit(&arena, 0))),
-                span: DUMMY,
-            });
-            let else_block = Block {
-                stmts: arena.alloc_slice_copy(&[*else_stmt]),
-                span: DUMMY,
-            };
+            let (_, else_block) = make_branch(&arena, "_unused", 0);
 
             let if_node = arena.alloc(IfExpr {
                 condition: cond,
@@ -292,7 +285,12 @@ fn bench_match_expr(c: &mut Criterion) {
                             span: DUMMY,
                         };
                         let body = MatchArmBody::Expr(int_lit(&arena, i as i64 * 10));
-                        arms.push(MatchArm { pattern: pat, guard: None, body, span: DUMMY });
+                        arms.push(MatchArm {
+                            pattern: pat,
+                            guard: None,
+                            body,
+                            span: DUMMY,
+                        });
                     }
                     let arms = arms.into_bump_slice();
 
@@ -316,39 +314,32 @@ fn bench_function_decl(c: &mut Criterion) {
     let mut group = c.benchmark_group("ast/function_decl");
     group.measurement_time(Duration::from_secs(4));
 
-    // Simple: fn add(x: int, y: int) int { return x + y }
     group.bench_function("simple_2_params", |b| {
         b.iter(|| {
             let arena = AstArena::new();
-
-            let make_param = |arena: &AstArena, name: &str| -> Param {
-                Param {
-                    kind: ParamKind::Named {
-                        mutable: false,
-                        name: arena.alloc_str(name),
-                        ty: Some(int_type(arena)),
-                        default: None,
-                    },
-                    span: DUMMY,
-                }
-            };
+            let int_ty = int_type(&arena);
 
             let mut params = arena.vec::<Param>();
-            params.push(make_param(&arena, "x"));
-            params.push(make_param(&arena, "y"));
+            params.push(make_named_param(&arena, "x", int_ty));
+            params.push(make_named_param(&arena, "y", int_ty));
             let params = params.into_bump_slice();
 
-            let lhs = ident_expr(&arena, "x");
-            let rhs = ident_expr(&arena, "y");
-            let add = make_binop(&arena, BinOp::Add, lhs, rhs);
+            let add = make_binop(
+                &arena,
+                BinOp::Add,
+                ident_expr(&arena, "x"),
+                ident_expr(&arena, "y"),
+            );
             let ret_stmt = arena.alloc(Stmt {
                 kind: StmtKind::Return(Some(add)),
                 span: DUMMY,
             });
-            let stmts = arena.alloc_slice_copy(&[*ret_stmt]);
-            let body = Block { stmts, span: DUMMY };
+            let body = Block {
+                stmts: arena.alloc_slice_copy(&[*ret_stmt]),
+                span: DUMMY,
+            };
 
-            let decl = arena.alloc(FunctionDecl {
+            let decl = FunctionDecl {
                 tier: TierAnnotation::High,
                 attributes: &[],
                 visibility: Visibility::Public,
@@ -357,36 +348,25 @@ fn bench_function_decl(c: &mut Criterion) {
                 lifetime_params: &[],
                 generic_params: &[],
                 params,
-                return_type: Some(ReturnType { ty: int_type(&arena), is_fallible: false }),
+                return_type: Some(ReturnType { ty: int_ty, is_fallible: false }),
                 body,
                 span: DUMMY,
-            });
-
+            };
             black_box(decl);
         });
     });
 
-    // Async handler: resembles a real request-handling function
     group.bench_function("async_handler_5_params", |b| {
         b.iter(|| {
             let arena = AstArena::new();
+            let str_ty = string_type(&arena);
 
-            let param_names = ["req", "auth", "db", "cache", "logger"];
             let mut params = arena.vec::<Param>();
-            for name in &param_names {
-                params.push(Param {
-                    kind: ParamKind::Named {
-                        mutable: false,
-                        name: arena.alloc_str(name),
-                        ty: Some(string_type(&arena)),
-                        default: None,
-                    },
-                    span: DUMMY,
-                });
+            for name in &["req", "auth", "db", "cache", "logger"] {
+                params.push(make_named_param(&arena, name, str_ty));
             }
             let params = params.into_bump_slice();
 
-            // Body: let result = x; return result
             let let_stmt = arena.alloc(Stmt {
                 kind: StmtKind::Let {
                     mutable: false,
@@ -400,8 +380,10 @@ fn bench_function_decl(c: &mut Criterion) {
                 kind: StmtKind::Return(Some(ident_expr(&arena, "result"))),
                 span: DUMMY,
             });
-            let stmts = arena.alloc_slice_copy(&[*let_stmt, *ret_stmt]);
-            let body = Block { stmts, span: DUMMY };
+            let body = Block {
+                stmts: arena.alloc_slice_copy(&[*let_stmt, *ret_stmt]),
+                span: DUMMY,
+            };
 
             let task_inner = arena.alloc(Type { kind: TypeKind::Str, span: DUMMY });
             let task_ty = arena.alloc(Type {
@@ -409,7 +391,7 @@ fn bench_function_decl(c: &mut Criterion) {
                 span: DUMMY,
             });
 
-            let decl = arena.alloc(FunctionDecl {
+            let decl = FunctionDecl {
                 tier: TierAnnotation::High,
                 attributes: &[],
                 visibility: Visibility::Public,
@@ -421,8 +403,7 @@ fn bench_function_decl(c: &mut Criterion) {
                 return_type: Some(ReturnType { ty: task_ty, is_fallible: true }),
                 body,
                 span: DUMMY,
-            });
-
+            };
             black_box(decl);
         });
     });
@@ -443,19 +424,21 @@ fn bench_struct_decl(c: &mut Criterion) {
             |b, &n| {
                 b.iter(|| {
                     let arena = AstArena::new();
+                    let int_ty = int_type(&arena);
                     let mut members = arena.vec::<StructMember>();
 
                     for i in 0..n {
-                        let name = arena.alloc_str(&format!("field_{}", i));
+                        // We can't format into the arena directly, so
+                        // build the string on the stack first.
+                        let name_buf = format!("field_{}", i);
                         members.push(StructMember::Field(FieldDecl {
                             visibility: Visibility::Public,
-                            name,
-                            ty: int_type(&arena),
+                            name: arena.alloc_str(&name_buf),
+                            ty: int_ty,
                             span: DUMMY,
                         }));
                     }
 
-                    // Add one method
                     let ret_stmt = arena.alloc(Stmt {
                         kind: StmtKind::Return(Some(int_lit(&arena, 0))),
                         span: DUMMY,
@@ -472,19 +455,22 @@ fn bench_struct_decl(c: &mut Criterion) {
                         name: arena.alloc_str("total"),
                         generic_params: &[],
                         params: &[],
-                        return_type: Some(ReturnType { ty: int_type(&arena), is_fallible: false }),
+                        return_type: Some(ReturnType {
+                            ty: int_ty,
+                            is_fallible: false,
+                        }),
                         body,
                         span: DUMMY,
                     }));
 
-                    let decl = arena.alloc(StructDecl {
+                    let decl = StructDecl {
                         visibility: Visibility::Public,
                         is_edge: false,
                         name: arena.alloc_str("MyStruct"),
                         generic_params: &[],
                         members: members.into_bump_slice(),
                         span: DUMMY,
-                    });
+                    };
                     black_box(decl);
                 });
             },
@@ -500,61 +486,56 @@ fn bench_arena_reuse(c: &mut Criterion) {
     let mut group = c.benchmark_group("ast/arena_reuse");
     group.measurement_time(Duration::from_secs(5));
 
-    // Each iteration creates a fresh arena (simulates one file per arena).
     group.bench_function("fresh_arena_per_file", |b| {
         b.iter(|| {
             let arena = AstArena::with_capacity(64 * 1024);
+            let int_ty = int_type(&arena);
 
-            // Simulate 20 functions, each with 3 params and 4 stmts
             let mut items = arena.vec::<Item>();
             for i in 0..20usize {
-                let name = arena.alloc_str(&format!("fn_{}", i));
+                let name_buf = format!("fn_{}", i);
+
                 let mut params = arena.vec::<Param>();
                 for j in 0..3usize {
-                    params.push(Param {
-                        kind: ParamKind::Named {
-                            mutable: false,
-                            name: arena.alloc_str(&format!("p{}", j)),
-                            ty: Some(int_type(&arena)),
-                            default: None,
-                        },
-                        span: DUMMY,
-                    });
+                    let p_buf = format!("p{}", j);
+                    params.push(make_named_param(&arena, &p_buf, int_ty));
                 }
                 let params = params.into_bump_slice();
 
                 let mut stmts = arena.vec::<Stmt>();
                 for k in 0..4usize {
+                    let v_buf = format!("v{}", k);
                     stmts.push(Stmt {
                         kind: StmtKind::Let {
                             mutable: false,
-                            binding: BindingTarget::Ident(
-                                arena.alloc_str(&format!("v{}", k))
-                            ),
+                            binding: BindingTarget::Ident(arena.alloc_str(&v_buf)),
                             ty: None,
                             value: int_lit(&arena, k as i64),
                         },
                         span: DUMMY,
                     });
                 }
-                let body = Block { stmts: stmts.into_bump_slice(), span: DUMMY };
+                let body = Block {
+                    stmts: stmts.into_bump_slice(),
+                    span: DUMMY,
+                };
 
-                items.push(Item::Function(arena.alloc(FunctionDecl {
+                items.push(Item::Function(FunctionDecl {
                     tier: TierAnnotation::High,
                     attributes: &[],
                     visibility: Visibility::Public,
                     is_async: false,
-                    name,
+                    name: arena.alloc_str(&name_buf),
                     lifetime_params: &[],
                     generic_params: &[],
                     params,
                     return_type: Some(ReturnType {
-                        ty: int_type(&arena),
+                        ty: int_ty,
                         is_fallible: false,
                     }),
                     body,
                     span: DUMMY,
-                }).clone()));
+                }));
             }
 
             let prog = Program {
@@ -571,17 +552,10 @@ fn bench_arena_reuse(c: &mut Criterion) {
         });
     });
 
-    group.finish();}
+    group.finish();
+}
 
 // ── 9. Full small program AST ─────────────────────────────────────
-//
-// Builds the complete AST for:
-//
-//   package demo
-//   summon std.io
-//   const MAX: int = 100
-//   struct Point { x: int, y: int }
-//   fn main() { let p = Point { x = 0, y = 0 }; return }
 
 fn bench_full_small_program(c: &mut Criterion) {
     let mut group = c.benchmark_group("ast/full_program");
@@ -590,6 +564,7 @@ fn bench_full_small_program(c: &mut Criterion) {
     group.bench_function("small_program", |b| {
         b.iter(|| {
             let arena = AstArena::new();
+            let int_ty = int_type(&arena);
 
             // package demo
             let package = PackageDecl {
@@ -613,47 +588,50 @@ fn bench_full_small_program(c: &mut Criterion) {
             // const MAX: int = 100
             items.push(Item::Const(ConstDecl {
                 name: arena.alloc_str("MAX"),
-                ty: Some(int_type(&arena)),
+                ty: Some(int_ty),
                 value: int_lit(&arena, 100),
                 span: DUMMY,
             }));
 
             // struct Point { x: int, y: int }
-            let fields = {
-                let mut v = arena.vec::<StructMember>();
-                for name in ["x", "y"] {
-                    v.push(StructMember::Field(FieldDecl {
-                        visibility: Visibility::Public,
-                        name: arena.alloc_str(name),
-                        ty: int_type(&arena),
-                        span: DUMMY,
-                    }));
-                }
-                v.into_bump_slice()
-            };
-            items.push(Item::Struct(arena.alloc(StructDecl {
+            let mut fields = arena.vec::<StructMember>();
+            for name in &["x", "y"] {
+                fields.push(StructMember::Field(FieldDecl {
+                    visibility: Visibility::Public,
+                    name: arena.alloc_str(name),
+                    ty: int_ty,
+                    span: DUMMY,
+                }));
+            }
+            items.push(Item::Struct(StructDecl {
                 visibility: Visibility::Public,
                 is_edge: false,
                 name: arena.alloc_str("Point"),
                 generic_params: &[],
-                members: fields,
+                members: fields.into_bump_slice(),
                 span: DUMMY,
-            }).clone()));
+            }));
 
             // fn main() { let p = Point { x = 0, y = 0 }; return }
-            let field_inits = {
-                let mut v = arena.vec::<FieldInit>();
-                v.push(FieldInit { name: arena.alloc_str("x"), value: int_lit(&arena, 0), span: DUMMY });
-                v.push(FieldInit { name: arena.alloc_str("y"), value: int_lit(&arena, 0), span: DUMMY });
-                v.into_bump_slice()
-            };
+            let mut field_inits = arena.vec::<FieldInit>();
+            field_inits.push(FieldInit {
+                name: arena.alloc_str("x"),
+                value: int_lit(&arena, 0),
+                span: DUMMY,
+            });
+            field_inits.push(FieldInit {
+                name: arena.alloc_str("y"),
+                value: int_lit(&arena, 0),
+                span: DUMMY,
+            });
             let point_lit = arena.alloc(Expr {
                 kind: ExprKind::StructLit {
                     path: arena.alloc_slice_clone(&["Point"]),
-                    fields: field_inits,
+                    fields: field_inits.into_bump_slice(),
                 },
                 span: DUMMY,
             });
+
             let let_p = arena.alloc(Stmt {
                 kind: StmtKind::Let {
                     mutable: false,
@@ -663,12 +641,16 @@ fn bench_full_small_program(c: &mut Criterion) {
                 },
                 span: DUMMY,
             });
-            let ret = arena.alloc(Stmt { kind: StmtKind::Return(None), span: DUMMY });
+            let ret = arena.alloc(Stmt {
+                kind: StmtKind::Return(None),
+                span: DUMMY,
+            });
             let main_body = Block {
                 stmts: arena.alloc_slice_copy(&[*let_p, *ret]),
                 span: DUMMY,
             };
-            items.push(Item::Function(arena.alloc(FunctionDecl {
+
+            items.push(Item::Function(FunctionDecl {
                 tier: TierAnnotation::High,
                 attributes: &[],
                 visibility: Visibility::Public,
@@ -680,7 +662,7 @@ fn bench_full_small_program(c: &mut Criterion) {
                 return_type: None,
                 body: main_body,
                 span: DUMMY,
-            }).clone()));
+            }));
 
             let prog = Program {
                 package: Some(package),
