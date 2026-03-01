@@ -110,7 +110,8 @@ enum LogosToken {
     #[regex(r"0b[01][01_]*", parse_binary)]
     IntLit(i64),
 
-    #[regex(r"[0-9][0-9_]*\.[0-9_]*[fF]?", parse_float)]
+#[regex(r"[0-9][0-9_]*\.[0-9_]*[fF]?", parse_float)]
+    #[regex(r"[0-9][0-9_]*\.[0-9_]*[eE][+-]?[0-9][0-9_]*[fF]?", parse_float)]
     #[regex(r"[0-9][0-9_]*[eE][+-]?[0-9][0-9_]*[fF]?", parse_float)]
     FloatLit(f64),
 
