@@ -23,6 +23,10 @@
     a:hover { border-color: #e3b341; color: #e3b341; }
     .icon { font-size: 1.2rem; }
     .desc { font-size: 0.75rem; color: #8b949e; margin-top: 2px; }
+    .hint { margin-top: 24px; padding-top: 16px; border-top: 1px solid #30363d;
+      font-size: 0.75rem; color: #484f58; }
+    code { background: #21262d; padding: 2px 6px; border-radius: 4px;
+      font-family: monospace; color: #8b949e; }
   </style>
 </head>
 <body>
@@ -44,6 +48,10 @@
           <div class="desc">criterion — lexer throughput &amp; keyword lookup</div>
         </div>
       </a>
+    </div>
+    <div class="hint">
+      Trigger bench: add <code>--publish-bench</code> or <code>--publish-all</code> to your commit message,
+      or run the workflow manually with type <code>bench</code> / <code>all</code>.
     </div>
   </div>
 </body>
