@@ -1,5 +1,6 @@
 // src/lib.rs
-//! Ubel Stratum Compiler Library
+#[macro_use]
+extern crate lalrpop_util;
 
 pub mod lexer;
 pub mod error_management;
