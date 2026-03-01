@@ -1,9 +1,7 @@
-//! Error type definitions
+// src/error_management/error_types/mod.rs
 
 pub mod lexical_error;
-// TODO: Future error types
-// pub mod parse_error;
-// pub mod semantic_error;
-// pub mod runtime_error;
+pub mod parse_error;
 
 pub use lexical_error::{LexicalError, StringType};
+pub use parse_error::{ParseContext, ParseError};
