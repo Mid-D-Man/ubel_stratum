@@ -1,13 +1,9 @@
-//! Token types - Separate from lexer logic
-
+// src/lexer/token.rs
 use std::fmt;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum TokenType {
-    // ========================================
-    // Keywords
-    // ========================================
-
+    // ── Keywords ─────────────────────────────────────────────────
     Fn, Let, Mut, Const,
     If, Elif, Else, Match, Where,
     For, In, While, Loop,
@@ -21,99 +17,71 @@ pub enum TokenType {
     True, False, Null, SelfKw,
     Get, Set,
 
-    // Tier annotations
-    TierHigh, TierMid, TierLow,
-
-    // Quantum (future)
-    Qubit, Hadamard, Oracle,
-
-    // ========================================
-    // Literals
-    // ========================================
-
+    // ── Literals ─────────────────────────────────────────────────
     IntLit(i64),
-    FloatLit(f32),       // 3.14f
-    DoubleLit(f64),      // 3.14 (default)
+    FloatLit(f32),
+    DoubleLit(f64),
     StringLit(String),
-    InterpolatedString(Vec<InterpolationPart>), // $"hello {name}"
-    VerbatimString(String),                      // @"C:\path"
+    InterpolatedString(Vec<InterpolationPart>),
+    VerbatimString(String),
     CharLit(char),
 
-    // ========================================
-    // Identifiers
-    // ========================================
-
+    // ── Identifiers ──────────────────────────────────────────────
     Ident(String),
 
-    // ========================================
-    // Operators
-    // ========================================
-
-    // Arithmetic
+    // ── Arithmetic operators ─────────────────────────────────────
     Plus, Minus, Star, Slash, Percent,
 
-    // Bitwise
-    Amp, Pipe, Caret, Tilde,           // & | ^ ~
-    LeftShift, RightShift,             // << >>
+    // ── Bitwise operators ─────────────────────────────────────────
+    Amp, Pipe, Caret, Tilde,
+    LeftShift, RightShift,
 
-    // Comparison
+    // ── Comparison operators ──────────────────────────────────────
     Equal, EqualEqual, BangEqual,
     Less, Greater, LessEqual, GreaterEqual,
 
-    // Logical
+    // ── Logical operators ─────────────────────────────────────────
     Bang, AmpAmp, PipePipe,
 
-    // Assignment
+    // ── Assignment operators ──────────────────────────────────────
     PlusEqual, MinusEqual, StarEqual, SlashEqual, PercentEqual,
-    AmpEqual, PipeEqual, CaretEqual,   // &= |= ^=
-    LeftShiftEqual, RightShiftEqual,   // <<= >>=
+    AmpEqual, PipeEqual, CaretEqual,
+    LeftShiftEqual, RightShiftEqual,
 
-    // Special
-    Question,      // ?
-    QuestionDot,   // ?.
-    FatArrow,      // =>
-    ColonEqual,    // :=
+    // ── Range operators ───────────────────────────────────────────
+    DotDot,         // ..   exclusive range
+    DotDotEqual,    // ..=  inclusive range
+    DotDotDot,      // ...  rest / spread in destructuring
 
-    // ========================================
-    // Delimiters
-    // ========================================
+    // ── Special operators ─────────────────────────────────────────
+    Question,       // ?
+    QuestionDot,    // ?.
+    FatArrow,       // =>
+    ColonEqual,     // :=
+    PipeArrow,      // |>  pipe operator
 
-    LeftParen, RightParen,       // ( )
-    LeftBrace, RightBrace,       // { }
-    LeftBracket, RightBracket,   // [ ]
+    // ── Delimiters ────────────────────────────────────────────────
+    LeftParen, RightParen,
+    LeftBrace, RightBrace,
+    LeftBracket, RightBracket,
 
-    // ========================================
-    // Punctuation
-    // ========================================
-
+    // ── Punctuation ───────────────────────────────────────────────
     Comma, Dot, Colon, Semicolon, At,
 
-    // ========================================
-    // Special
-    // ========================================
-
-    /// Doc comment (/*! ... */ or /** ... */)
+    // ── Comments ──────────────────────────────────────────────────
     DocComment(String),
-
-    /// Regular comment
     Comment(String),
 
-    /// Newline (for tracking only, not in token stream)
+    // ── Special ───────────────────────────────────────────────────
     Newline,
-
-    /// End of file
     Eof,
-
-    /// Error token (lexer continues after error)
     Error(String),
 }
 
-/// String interpolation parts
+/// Parts of an interpolated string `$"..."`.
 #[derive(Debug, Clone, PartialEq)]
 pub enum InterpolationPart {
-    /// Literal text
     Text(String),
-    /// Expression to interpolate: {expr}
     Expr(String),
 }
 
@@ -172,10 +140,6 @@ impl Token {
 impl fmt::Display for Token {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{:?} '{}' @{}:{}",
-               self.kind,
-               self.lexeme,
-               self.span.line,
-               self.span.column
-        )
+               self.kind, self.lexeme, self.span.line, self.span.column)
     }
-}
+        }
