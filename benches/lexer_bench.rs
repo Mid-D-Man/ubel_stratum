@@ -1,4 +1,8 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion, BenchmarkId, Throughput};
+
+criterion_main!(benches);use criterion::{
+    black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput,
+};
+use std::time::Duration;
 use ubel_stratum::lexer::tokenize;
 
 const SMALL_SOURCE: &str = r#"
@@ -50,9 +54,6 @@ summon std.json
 from database summon [User, Session, Repository]
 from middleware summon [auth, logging, rate_limit]
 
-/**
- * User handler - manages user operations
- */
 pub struct UserHandler {
     repo: Repository<User>
 
@@ -60,28 +61,21 @@ pub struct UserHandler {
         return UserHandler { repo: repo }
     }
 
-    /*!
-     * Get user by ID
-     * Returns user or error if not found
-     */
     pub async fn get_user(self, id: int) Task<User>! {
         let user = await self.repo.find_by_id(id)?
         return user
     }
 
     pub async fn create_user(self, data: UserData) Task<User>! {
-        // Validate input
         if data.email.is_empty() {
             fail "Email is required"
         }
-
         let user = User {
             id = 0,
             email = data.email,
             name = data.name,
             created_at = DateTime.now()
         }
-
         let saved = await self.repo.save(user)?
         return saved
     }
@@ -111,62 +105,80 @@ fn process_batch(users: []User) Result! {
 
 fn main() {
     let handler = UserHandler.new(get_repo())
-
     let users = await handler.list_users(50)
     match users {
         Ok(data) => println($"Found {data.len()} users"),
-        Err(e) => println($"Error: {e}")
+        Err(e)   => println($"Error: {e}")
     }
 }
 "#;
 
+// ── keyword lookup bench uses the public helper from keywords module ──────────
+pub mod keywords {
+    use ubel_stratum::lexer::TokenType;
+    use ubel_stratum::lexer::keywords::get_keyword;
+
+    pub fn lookup_mix() {
+        let _ = get_keyword("fn");
+        let _ = get_keyword("let");
+        let _ = get_keyword("async");
+        let _ = get_keyword("struct");
+        let _ = get_keyword("notakeyword");
+        let _ = get_keyword("return");
+        let _ = get_keyword("match");
+        let _ = get_keyword("xyzzy");
+    }
+}
+
 fn lexer_benchmarks(c: &mut Criterion) {
     let mut group = c.benchmark_group("lexer");
 
-    // Small source
+    // Hard caps so no single bench can run the runner out of time.
+    // small: generous — it's fast
+    // medium: 8 s is plenty
+    // large: 10 s max, 50 samples instead of 100
+    group.measurement_time(Duration::from_secs(5));
+    group.sample_size(100);
     group.throughput(Throughput::Bytes(SMALL_SOURCE.len() as u64));
     group.bench_with_input(
         BenchmarkId::from_parameter("small"),
         &SMALL_SOURCE,
-        |b, input| {
-            b.iter(|| tokenize(black_box(input)));
-        },
+        |b, input| b.iter(|| tokenize(black_box(input))),
     );
 
-    // Medium source
+    group.measurement_time(Duration::from_secs(8));
+    group.sample_size(100);
     group.throughput(Throughput::Bytes(MEDIUM_SOURCE.len() as u64));
     group.bench_with_input(
         BenchmarkId::from_parameter("medium"),
         &MEDIUM_SOURCE,
-        |b, input| {
-            b.iter(|| tokenize(black_box(input)));
-        },
+        |b, input| b.iter(|| tokenize(black_box(input))),
     );
 
-    // Large source
+    // Large gets capped: 10 s wall time, 50 samples.
+    // This prevents criterion from estimating "need 45 minutes" and getting killed.
+    group.measurement_time(Duration::from_secs(10));
+    group.sample_size(50);
     group.throughput(Throughput::Bytes(LARGE_SOURCE.len() as u64));
     group.bench_with_input(
         BenchmarkId::from_parameter("large"),
         &LARGE_SOURCE,
-        |b, input| {
-            b.iter(|| tokenize(black_box(input)));
-        },
+        |b, input| b.iter(|| tokenize(black_box(input))),
     );
 
     group.finish();
 }
 
 fn keyword_lookup_bench(c: &mut Criterion) {
-    use ubel_stratum::lexer::keywords;
+    let mut group = c.benchmark_group("keyword_lookup");
+    group.measurement_time(Duration::from_secs(5));
+    group.sample_size(100);
 
-    c.bench_function("keyword_lookup", |b| {
-        b.iter(|| {
-            black_box(keywords::get_keyword("fn"));
-            black_box(keywords::get_keyword("let"));
-            black_box(keywords::get_keyword("async"));
-            black_box(keywords::get_keyword("notakeyword"));
-        });
+    group.bench_function("mixed_8_lookups", |b| {
+        b.iter(|| black_box(keywords::lookup_mix()))
     });
+
+    group.finish();
 }
 
 criterion_group!(benches, lexer_benchmarks, keyword_lookup_bench);
