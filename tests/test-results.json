@@ -1,0 +1,490 @@
+{
+  "build": "2",
+  "branch": "master",
+  "commit": "5f7d052f",
+  "date": "2026-03-01T07:15:03+01:00",
+  "rust_version": "rustc 1.93.1 (01f6ddf75 2026-02-11)",
+  "summary": {
+    "total": 70,
+    "passed": 69,
+    "failed": 1,
+    "ignored": 0,
+    "duration_s": 0.0
+  },
+  "suites": [
+    {
+      "name": "lib (unit tests)",
+      "passed": 19,
+      "failed": 0,
+      "ignored": 0,
+      "duration_s": 0.0,
+      "tests": [
+        {
+          "name": "lexer::tests::test_all_tier_keywords",
+          "status": "passed",
+          "duration_ms": 0,
+          "output": ""
+        },
+        {
+          "name": "lexer::tests::test_binary_literal_value",
+          "status": "passed",
+          "duration_ms": 0,
+          "output": ""
+        },
+        {
+          "name": "lexer::tests::test_compound_operators_no_overlap",
+          "status": "passed",
+          "duration_ms": 0,
+          "output": ""
+        },
+        {
+          "name": "lexer::tests::test_double_without_suffix",
+          "status": "passed",
+          "duration_ms": 0,
+          "output": ""
+        },
+        {
+          "name": "lexer::tests::test_empty_input",
+          "status": "passed",
+          "duration_ms": 0,
+          "output": ""
+        },
+        {
+          "name": "lexer::tests::test_float_suffix_f_gives_float_lit",
+          "status": "passed",
+          "duration_ms": 0,
+          "output": ""
+        },
+        {
+          "name": "lexer::tests::test_hex_literal_value",
+          "status": "passed",
+          "duration_ms": 0,
+          "output": ""
+        },
+        {
+          "name": "lexer::tests::test_multiline_string_interpolation",
+          "status": "passed",
+          "duration_ms": 0,
+          "output": ""
+        },
+        {
+          "name": "lexer::tests::test_ident_not_keyword",
+          "status": "passed",
+          "duration_ms": 0,
+          "output": ""
+        },
+        {
+          "name": "lexer::tests::test_integer_zero",
+          "status": "passed",
+          "duration_ms": 0,
+          "output": ""
+        },
+        {
+          "name": "lexer::tests::test_newlines_stripped",
+          "status": "passed",
+          "duration_ms": 0,
+          "output": ""
+        },
+        {
+          "name": "lexer::tests::test_question_dot_vs_question",
+          "status": "passed",
+          "duration_ms": 0,
+          "output": ""
+        },
+        {
+          "name": "lexer::tests::test_span_line_tracking",
+          "status": "passed",
+          "duration_ms": 0,
+          "output": ""
+        },
+        {
+          "name": "lexer::tests::test_string_interpolation_parts_count",
+          "status": "passed",
+          "duration_ms": 0,
+          "output": ""
+        },
+        {
+          "name": "lexer::tests::test_single_keyword_fn",
+          "status": "passed",
+          "duration_ms": 0,
+          "output": ""
+        },
+        {
+          "name": "lexer::tests::test_simple_fn_declaration_structure",
+          "status": "passed",
+          "duration_ms": 0,
+          "output": ""
+        },
+        {
+          "name": "lexer::tests::test_underscore_ident",
+          "status": "passed",
+          "duration_ms": 0,
+          "output": ""
+        },
+        {
+          "name": "lexer::tests::test_verbatim_string_no_escape",
+          "status": "passed",
+          "duration_ms": 0,
+          "output": ""
+        },
+        {
+          "name": "lexer::tests::test_whitespace_only",
+          "status": "passed",
+          "duration_ms": 0,
+          "output": ""
+        }
+      ]
+    },
+    {
+      "name": "main (unit tests)",
+      "passed": 19,
+      "failed": 0,
+      "ignored": 0,
+      "duration_s": 0.0,
+      "tests": [
+        {
+          "name": "lexer::tests::test_all_tier_keywords",
+          "status": "passed",
+          "duration_ms": 0,
+          "output": ""
+        },
+        {
+          "name": "lexer::tests::test_binary_literal_value",
+          "status": "passed",
+          "duration_ms": 0,
+          "output": ""
+        },
+        {
+          "name": "lexer::tests::test_compound_operators_no_overlap",
+          "status": "passed",
+          "duration_ms": 0,
+          "output": ""
+        },
+        {
+          "name": "lexer::tests::test_double_without_suffix",
+          "status": "passed",
+          "duration_ms": 0,
+          "output": ""
+        },
+        {
+          "name": "lexer::tests::test_empty_input",
+          "status": "passed",
+          "duration_ms": 0,
+          "output": ""
+        },
+        {
+          "name": "lexer::tests::test_float_suffix_f_gives_float_lit",
+          "status": "passed",
+          "duration_ms": 0,
+          "output": ""
+        },
+        {
+          "name": "lexer::tests::test_hex_literal_value",
+          "status": "passed",
+          "duration_ms": 0,
+          "output": ""
+        },
+        {
+          "name": "lexer::tests::test_multiline_string_interpolation",
+          "status": "passed",
+          "duration_ms": 0,
+          "output": ""
+        },
+        {
+          "name": "lexer::tests::test_newlines_stripped",
+          "status": "passed",
+          "duration_ms": 0,
+          "output": ""
+        },
+        {
+          "name": "lexer::tests::test_ident_not_keyword",
+          "status": "passed",
+          "duration_ms": 0,
+          "output": ""
+        },
+        {
+          "name": "lexer::tests::test_integer_zero",
+          "status": "passed",
+          "duration_ms": 0,
+          "output": ""
+        },
+        {
+          "name": "lexer::tests::test_question_dot_vs_question",
+          "status": "passed",
+          "duration_ms": 0,
+          "output": ""
+        },
+        {
+          "name": "lexer::tests::test_single_keyword_fn",
+          "status": "passed",
+          "duration_ms": 0,
+          "output": ""
+        },
+        {
+          "name": "lexer::tests::test_simple_fn_declaration_structure",
+          "status": "passed",
+          "duration_ms": 0,
+          "output": ""
+        },
+        {
+          "name": "lexer::tests::test_span_line_tracking",
+          "status": "passed",
+          "duration_ms": 0,
+          "output": ""
+        },
+        {
+          "name": "lexer::tests::test_underscore_ident",
+          "status": "passed",
+          "duration_ms": 0,
+          "output": ""
+        },
+        {
+          "name": "lexer::tests::test_string_interpolation_parts_count",
+          "status": "passed",
+          "duration_ms": 0,
+          "output": ""
+        },
+        {
+          "name": "lexer::tests::test_verbatim_string_no_escape",
+          "status": "passed",
+          "duration_ms": 0,
+          "output": ""
+        },
+        {
+          "name": "lexer::tests::test_whitespace_only",
+          "status": "passed",
+          "duration_ms": 0,
+          "output": ""
+        }
+      ]
+    },
+    {
+      "name": "basic_tokens_test",
+      "passed": 8,
+      "failed": 1,
+      "ignored": 0,
+      "duration_s": 0.0,
+      "tests": [
+        {
+          "name": "tests::test_booleans_and_null",
+          "status": "passed",
+          "duration_ms": 0,
+          "output": ""
+        },
+        {
+          "name": "tests::test_delimiters",
+          "status": "passed",
+          "duration_ms": 0,
+          "output": ""
+        },
+        {
+          "name": "tests::test_char_literals",
+          "status": "passed",
+          "duration_ms": 0,
+          "output": ""
+        },
+        {
+          "name": "tests::test_float_literals",
+          "status": "failed",
+          "duration_ms": 0,
+          "output": "thread 'tests::test_float_literals' (4250) panicked at tests/basic_tokens_test.rs:112:9:\nassertion failed: matches!(tokens[4].kind, TokenType::DoubleLit(f) if (f - 2.5e-3).abs() <\n    0.0001)\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace"
+        },
+        {
+          "name": "tests::test_identifiers",
+          "status": "passed",
+          "duration_ms": 0,
+          "output": ""
+        },
+        {
+          "name": "tests::test_integer_literals",
+          "status": "passed",
+          "duration_ms": 0,
+          "output": ""
+        },
+        {
+          "name": "tests::test_keywords",
+          "status": "passed",
+          "duration_ms": 0,
+          "output": ""
+        },
+        {
+          "name": "tests::test_operators",
+          "status": "passed",
+          "duration_ms": 0,
+          "output": ""
+        },
+        {
+          "name": "tests::test_simple_strings",
+          "status": "passed",
+          "duration_ms": 0,
+          "output": ""
+        }
+      ]
+    },
+    {
+      "name": "comment_test",
+      "passed": 7,
+      "failed": 0,
+      "ignored": 0,
+      "duration_s": 0.0,
+      "tests": [
+        {
+          "name": "tests::test_comment_in_string_not_treated_as_comment",
+          "status": "passed",
+          "duration_ms": 0,
+          "output": ""
+        },
+        {
+          "name": "tests::test_block_comment",
+          "status": "passed",
+          "duration_ms": 0,
+          "output": ""
+        },
+        {
+          "name": "tests::test_doc_comment_star",
+          "status": "passed",
+          "duration_ms": 0,
+          "output": ""
+        },
+        {
+          "name": "tests::test_line_comment",
+          "status": "passed",
+          "duration_ms": 0,
+          "output": ""
+        },
+        {
+          "name": "tests::test_doc_comment_bang",
+          "status": "passed",
+          "duration_ms": 0,
+          "output": ""
+        },
+        {
+          "name": "tests::test_nested_block_comments",
+          "status": "passed",
+          "duration_ms": 0,
+          "output": ""
+        },
+        {
+          "name": "tests::test_unterminated_block_comment",
+          "status": "passed",
+          "duration_ms": 0,
+          "output": ""
+        }
+      ]
+    },
+    {
+      "name": "error_recovery_test",
+      "passed": 5,
+      "failed": 0,
+      "ignored": 0,
+      "duration_s": 0.0,
+      "tests": [
+        {
+          "name": "tests::test_error_suggestions_present",
+          "status": "passed",
+          "duration_ms": 0,
+          "output": ""
+        },
+        {
+          "name": "tests::test_lexer_continues_after_bad_char",
+          "status": "passed",
+          "duration_ms": 0,
+          "output": ""
+        },
+        {
+          "name": "tests::test_invalid_escape_simple_string",
+          "status": "passed",
+          "duration_ms": 0,
+          "output": ""
+        },
+        {
+          "name": "tests::test_multiple_errors_collected",
+          "status": "passed",
+          "duration_ms": 0,
+          "output": ""
+        },
+        {
+          "name": "tests::test_unexpected_dollar_char",
+          "status": "passed",
+          "duration_ms": 0,
+          "output": ""
+        }
+      ]
+    },
+    {
+      "name": "string_interpolation_test",
+      "passed": 11,
+      "failed": 0,
+      "ignored": 0,
+      "duration_s": 0.0,
+      "tests": [
+        {
+          "name": "tests::test_interpolated_verbatim_string",
+          "status": "passed",
+          "duration_ms": 0,
+          "output": ""
+        },
+        {
+          "name": "tests::test_escape_sequences_in_interpolation",
+          "status": "passed",
+          "duration_ms": 0,
+          "output": ""
+        },
+        {
+          "name": "tests::test_interpolation_with_expression",
+          "status": "passed",
+          "duration_ms": 0,
+          "output": ""
+        },
+        {
+          "name": "tests::test_interpolation_with_method_call",
+          "status": "passed",
+          "duration_ms": 0,
+          "output": ""
+        },
+        {
+          "name": "tests::test_interpolation_with_nested_braces",
+          "status": "passed",
+          "duration_ms": 0,
+          "output": ""
+        },
+        {
+          "name": "tests::test_multiple_interpolations",
+          "status": "passed",
+          "duration_ms": 0,
+          "output": ""
+        },
+        {
+          "name": "tests::test_simple_interpolation",
+          "status": "passed",
+          "duration_ms": 0,
+          "output": ""
+        },
+        {
+          "name": "tests::test_unclosed_interpolation_expr",
+          "status": "passed",
+          "duration_ms": 0,
+          "output": ""
+        },
+        {
+          "name": "tests::test_unterminated_interpolated_string",
+          "status": "passed",
+          "duration_ms": 0,
+          "output": ""
+        },
+        {
+          "name": "tests::test_verbatim_string",
+          "status": "passed",
+          "duration_ms": 0,
+          "output": ""
+        },
+        {
+          "name": "tests::test_verbatim_string_with_doubled_quotes",
+          "status": "passed",
+          "duration_ms": 0,
+          "output": ""
+        }
+      ]
+    }
+  ]
+}
