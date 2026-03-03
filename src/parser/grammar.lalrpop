@@ -30,10 +30,6 @@ use crate::error_management::error_types::{ParseContext, ParseError};
 use crate::lexer::TokenType;
 use crate::parser::helpers::{self, *};
 
-// NOTE: macro_rules! is NOT supported inside .lalrpop files — the LALRPOP
-// code-generator processes this file before rustc does and will reject any
-// macro definitions.  The sp() helper lives in parser/helpers/decl.rs.
-
 grammar<'ast>(arena: &'ast AstArena, errors: &mut ErrorManager);
 
 Comma<T>: Vec<T> = {
@@ -52,61 +48,69 @@ extern {
     type Error    = ParseError;
 
     enum TokenType {
-        "fn"       => TokenType::Fn,
-        "let"      => TokenType::Let,
-        "mut"      => TokenType::Mut,
-        "const"    => TokenType::Const,
-        "if"       => TokenType::If,
-        "elif"     => TokenType::Elif,
-        "else"     => TokenType::Else,
-        "match"    => TokenType::Match,
-        "where"    => TokenType::Where,
-        "for"      => TokenType::For,
-        "in"       => TokenType::In,
-        "while"    => TokenType::While,
-        "loop"     => TokenType::Loop,
-        "break"    => TokenType::Break,
-        "continue" => TokenType::Continue,
-        "return"   => TokenType::Return,
-        "summon"   => TokenType::Summon,
-        "from"     => TokenType::From,
-        "as"       => TokenType::As,
-        "package"  => TokenType::Package,
-        "async"    => TokenType::Async,
-        "await"    => TokenType::Await,
-        "Task"     => TokenType::Task,
-        "try"      => TokenType::Try,
-        "catch"    => TokenType::Catch,
-        "fail"     => TokenType::Fail,
-        "struct"   => TokenType::Struct,
-        "enum"     => TokenType::Enum,
-        "trait"    => TokenType::Trait,
-        "impl"     => TokenType::Impl,
-        "pub"      => TokenType::Pub,
-        "edge"     => TokenType::Edge,
-        "unsafe"   => TokenType::Unsafe,
-        "with"     => TokenType::With,
-        "defer"    => TokenType::Defer,
-        "and"      => TokenType::And,
-        "or"       => TokenType::Or,
-        "not"      => TokenType::Not,
-        "true"     => TokenType::True,
-        "false"    => TokenType::False,
-        "null"     => TokenType::Null,
-        "self"     => TokenType::SelfKw,
-        "get"      => TokenType::Get,
-        "set"      => TokenType::Set,
-        "extend"   => TokenType::Extend,
-        "type"     => TokenType::TypeKw,
-        "extract"  => TokenType::Extract,
-        "using"    => TokenType::Using,
-        "lifetime" => TokenType::Lifetime,
-        "tier"     => TokenType::Tier,
-        "high"     => TokenType::High,
-        "mid"      => TokenType::Mid,
-        "low"      => TokenType::Low,
-        "arena"    => TokenType::Arena,
-        "pool"     => TokenType::Pool,
+        "fn"         => TokenType::Fn,
+        "let"        => TokenType::Let,
+        "mut"        => TokenType::Mut,
+        "const"      => TokenType::Const,
+        "if"         => TokenType::If,
+        "elif"       => TokenType::Elif,
+        "else"       => TokenType::Else,
+        "match"      => TokenType::Match,
+        "where"      => TokenType::Where,
+        "for"        => TokenType::For,
+        "in"         => TokenType::In,
+        "while"      => TokenType::While,
+        "loop"       => TokenType::Loop,
+        "break"      => TokenType::Break,
+        "continue"   => TokenType::Continue,
+        "return"     => TokenType::Return,
+        "summon"     => TokenType::Summon,
+        "from"       => TokenType::From,
+        "as"         => TokenType::As,
+        "package"    => TokenType::Package,
+        "async"      => TokenType::Async,
+        "await"      => TokenType::Await,
+        "Task"       => TokenType::Task,
+        "try"        => TokenType::Try,
+        "catch"      => TokenType::Catch,
+        "fail"       => TokenType::Fail,
+        "struct"     => TokenType::Struct,
+        "enum"       => TokenType::Enum,
+        "trait"      => TokenType::Trait,
+        "impl"       => TokenType::Impl,
+        "pub"        => TokenType::Pub,
+        "edge"       => TokenType::Edge,
+        "unsafe"     => TokenType::Unsafe,
+        "with"       => TokenType::With,
+        "defer"      => TokenType::Defer,
+        "and"        => TokenType::And,
+        "or"         => TokenType::Or,
+        "not"        => TokenType::Not,
+        "true"       => TokenType::True,
+        "false"      => TokenType::False,
+        "null"       => TokenType::Null,
+        "self"       => TokenType::SelfKw,
+        "get"        => TokenType::Get,
+        "set"        => TokenType::Set,
+        "extend"     => TokenType::Extend,
+        "type"       => TokenType::TypeKw,
+        "extract"    => TokenType::Extract,
+        "using"      => TokenType::Using,
+        "lifetime"   => TokenType::Lifetime,
+        "tier"       => TokenType::Tier,
+        "high"       => TokenType::High,
+        "mid"        => TokenType::Mid,
+        "low"        => TokenType::Low,
+        "arena"      => TokenType::Arena,
+        "pool"       => TokenType::Pool,
+
+        // Built-in collection type keywords
+        "List"       => TokenType::KwList,
+        "Dictionary" => TokenType::KwDictionary,
+        "Set"        => TokenType::KwSet,
+        "Queue"      => TokenType::KwQueue,
+        "Stack"      => TokenType::KwStack,
+
         "+"   => TokenType::Plus,
         "-"   => TokenType::Minus,
         "*"   => TokenType::Star,
@@ -676,7 +680,7 @@ TypeBase: &'ast crate::ast::types::Type<'ast> = {
         named_type(arena, path, args, sp(lo, hi))
     },
 
-    // Collections
+    // ── Built-in collection types (now matched by keyword tokens) ──
     <lo:@L> "List" "<" <t:Type> ">" <hi:@R>
         => list_type(arena, Some(t), sp(lo, hi)),
     <lo:@L> "List" <hi:@R>
@@ -1275,26 +1279,20 @@ CastExprNoBlock: &'ast crate::ast::expressions::Expr<'ast> = {
 // ── Postfix ───────────────────────────────────────────────────
 
 PostfixExpr: &'ast crate::ast::expressions::Expr<'ast> = {
-    // call
     <lo:@L> <base:PostfixExpr> "(" <args:Comma<CallArg>> ")" <hi:@R> => {
         let args = clone_slice(arena, args);
         call_expr(arena, base, args, sp(lo, hi))
     },
-    // index
     <lo:@L> <base:PostfixExpr> "[" <idx:Expr> "]" <hi:@R>
         => index_expr(arena, base, idx, sp(lo, hi)),
-    // ?. field
     <lo:@L> <base:PostfixExpr> "?." <field:Ident> <hi:@R>
         => opt_chain_field(arena, base, intern(arena, field), sp(lo, hi)),
-    // ?. method call
     <lo:@L> <base:PostfixExpr> "?." <name:Ident> "(" <args:Comma<CallArg>> ")" <hi:@R> => {
         let args = clone_slice(arena, args);
         opt_chain_method(arena, base, intern(arena, name), args, sp(lo, hi))
     },
-    // . field
     <lo:@L> <base:PostfixExpr> "." <field:Ident> <hi:@R>
         => field_expr(arena, base, intern(arena, field), sp(lo, hi)),
-    // ?
     <lo:@L> <base:PostfixExpr> "?" <hi:@R>
         => try_expr(arena, base, sp(lo, hi)),
     <e:PrimaryExpr> => e,
@@ -1350,46 +1348,36 @@ PrimaryExpr: &'ast crate::ast::expressions::Expr<'ast> = {
     <lo:@L> "false"       <hi:@R> => lit_expr(arena, Literal::Bool(false), sp(lo, hi)),
     <lo:@L> "null"        <hi:@R> => null_expr(arena, sp(lo, hi)),
     <lo:@L> "self"        <hi:@R> => self_expr(arena, sp(lo, hi)),
-    // Struct literal: Name { field = val }
     <lo:@L> <path:QualPath> "{" <fields:Comma<FieldInitExpr>> "}" <hi:@R>
         => struct_lit_expr(arena, path, clone_slice(arena, fields), sp(lo, hi)),
-    // Anon object: { field = val }
     <lo:@L> "{" <fields:CommaPlus<ObjectFieldExpr>> "}" <hi:@R>
         => anon_object_expr(arena, clone_slice(arena, fields), sp(lo, hi)),
-    // Array: [e1, e2]
     <lo:@L> "[" <elems:Comma<Expr>> "]" <hi:@R> => {
         let ptrs: Vec<&'ast crate::ast::expressions::Expr<'ast>> = elems;
         let ptrs = clone_slice(arena, ptrs);
         array_expr(arena, ptrs, sp(lo, hi))
     },
-    // Tuple: (a, b, ...)
     <lo:@L> "(" <first:Expr> "," <rest:CommaPlus<Expr>> ")" <hi:@R> => {
         let mut all = vec![first];
         all.extend(rest);
         let all = clone_slice(arena, all);
         tuple_expr(arena, all, sp(lo, hi))
     },
-    // Paren
     "(" <e:Expr> ")" => e,
-    // Lambda: fn(params) body
     <lo:@L> "fn" "(" <params:Comma<LambdaParam>> ")" <body:LambdaBody> <hi:@R> => {
         let params = clone_slice(arena, params);
         lambda_expr(arena, Lambda { params, body, span: sp(lo, hi) }, sp(lo, hi))
     },
-    // Block expr
     <lo:@L> <b:Block> <hi:@R>
         => block_expr(arena, b, sp(lo, hi)),
-    // If expr
     <lo:@L> <if_node:IfExpr> <hi:@R>
         => if_expr(arena, if_node, sp(lo, hi)),
-    // Match expr
     <lo:@L> "match" <scrutinee:ExprNoBlock> "{" <arms:MatchArm*> "}" <hi:@R> => {
         use crate::ast::expressions::MatchExpr;
         let arms = clone_slice(arena, arms);
         let node = MatchExpr { scrutinee, arms, span: sp(lo, hi) };
         match_expr_node(arena, node, sp(lo, hi))
     },
-    // Bare ident
     <lo:@L> <name:Ident> <hi:@R>
         => ident_expr(arena, intern(arena, name), sp(lo, hi)),
 };
