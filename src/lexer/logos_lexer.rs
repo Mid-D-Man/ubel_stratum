@@ -54,12 +54,29 @@ enum LogosToken {
     #[token("get")]      Get,
     #[token("set")]      Set,
 
-    // ── Collection type name keywords ─────────────────────────────
+    // ── Declaration / statement keywords ─────────────────────────
+    #[token("extend")]   Extend,
+    #[token("type")]     TypeKw,
+    #[token("extract")]  Extract,
+    #[token("using")]    Using,
+    #[token("lifetime")] Lifetime,
+    #[token("tier")]     Tier,
+    #[token("high")]     High,
+    #[token("mid")]      Mid,
+    #[token("low")]      Low,
+    #[token("arena")]    Arena,
+    #[token("pool")]     Pool,
+
+    // ── Built-in collection type keywords ─────────────────────────
     #[token("List")]       KwList,
     #[token("Dictionary")] KwDictionary,
     #[token("Set")]        KwSet,
     #[token("Queue")]      KwQueue,
     #[token("Stack")]      KwStack,
+
+    // ── Wildcard / infer: must appear BEFORE the Ident regex so
+    //    a bare `_` is tokenised as Underscore, not Ident("_").
+    #[token("_")] Underscore,
 
     // ── Operators — ORDER MATTERS: longer tokens first ────────────
     #[token("<<=")] LeftShiftEqual,
@@ -134,6 +151,8 @@ enum LogosToken {
     #[regex(r"'([^'\\]|\\['\\nrt])'", parse_char_literal)]
     CharLit(char),
 
+    // Ident comes AFTER the bare `_` token so `_` alone is Underscore.
+    // `_foo`, `__bar` etc. still match here because they are longer.
     #[regex(r"[a-zA-Z_][a-zA-Z0-9_]*")]
     Ident,
 
@@ -382,14 +401,23 @@ impl<'a> LogosLexer<'a> {
             LogosToken::SelfKw    => TokenType::SelfKw,
             LogosToken::Get       => TokenType::Get,
             LogosToken::Set       => TokenType::Set,
-
-            // Collection type keywords
+            LogosToken::Extend    => TokenType::Extend,
+            LogosToken::TypeKw    => TokenType::TypeKw,
+            LogosToken::Extract   => TokenType::Extract,
+            LogosToken::Using     => TokenType::Using,
+            LogosToken::Lifetime  => TokenType::Lifetime,
+            LogosToken::Tier      => TokenType::Tier,
+            LogosToken::High      => TokenType::High,
+            LogosToken::Mid       => TokenType::Mid,
+            LogosToken::Low       => TokenType::Low,
+            LogosToken::Arena     => TokenType::Arena,
+            LogosToken::Pool      => TokenType::Pool,
             LogosToken::KwList       => TokenType::KwList,
             LogosToken::KwDictionary => TokenType::KwDictionary,
             LogosToken::KwSet        => TokenType::KwSet,
             LogosToken::KwQueue      => TokenType::KwQueue,
             LogosToken::KwStack      => TokenType::KwStack,
-
+            LogosToken::Underscore   => TokenType::Underscore,
             LogosToken::Plus          => TokenType::Plus,
             LogosToken::Minus         => TokenType::Minus,
             LogosToken::Star          => TokenType::Star,
@@ -429,7 +457,6 @@ impl<'a> LogosLexer<'a> {
             LogosToken::DotDot        => TokenType::DotDot,
             LogosToken::DotDotEqual   => TokenType::DotDotEqual,
             LogosToken::DotDotDot     => TokenType::DotDotDot,
-
             LogosToken::LeftParen    => TokenType::LeftParen,
             LogosToken::RightParen   => TokenType::RightParen,
             LogosToken::LeftBrace    => TokenType::LeftBrace,
@@ -441,7 +468,6 @@ impl<'a> LogosLexer<'a> {
             LogosToken::Colon        => TokenType::Colon,
             LogosToken::Semicolon    => TokenType::Semicolon,
             LogosToken::At           => TokenType::At,
-
             LogosToken::IntLit(n)    => TokenType::IntLit(n),
             LogosToken::FloatLit(f)  => {
                 if lexeme.ends_with('f') || lexeme.ends_with('F') {
@@ -456,7 +482,6 @@ impl<'a> LogosLexer<'a> {
                 keywords::get_keyword(lexeme)
                     .unwrap_or_else(|| TokenType::Ident(lexeme.to_string()))
             }
-
             _ => TokenType::Error(format!("Unhandled token: {:?}", logos_token)),
         }
     }
@@ -484,4 +509,4 @@ impl<'a> LogosLexer<'a> {
             self.position += ch.len_utf8();
         }
     }
-    }
+}
