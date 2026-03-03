@@ -104,6 +104,8 @@ extern {
         "low"        => TokenType::Low,
         "arena"      => TokenType::Arena,
         "pool"       => TokenType::Pool,
+        "gc"         => TokenType::Gc,
+        "heap"       => TokenType::Heap,
         "List"       => TokenType::KwList,
         "Dictionary" => TokenType::KwDictionary,
         "Set"        => TokenType::KwSet,
