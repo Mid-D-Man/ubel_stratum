@@ -66,6 +66,8 @@ enum LogosToken {
     #[token("low")]      Low,
     #[token("arena")]    Arena,
     #[token("pool")]     Pool,
+    #[token("gc")]       Gc,
+    #[token("heap")]     Heap,
 
     // ── Built-in collection type keywords ─────────────────────────
     #[token("List")]       KwList,
@@ -152,7 +154,6 @@ enum LogosToken {
     CharLit(char),
 
     // Ident comes AFTER the bare `_` token so `_` alone is Underscore.
-    // `_foo`, `__bar` etc. still match here because they are longer.
     #[regex(r"[a-zA-Z_][a-zA-Z0-9_]*")]
     Ident,
 
@@ -412,6 +413,8 @@ impl<'a> LogosLexer<'a> {
             LogosToken::Low       => TokenType::Low,
             LogosToken::Arena     => TokenType::Arena,
             LogosToken::Pool      => TokenType::Pool,
+            LogosToken::Gc        => TokenType::Gc,
+            LogosToken::Heap      => TokenType::Heap,
             LogosToken::KwList       => TokenType::KwList,
             LogosToken::KwDictionary => TokenType::KwDictionary,
             LogosToken::KwSet        => TokenType::KwSet,
