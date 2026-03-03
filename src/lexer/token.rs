@@ -1,4 +1,5 @@
 // src/lexer/token.rs
+
 use std::fmt;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -18,24 +19,27 @@ pub enum TokenType {
     Get, Set,
 
     // ── Contextual / declaration keywords ────────────────────────
-    /// `extend Type { ... }`
     Extend,
-    /// `type Alias = ...`
     TypeKw,
-    /// `extract (a, b) = tuple`
     Extract,
-    /// `using let x = expr { ... }`
     Using,
-    /// `[lifetime L]` parameter declarations
     Lifetime,
-    /// `@tier(...)` attribute name
     Tier,
-    /// tier values
     High, Mid, Low,
-    /// `with arena(...)`
     Arena,
-    /// `with pool<T>(...)`
     Pool,
+
+    // ── Built-in collection type keywords ────────────────────────
+    /// `List<T>` — the canonical dynamic-array type name
+    KwList,
+    /// `Dictionary<K, V>` — the canonical hash-map type name
+    KwDictionary,
+    /// `Set<T>` — the canonical hash-set type name
+    KwSet,
+    /// `Queue<T>`
+    KwQueue,
+    /// `Stack<T>`
+    KwStack,
 
     // ── Literals ─────────────────────────────────────────────────
     IntLit(i64),
@@ -69,16 +73,16 @@ pub enum TokenType {
     LeftShiftEqual, RightShiftEqual,
 
     // ── Range / spread ────────────────────────────────────────────
-    DotDot,       // ..
-    DotDotEqual,  // ..=
-    DotDotDot,    // ...
+    DotDot,
+    DotDotEqual,
+    DotDotDot,
 
     // ── Special operators ─────────────────────────────────────────
-    Question,     // ?
-    QuestionDot,  // ?.
-    FatArrow,     // =>
-    ColonEqual,   // :=
-    PipeArrow,    // |>
+    Question,
+    QuestionDot,
+    FatArrow,
+    ColonEqual,
+    PipeArrow,
 
     // ── Delimiters ────────────────────────────────────────────────
     LeftParen, RightParen,
@@ -156,6 +160,11 @@ impl fmt::Display for TokenType {
             TokenType::Low       => write!(f, "low"),
             TokenType::Arena     => write!(f, "arena"),
             TokenType::Pool      => write!(f, "pool"),
+            TokenType::KwList        => write!(f, "List"),
+            TokenType::KwDictionary  => write!(f, "Dictionary"),
+            TokenType::KwSet         => write!(f, "Set"),
+            TokenType::KwQueue       => write!(f, "Queue"),
+            TokenType::KwStack       => write!(f, "Stack"),
             TokenType::IntLit(n)     => write!(f, "{}", n),
             TokenType::FloatLit(v)   => write!(f, "{}f", v),
             TokenType::DoubleLit(v)  => write!(f, "{}", v),
@@ -251,8 +260,6 @@ impl Span {
             column: self.column,
         }
     }
-    /// A synthetic zero-width span at a byte offset — used when line/col
-    /// info is not yet resolved (parser phase fills in start/end only).
     pub fn at(offset: usize) -> Self {
         Span { start: offset, end: offset, line: 0, column: 0 }
     }
@@ -281,4 +288,4 @@ impl fmt::Display for Token {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{} @{}:{}", self.kind, self.span.line, self.span.column)
     }
-            }
+                }
