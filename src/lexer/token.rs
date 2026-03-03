@@ -30,16 +30,14 @@ pub enum TokenType {
     Pool,
 
     // ── Built-in collection type keywords ────────────────────────
-    /// `List<T>` — the canonical dynamic-array type name
     KwList,
-    /// `Dictionary<K, V>` — the canonical hash-map type name
     KwDictionary,
-    /// `Set<T>` — the canonical hash-set type name
     KwSet,
-    /// `Queue<T>`
     KwQueue,
-    /// `Stack<T>`
     KwStack,
+
+    // ── Wildcard / infer placeholder ─────────────────────────────
+    Underscore,
 
     // ── Literals ─────────────────────────────────────────────────
     IntLit(i64),
@@ -165,6 +163,7 @@ impl fmt::Display for TokenType {
             TokenType::KwSet         => write!(f, "Set"),
             TokenType::KwQueue       => write!(f, "Queue"),
             TokenType::KwStack       => write!(f, "Stack"),
+            TokenType::Underscore    => write!(f, "_"),
             TokenType::IntLit(n)     => write!(f, "{}", n),
             TokenType::FloatLit(v)   => write!(f, "{}f", v),
             TokenType::DoubleLit(v)  => write!(f, "{}", v),
@@ -288,4 +287,4 @@ impl fmt::Display for Token {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{} @{}:{}", self.kind, self.span.line, self.span.column)
     }
-                }
+            }
