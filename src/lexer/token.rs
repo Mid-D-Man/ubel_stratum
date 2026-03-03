@@ -28,6 +28,8 @@ pub enum TokenType {
     High, Mid, Low,
     Arena,
     Pool,
+    Gc,
+    Heap,
 
     // ── Built-in collection type keywords ────────────────────────
     KwList,
@@ -158,6 +160,8 @@ impl fmt::Display for TokenType {
             TokenType::Low       => write!(f, "low"),
             TokenType::Arena     => write!(f, "arena"),
             TokenType::Pool      => write!(f, "pool"),
+            TokenType::Gc        => write!(f, "gc"),
+            TokenType::Heap      => write!(f, "heap"),
             TokenType::KwList        => write!(f, "List"),
             TokenType::KwDictionary  => write!(f, "Dictionary"),
             TokenType::KwSet         => write!(f, "Set"),
@@ -287,4 +291,4 @@ impl fmt::Display for Token {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{} @{}:{}", self.kind, self.span.line, self.span.column)
     }
-            }
+                }
