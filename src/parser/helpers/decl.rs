@@ -10,6 +10,16 @@ use crate::ast::expressions::Expr;
 use crate::ast::statements::Block;
 use crate::ast::types::Type;
 
+// ── Span shorthand ────────────────────────────────────────────────
+
+/// Construct a zero-line/column Span from byte offsets.
+/// Used by grammar actions in place of the `sp!(lo, hi)` macro,
+/// which LALRPOP cannot process (it pre-dates rustc).
+#[inline]
+pub fn sp(lo: usize, hi: usize) -> Span {
+    Span::new(lo, hi, 0, 0)
+}
+
 // ── Slices ────────────────────────────────────────────────────────
 
 /// Intern a heap `String` into the arena and return `&'ast str`.
@@ -193,4 +203,4 @@ pub fn build_extend<'ast>(
     span:        Span,
 ) -> ExtendDecl<'ast> {
     ExtendDecl { target_type, methods, span }
-  }
+    }
