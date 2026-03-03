@@ -30,9 +30,9 @@ use crate::error_management::error_types::{ParseContext, ParseError};
 use crate::lexer::TokenType;
 use crate::parser::helpers::{self, *};
 
-macro_rules! sp {
-    ($lo:expr, $hi:expr) => { Span::new($lo, $hi, 0, 0) };
-}
+// NOTE: macro_rules! is NOT supported inside .lalrpop files — the LALRPOP
+// code-generator processes this file before rustc does and will reject any
+// macro definitions.  The sp() helper lives in parser/helpers/decl.rs.
 
 grammar<'ast>(arena: &'ast AstArena, errors: &mut ErrorManager);
 
@@ -181,7 +181,7 @@ pub Program: Program<'ast> = {
     => {
         let imports = arena.alloc_slice_clone(&imports);
         let items   = arena.alloc_slice_clone(&items);
-        Program { package: pkg, imports, items, span: sp!(lo, hi) }
+        Program { package: pkg, imports, items, span: sp(lo, hi) }
     }
 };
 
@@ -191,16 +191,16 @@ pub Program: Program<'ast> = {
 
 PackageDecl: PackageDecl<'ast> = {
     <lo:@L> "package" <path:QualPath> <hi:@R>
-        => PackageDecl { path, span: sp!(lo, hi) },
+        => PackageDecl { path, span: sp(lo, hi) },
 };
 
 Import: Import<'ast> = {
     <lo:@L> "summon" <path:QualPath> <alias:("as" <Ident>)?> <hi:@R> => {
         let alias = alias.map(|s| arena.alloc_str(&s));
-        Import { kind: ImportKind::Summon { path, alias }, span: sp!(lo, hi) }
+        Import { kind: ImportKind::Summon { path, alias }, span: sp(lo, hi) }
     },
     <lo:@L> "from" <module:QualPath> "summon" <items:ImportItems> <hi:@R> => {
-        Import { kind: ImportKind::FromSummon { module_path: module, items }, span: sp!(lo, hi) }
+        Import { kind: ImportKind::FromSummon { module_path: module, items }, span: sp(lo, hi) }
     },
 };
 
@@ -266,7 +266,7 @@ FunctionDecl: crate::ast::declarations::FunctionDecl<'ast> = {
             tier, attributes: &[], visibility: vis,
             is_async: is_async.is_some(), name,
             lifetime_params, generic_params, params,
-            return_type: ret, body, span: sp!(lo, hi),
+            return_type: ret, body, span: sp(lo, hi),
         }.build()
     }
 };
@@ -284,31 +284,31 @@ Visibility: Visibility = {
 
 Param: Param<'ast> = {
     <lo:@L> "self" <hi:@R>
-        => Param { kind: ParamKind::SelfVal, span: sp!(lo, hi) },
+        => Param { kind: ParamKind::SelfVal, span: sp(lo, hi) },
     <lo:@L> "mut" "self" <hi:@R>
-        => Param { kind: ParamKind::SelfMut, span: sp!(lo, hi) },
+        => Param { kind: ParamKind::SelfMut, span: sp(lo, hi) },
     <lo:@L> "&" "self" <hi:@R>
-        => Param { kind: ParamKind::SelfRef, span: sp!(lo, hi) },
+        => Param { kind: ParamKind::SelfRef, span: sp(lo, hi) },
     <lo:@L> "&" "mut" "self" <hi:@R>
-        => Param { kind: ParamKind::SelfRefMut, span: sp!(lo, hi) },
+        => Param { kind: ParamKind::SelfRefMut, span: sp(lo, hi) },
     <lo:@L>
     <mutable:"mut"?>
     <name:Ident>
     <ty:(":" <Type>)?>
     <default:("=" <Expr>)?>
     <hi:@R>
-    => named_param(mutable.is_some(), intern(arena, name), ty, default, sp!(lo, hi)),
+    => named_param(mutable.is_some(), intern(arena, name), ty, default, sp(lo, hi)),
 };
 
 ReturnSpec: ReturnType<'ast> = {
     <lo:@L> "Task" "<" <inner:Type> ">" "!" <hi:@R>
-        => ret_type(task_type(arena, Some(inner), sp!(lo, hi)), true),
+        => ret_type(task_type(arena, Some(inner), sp(lo, hi)), true),
     <lo:@L> "Task" "<" <inner:Type> ">" <hi:@R>
-        => ret_type(task_type(arena, Some(inner), sp!(lo, hi)), false),
+        => ret_type(task_type(arena, Some(inner), sp(lo, hi)), false),
     <lo:@L> "Task" "!" <hi:@R>
-        => ret_type(task_type(arena, None, sp!(lo, hi)), true),
+        => ret_type(task_type(arena, None, sp(lo, hi)), true),
     <lo:@L> "Task" <hi:@R>
-        => ret_type(task_type(arena, None, sp!(lo, hi)), false),
+        => ret_type(task_type(arena, None, sp(lo, hi)), false),
     <t:Type> "!" => ret_type(t, true),
     <t:Type>     => ret_type(t, false),
 };
@@ -330,7 +330,7 @@ StructDecl: crate::ast::declarations::StructDecl<'ast> = {
         let name    = intern(arena, name);
         let gp      = gp.unwrap_or(&[]);
         let members = clone_slice(arena, members);
-        build_struct(vis, is_edge.is_some(), name, gp, members, sp!(lo, hi))
+        build_struct(vis, is_edge.is_some(), name, gp, members, sp(lo, hi))
     }
 };
 
@@ -351,14 +351,14 @@ StructMember: StructMember<'ast> = {
         let name   = intern(arena, name);
         let gp     = gp.unwrap_or(&[]);
         let params = clone_slice(arena, params);
-        StructMember::Method(build_method(tier, vis, is_async.is_some(), name, gp, params, ret, body, sp!(lo, hi)))
+        StructMember::Method(build_method(tier, vis, is_async.is_some(), name, gp, params, ret, body, sp(lo, hi)))
     },
     <lo:@L> <vis:Visibility> <name:Ident> ":" <ty:Type> <hi:@R> => {
         StructMember::Field(FieldDecl {
             visibility: vis,
             name: intern(arena, name),
             ty,
-            span: sp!(lo, hi),
+            span: sp(lo, hi),
         })
     },
 };
@@ -379,7 +379,7 @@ EnumDecl: crate::ast::declarations::EnumDecl<'ast> = {
         let name     = intern(arena, name);
         let gp       = gp.unwrap_or(&[]);
         let variants = clone_slice(arena, variants);
-        build_enum(vis, name, gp, variants, sp!(lo, hi))
+        build_enum(vis, name, gp, variants, sp(lo, hi))
     }
 };
 
@@ -387,14 +387,14 @@ EnumVariant: EnumVariant<'ast> = {
     <lo:@L> <name:Ident> "=" <disc:Expr> <hi:@R> => EnumVariant {
         name: intern(arena, name),
         payload: EnumVariantPayload::Discriminant(disc),
-        span: sp!(lo, hi),
+        span: sp(lo, hi),
     },
     <lo:@L> <name:Ident> "(" <types:CommaPlus<Type>> ")" <hi:@R> => {
         let types = clone_slice(arena, types);
         EnumVariant {
             name: intern(arena, name),
             payload: EnumVariantPayload::Tuple(types),
-            span: sp!(lo, hi),
+            span: sp(lo, hi),
         }
     },
     <lo:@L> <name:Ident> "{" <fields:Comma<StructFieldDecl>> "}" <hi:@R> => {
@@ -402,13 +402,13 @@ EnumVariant: EnumVariant<'ast> = {
         EnumVariant {
             name: intern(arena, name),
             payload: EnumVariantPayload::Struct(fields),
-            span: sp!(lo, hi),
+            span: sp(lo, hi),
         }
     },
     <lo:@L> <name:Ident> <hi:@R> => EnumVariant {
         name: intern(arena, name),
         payload: EnumVariantPayload::None,
-        span: sp!(lo, hi),
+        span: sp(lo, hi),
     },
 };
 
@@ -417,7 +417,7 @@ StructFieldDecl: FieldDecl<'ast> = {
         visibility: vis,
         name: intern(arena, name),
         ty,
-        span: sp!(lo, hi),
+        span: sp(lo, hi),
     }
 };
 
@@ -437,7 +437,7 @@ TraitDecl: crate::ast::declarations::TraitDecl<'ast> = {
         let name  = intern(arena, name);
         let gp    = gp.unwrap_or(&[]);
         let items = clone_slice(arena, items);
-        build_trait(vis, name, gp, items, sp!(lo, hi))
+        build_trait(vis, name, gp, items, sp(lo, hi))
     }
 };
 
@@ -458,7 +458,7 @@ TraitItem: TraitItem<'ast> = {
         let params = clone_slice(arena, params);
         TraitItem::DefaultMethod(build_method(
             TierAnnotation::High, vis, is_async.is_some(),
-            name, gp, params, ret, body, sp!(lo, hi),
+            name, gp, params, ret, body, sp(lo, hi),
         ))
     },
     <lo:@L>
@@ -473,11 +473,11 @@ TraitItem: TraitItem<'ast> = {
         let gp     = gp.unwrap_or(&[]);
         let params = clone_slice(arena, params);
         TraitItem::MethodSig(MethodSig {
-            name, generic_params: gp, params, return_type: ret, span: sp!(lo, hi),
+            name, generic_params: gp, params, return_type: ret, span: sp(lo, hi),
         })
     },
     <lo:@L> "type" <name:Ident> <hi:@R>
-        => TraitItem::AssociatedType { name: intern(arena, name), span: sp!(lo, hi) },
+        => TraitItem::AssociatedType { name: intern(arena, name), span: sp(lo, hi) },
 };
 
 // ═══════════════════════════════════════════════════════════════
@@ -493,7 +493,7 @@ ImplBlock: crate::ast::declarations::ImplBlock<'ast> = {
     <hi:@R>
     => {
         let methods = clone_slice(arena, methods);
-        build_impl(trait_path, target, methods, sp!(lo, hi))
+        build_impl(trait_path, target, methods, sp(lo, hi))
     }
 };
 
@@ -514,7 +514,7 @@ MethodDecl: MethodDecl<'ast> = {
         let name   = intern(arena, name);
         let gp     = gp.unwrap_or(&[]);
         let params = clone_slice(arena, params);
-        build_method(tier, vis, is_async.is_some(), name, gp, params, ret, body, sp!(lo, hi))
+        build_method(tier, vis, is_async.is_some(), name, gp, params, ret, body, sp(lo, hi))
     }
 };
 
@@ -530,7 +530,7 @@ ExtendDecl: crate::ast::declarations::ExtendDecl<'ast> = {
     <hi:@R>
     => {
         let methods = clone_slice(arena, methods);
-        build_extend(target, methods, sp!(lo, hi))
+        build_extend(target, methods, sp(lo, hi))
     }
 };
 
@@ -546,7 +546,7 @@ ConstDecl: crate::ast::declarations::ConstDecl<'ast> = {
     "="
     <value:Expr>
     <hi:@R>
-    => build_const(intern(arena, name), ty, value, sp!(lo, hi))
+    => build_const(intern(arena, name), ty, value, sp(lo, hi))
 };
 
 TypeAliasDecl: crate::ast::declarations::TypeAlias<'ast> = {
@@ -559,7 +559,7 @@ TypeAliasDecl: crate::ast::declarations::TypeAlias<'ast> = {
     <hi:@R>
     => {
         let gp = gp.unwrap_or(&[]);
-        build_type_alias(intern(arena, name), gp, ty, sp!(lo, hi))
+        build_type_alias(intern(arena, name), gp, ty, sp(lo, hi))
     }
 };
 
@@ -581,7 +581,7 @@ LifetimeParam: LifetimeParam<'ast> = {
     => LifetimeParam {
         name: intern(arena, name),
         constraint,
-        span: sp!(lo, hi),
+        span: sp(lo, hi),
     }
 };
 
@@ -590,7 +590,7 @@ LifetimeConstraint: LifetimeConstraint<'ast> = {
     => LifetimeConstraint {
         longer:  intern(arena, longer),
         shorter: intern(arena, shorter),
-        span:    sp!(lo, hi),
+        span:    sp(lo, hi),
     }
 };
 
@@ -606,7 +606,7 @@ GenericParam: GenericParam<'ast> = {
     <hi:@R>
     => {
         let bounds = bounds.unwrap_or_default();
-        generic_param(arena, intern(arena, name), bounds, sp!(lo, hi))
+        generic_param(arena, intern(arena, name), bounds, sp(lo, hi))
     }
 };
 
@@ -624,38 +624,38 @@ GenericBounds: Vec<&'ast str> = {
 
 pub Type: &'ast crate::ast::types::Type<'ast> = {
     <lo:@L> <inner:TypeBase> "?" <hi:@R>
-        => optional_type(arena, inner, sp!(lo, hi)),
+        => optional_type(arena, inner, sp(lo, hi)),
     <lo:@L> <inner:TypeBase> "!" <hi:@R>
-        => fallible_type(arena, inner, sp!(lo, hi)),
+        => fallible_type(arena, inner, sp(lo, hi)),
     <t:TypeBase> => t,
 };
 
 TypeBase: &'ast crate::ast::types::Type<'ast> = {
     <lo:@L> <name:Ident> <hi:@R> => {
         match name.as_str() {
-            "int"    => prim_type(arena, TypeKind::Int,    sp!(lo, hi)),
-            "uint"   => prim_type(arena, TypeKind::Uint,   sp!(lo, hi)),
-            "long"   => prim_type(arena, TypeKind::Long,   sp!(lo, hi)),
-            "float"  => prim_type(arena, TypeKind::Float,  sp!(lo, hi)),
-            "double" => prim_type(arena, TypeKind::Double, sp!(lo, hi)),
-            "bool"   => prim_type(arena, TypeKind::Bool,   sp!(lo, hi)),
-            "char"   => prim_type(arena, TypeKind::Char,   sp!(lo, hi)),
-            "string" => prim_type(arena, TypeKind::Str,    sp!(lo, hi)),
-            "void"   => prim_type(arena, TypeKind::Void,   sp!(lo, hi)),
-            "byte"   => prim_type(arena, TypeKind::Byte,   sp!(lo, hi)),
-            "i8"     => prim_type(arena, TypeKind::I8,     sp!(lo, hi)),
-            "i16"    => prim_type(arena, TypeKind::I16,    sp!(lo, hi)),
-            "i32"    => prim_type(arena, TypeKind::I32,    sp!(lo, hi)),
-            "i64"    => prim_type(arena, TypeKind::I64,    sp!(lo, hi)),
-            "u8"     => prim_type(arena, TypeKind::U8,     sp!(lo, hi)),
-            "u16"    => prim_type(arena, TypeKind::U16,    sp!(lo, hi)),
-            "u32"    => prim_type(arena, TypeKind::U32,    sp!(lo, hi)),
-            "u64"    => prim_type(arena, TypeKind::U64,    sp!(lo, hi)),
-            "f32"    => prim_type(arena, TypeKind::F32,    sp!(lo, hi)),
-            "f64"    => prim_type(arena, TypeKind::F64,    sp!(lo, hi)),
-            "isize"  => prim_type(arena, TypeKind::Isize,  sp!(lo, hi)),
-            "usize"  => prim_type(arena, TypeKind::Usize,  sp!(lo, hi)),
-            _        => named_type(arena, clone_slice(arena, vec![intern(arena, name)]), &[], sp!(lo, hi)),
+            "int"    => prim_type(arena, TypeKind::Int,    sp(lo, hi)),
+            "uint"   => prim_type(arena, TypeKind::Uint,   sp(lo, hi)),
+            "long"   => prim_type(arena, TypeKind::Long,   sp(lo, hi)),
+            "float"  => prim_type(arena, TypeKind::Float,  sp(lo, hi)),
+            "double" => prim_type(arena, TypeKind::Double, sp(lo, hi)),
+            "bool"   => prim_type(arena, TypeKind::Bool,   sp(lo, hi)),
+            "char"   => prim_type(arena, TypeKind::Char,   sp(lo, hi)),
+            "string" => prim_type(arena, TypeKind::Str,    sp(lo, hi)),
+            "void"   => prim_type(arena, TypeKind::Void,   sp(lo, hi)),
+            "byte"   => prim_type(arena, TypeKind::Byte,   sp(lo, hi)),
+            "i8"     => prim_type(arena, TypeKind::I8,     sp(lo, hi)),
+            "i16"    => prim_type(arena, TypeKind::I16,    sp(lo, hi)),
+            "i32"    => prim_type(arena, TypeKind::I32,    sp(lo, hi)),
+            "i64"    => prim_type(arena, TypeKind::I64,    sp(lo, hi)),
+            "u8"     => prim_type(arena, TypeKind::U8,     sp(lo, hi)),
+            "u16"    => prim_type(arena, TypeKind::U16,    sp(lo, hi)),
+            "u32"    => prim_type(arena, TypeKind::U32,    sp(lo, hi)),
+            "u64"    => prim_type(arena, TypeKind::U64,    sp(lo, hi)),
+            "f32"    => prim_type(arena, TypeKind::F32,    sp(lo, hi)),
+            "f64"    => prim_type(arena, TypeKind::F64,    sp(lo, hi)),
+            "isize"  => prim_type(arena, TypeKind::Isize,  sp(lo, hi)),
+            "usize"  => prim_type(arena, TypeKind::Usize,  sp(lo, hi)),
+            _        => named_type(arena, clone_slice(arena, vec![intern(arena, name)]), &[], sp(lo, hi)),
         }
     },
 
@@ -664,7 +664,7 @@ TypeBase: &'ast crate::ast::types::Type<'ast> = {
         let mut segs = vec![intern(arena, first)];
         for s in rest { segs.push(intern(arena, s)); }
         segs.push(intern(arena, last));
-        named_type(arena, clone_slice(arena, segs), &[], sp!(lo, hi))
+        named_type(arena, clone_slice(arena, segs), &[], sp(lo, hi))
     },
 
     // Generic named: Foo<T, U>
@@ -673,55 +673,55 @@ TypeBase: &'ast crate::ast::types::Type<'ast> = {
         for s in rest { segs.push(intern(arena, s)); }
         let path = clone_slice(arena, segs);
         let args = clone_slice(arena, args);
-        named_type(arena, path, args, sp!(lo, hi))
+        named_type(arena, path, args, sp(lo, hi))
     },
 
     // Collections
     <lo:@L> "List" "<" <t:Type> ">" <hi:@R>
-        => list_type(arena, Some(t), sp!(lo, hi)),
+        => list_type(arena, Some(t), sp(lo, hi)),
     <lo:@L> "List" <hi:@R>
-        => list_type(arena, None, sp!(lo, hi)),
+        => list_type(arena, None, sp(lo, hi)),
     <lo:@L> "Dictionary" "<" <k:Type> "," <v:Type> ">" <hi:@R>
-        => dict_type(arena, k, v, sp!(lo, hi)),
+        => dict_type(arena, k, v, sp(lo, hi)),
     <lo:@L> "Set" "<" <t:Type> ">" <hi:@R>
-        => set_type(arena, Some(t), sp!(lo, hi)),
+        => set_type(arena, Some(t), sp(lo, hi)),
     <lo:@L> "Queue" "<" <t:Type> ">" <hi:@R>
-        => prim_type(arena, TypeKind::Queue(Some(t)), sp!(lo, hi)),
+        => prim_type(arena, TypeKind::Queue(Some(t)), sp(lo, hi)),
     <lo:@L> "Stack" "<" <t:Type> ">" <hi:@R>
-        => prim_type(arena, TypeKind::Stack(Some(t)), sp!(lo, hi)),
+        => prim_type(arena, TypeKind::Stack(Some(t)), sp(lo, hi)),
 
     // Task
     <lo:@L> "Task" "<" <t:Type> ">" <hi:@R>
-        => task_type(arena, Some(t), sp!(lo, hi)),
+        => task_type(arena, Some(t), sp(lo, hi)),
     <lo:@L> "Task" <hi:@R>
-        => task_type(arena, None, sp!(lo, hi)),
+        => task_type(arena, None, sp(lo, hi)),
 
     // References
     <lo:@L> "&" "mut" <t:Type> <hi:@R>
-        => reference_type(arena, true, None, t, sp!(lo, hi)),
+        => reference_type(arena, true, None, t, sp(lo, hi)),
     <lo:@L> "&" <t:Type> <hi:@R>
-        => reference_type(arena, false, None, t, sp!(lo, hi)),
+        => reference_type(arena, false, None, t, sp(lo, hi)),
 
     // Slice
     <lo:@L> "[" "]" <t:Type> <hi:@R>
-        => slice_type(arena, t, sp!(lo, hi)),
+        => slice_type(arena, t, sp(lo, hi)),
 
     // Tuple
     <lo:@L> "(" <first:Type> "," <rest:CommaPlus<Type>> ")" <hi:@R> => {
         let mut all = vec![first];
         all.extend(rest);
         let all = clone_slice(arena, all);
-        tuple_type(arena, all, sp!(lo, hi))
+        tuple_type(arena, all, sp(lo, hi))
     },
 
     // Function type
     <lo:@L> "fn" "(" <params:Comma<Type>> ")" <ret:Type?> <hi:@R> => {
         let params = clone_slice(arena, params);
-        fn_type(arena, params, ret, false, sp!(lo, hi))
+        fn_type(arena, params, ret, false, sp(lo, hi))
     },
 
     // Infer
-    <lo:@L> "_" <hi:@R> => infer_type(arena, sp!(lo, hi)),
+    <lo:@L> "_" <hi:@R> => infer_type(arena, sp(lo, hi)),
 };
 
 // ═══════════════════════════════════════════════════════════════
@@ -732,59 +732,59 @@ Pattern: Pattern<'ast> = {
     <lo:@L> <first:PatternAtom> <rest:("|" <PatternAtom>)+> <hi:@R> => {
         let mut alts = vec![first];
         alts.extend(rest);
-        or_pat(arena, alts, sp!(lo, hi))
+        or_pat(arena, alts, sp(lo, hi))
     },
     <p:PatternAtom> => p,
 };
 
 PatternAtom: Pattern<'ast> = {
     <lo:@L> "_" <hi:@R>
-        => wildcard_pat(sp!(lo, hi)),
+        => wildcard_pat(sp(lo, hi)),
     <lo:@L> <lit:PatLiteral> <hi:@R>
-        => literal_pat(lit, sp!(lo, hi)),
+        => literal_pat(lit, sp(lo, hi)),
     <lo:@L> <a:PatLiteral> ".."  <b:PatLiteral> <hi:@R>
-        => range_pat(a, b, false, sp!(lo, hi)),
+        => range_pat(a, b, false, sp(lo, hi)),
     <lo:@L> <a:PatLiteral> "..=" <b:PatLiteral> <hi:@R>
-        => range_pat(a, b, true, sp!(lo, hi)),
+        => range_pat(a, b, true, sp(lo, hi)),
     <lo:@L> "(" <elems:CommaPlus<Pattern>> ")" <hi:@R>
-        => tuple_pat(arena, elems, sp!(lo, hi)),
+        => tuple_pat(arena, elems, sp(lo, hi)),
     <lo:@L> "["
         <elems:(<Pattern> ",")*>
         <rest:("..." <Ident?>)?>
     "]" <hi:@R>
     => {
         let rest_bind = rest.map(|opt| opt.map(|s| &*arena.alloc_str(&s)));
-        array_pat(arena, elems, rest_bind, sp!(lo, hi))
+        array_pat(arena, elems, rest_bind, sp(lo, hi))
     },
     <lo:@L> <name:QualPath>
         "{" <fields:Comma<FieldPat>> "}"
     <hi:@R>
     => {
         let struct_name = name.last().copied();
-        struct_pat(arena, struct_name, fields, sp!(lo, hi))
+        struct_pat(arena, struct_name, fields, sp(lo, hi))
     },
     <lo:@L> <path:QualPath> "(" <pats:CommaPlus<Pattern>> ")" <hi:@R> => {
         let pats = clone_slice(arena, pats);
-        enum_pat(arena, path, EnumPatternPayload::Tuple(pats), sp!(lo, hi))
+        enum_pat(arena, path, EnumPatternPayload::Tuple(pats), sp(lo, hi))
     },
     <lo:@L> "extract" "{" <fields:Comma<FieldPat>> "}" <hi:@R>
-        => extract_pat(arena, fields, sp!(lo, hi)),
+        => extract_pat(arena, fields, sp(lo, hi)),
     <lo:@L> "mut" <name:Ident> <hi:@R>
-        => ident_pat(intern(arena, name), true, sp!(lo, hi)),
+        => ident_pat(intern(arena, name), true, sp(lo, hi)),
     <lo:@L> <name:Ident> <hi:@R>
-        => ident_pat(intern(arena, name), false, sp!(lo, hi)),
+        => ident_pat(intern(arena, name), false, sp(lo, hi)),
 };
 
 FieldPat: FieldPattern<'ast> = {
     <lo:@L> <field:Ident> "=" <pat:Pattern> <hi:@R> => FieldPattern {
         field:   intern(arena, field),
         pattern: Some(pat),
-        span:    sp!(lo, hi),
+        span:    sp(lo, hi),
     },
     <lo:@L> <field:Ident> <hi:@R> => FieldPattern {
         field:   intern(arena, field),
         pattern: None,
-        span:    sp!(lo, hi),
+        span:    sp(lo, hi),
     },
 };
 
@@ -805,38 +805,38 @@ PatLiteral: Literal<'ast> = {
 
 pub Block: Block<'ast> = {
     <lo:@L> "{" <stmts:Stmt*> "}" <hi:@R>
-        => make_block(arena, stmts, sp!(lo, hi))
+        => make_block(arena, stmts, sp(lo, hi))
 };
 
 Stmt: Stmt<'ast> = {
     <lo:@L> "let" <m:"mut"?> <b:BindingTarget> <ty:(":" <Type>)?> "=" <v:Expr> <hi:@R>
-        => let_stmt(m.is_some(), b, ty, v, sp!(lo, hi)),
+        => let_stmt(m.is_some(), b, ty, v, sp(lo, hi)),
     <lo:@L> "return" <v:Expr?> <hi:@R>
-        => return_stmt(v, sp!(lo, hi)),
+        => return_stmt(v, sp(lo, hi)),
     <lo:@L> "fail" <v:Expr> <hi:@R>
-        => fail_stmt(v, sp!(lo, hi)),
+        => fail_stmt(v, sp(lo, hi)),
     <lo:@L> "break" <v:Expr?> <hi:@R>
-        => break_stmt(v, sp!(lo, hi)),
+        => break_stmt(v, sp(lo, hi)),
     <lo:@L> "continue" <hi:@R>
-        => continue_stmt(sp!(lo, hi)),
+        => continue_stmt(sp(lo, hi)),
     <lo:@L> "defer" <e:Expr> <hi:@R>
-        => defer_stmt(e, sp!(lo, hi)),
+        => defer_stmt(e, sp(lo, hi)),
     <lo:@L> <if_node:IfExpr> <hi:@R>
-        => if_stmt(arena, if_node, sp!(lo, hi)),
+        => if_stmt(arena, if_node, sp(lo, hi)),
     <lo:@L>
     "match"
     <scrutinee:ExprNoBlock>
     "{" <arms:MatchArm*> "}"
     <hi:@R>
-        => match_stmt(scrutinee, clone_slice(arena, arms), sp!(lo, hi)),
+        => match_stmt(scrutinee, clone_slice(arena, arms), sp(lo, hi)),
     <lo:@L> "for" <b:BindingTarget> "in" <iter:ExprNoBlock> <body:Block> <hi:@R>
-        => for_stmt(arena, b, iter, body, sp!(lo, hi)),
+        => for_stmt(arena, b, iter, body, sp(lo, hi)),
     <lo:@L> "while" <cond:ExprNoBlock> <body:Block> <hi:@R>
-        => while_stmt(arena, cond, body, sp!(lo, hi)),
+        => while_stmt(arena, cond, body, sp(lo, hi)),
     <lo:@L> "loop" <body:Block> <hi:@R>
-        => loop_stmt(arena, body, sp!(lo, hi)),
+        => loop_stmt(arena, body, sp(lo, hi)),
     <lo:@L> "with" <alloc:AllocKind> <body:Block> <hi:@R>
-        => with_stmt(arena, alloc, body, sp!(lo, hi)),
+        => with_stmt(arena, alloc, body, sp(lo, hi)),
     <lo:@L>
     "using"
     <bindings:CommaPlus<UsingBinding>>
@@ -844,10 +844,10 @@ Stmt: Stmt<'ast> = {
     <hi:@R>
     => {
         let bindings = clone_slice(arena, bindings);
-        using_stmt(arena, bindings, body, sp!(lo, hi))
+        using_stmt(arena, bindings, body, sp(lo, hi))
     },
     <lo:@L> "extract" <pat:DestructurePat> "=" <v:Expr> <hi:@R>
-        => extract_stmt(pat, v, sp!(lo, hi)),
+        => extract_stmt(pat, v, sp(lo, hi)),
     <lo:@L>
     "try"
     <body:Block>
@@ -858,12 +858,12 @@ Stmt: Stmt<'ast> = {
             Some((n, b)) => (Some(intern(arena, n)), Some(b)),
             None         => (None, None),
         };
-        try_stmt(arena, body, catch_name, catch_body, sp!(lo, hi))
+        try_stmt(arena, body, catch_name, catch_body, sp(lo, hi))
     },
     <lo:@L> "unsafe" <body:Block> <hi:@R>
-        => unsafe_stmt(arena, body, sp!(lo, hi)),
+        => unsafe_stmt(arena, body, sp(lo, hi)),
     <lo:@L> <e:Expr> <hi:@R>
-        => expr_stmt(e, sp!(lo, hi)),
+        => expr_stmt(e, sp(lo, hi)),
 };
 
 UsingBinding: crate::ast::statements::UsingBinding<'ast> = {
@@ -872,7 +872,7 @@ UsingBinding: crate::ast::statements::UsingBinding<'ast> = {
             mutable: m.is_some(),
             name:    intern(arena, name),
             value,
-            span:    sp!(lo, hi),
+            span:    sp(lo, hi),
         }
 };
 
@@ -908,7 +908,7 @@ BindingTarget: BindingTarget<'ast> = {
 DestructurePat: DestructurePattern<'ast> = {
     <lo:@L> "(" <elems:CommaPlus<DestructureElem>> ")" <hi:@R> => {
         let elems = clone_slice(arena, elems);
-        DestructurePattern::Tuple(TupleDestructure { elements: elems, span: sp!(lo, hi) })
+        DestructurePattern::Tuple(TupleDestructure { elements: elems, span: sp(lo, hi) })
     },
     <lo:@L> "["
         <elems:(<DestructureElem> ",")*>
@@ -917,11 +917,11 @@ DestructurePat: DestructurePattern<'ast> = {
     => {
         let elems     = clone_slice(arena, elems);
         let rest_bind = rest.map(|opt| opt.map(|s| &*arena.alloc_str(&s)));
-        DestructurePattern::Array(ArrayDestructure { elements: elems, rest: rest_bind, span: sp!(lo, hi) })
+        DestructurePattern::Array(ArrayDestructure { elements: elems, rest: rest_bind, span: sp(lo, hi) })
     },
     <lo:@L> "{" <fields:Comma<FieldDestructure>> "}" <hi:@R> => {
         let fields = clone_slice(arena, fields);
-        DestructurePattern::Struct(StructDestructure { fields, span: sp!(lo, hi) })
+        DestructurePattern::Struct(StructDestructure { fields, span: sp(lo, hi) })
     },
 };
 
@@ -935,12 +935,12 @@ FieldDestructure: FieldDestructure<'ast> = {
     <lo:@L> <field:Ident> "=" <pat:DestructurePat> <hi:@R> => FieldDestructure {
         field:   intern(arena, field),
         pattern: Some(pat),
-        span:    sp!(lo, hi),
+        span:    sp(lo, hi),
     },
     <lo:@L> <field:Ident> <hi:@R> => FieldDestructure {
         field:   intern(arena, field),
         pattern: None,
-        span:    sp!(lo, hi),
+        span:    sp(lo, hi),
     },
 };
 
@@ -963,14 +963,14 @@ IfExpr: IfExpr<'ast> = {
             then_block,
             elif_branches: elifs,
             else_block,
-            span:          sp!(lo, hi),
+            span:          sp(lo, hi),
         }
     }
 };
 
 ElifBranch: ElifBranch<'ast> = {
     <lo:@L> "elif" <cond:ExprNoBlock> <block:Block> <hi:@R>
-        => ElifBranch { condition: cond, block, span: sp!(lo, hi) }
+        => ElifBranch { condition: cond, block, span: sp(lo, hi) }
 };
 
 MatchArm: MatchArm<'ast> = {
@@ -981,7 +981,7 @@ MatchArm: MatchArm<'ast> = {
     <body:MatchArmBody>
     ","?
     <hi:@R>
-    => MatchArm { pattern: pat, guard, body, span: sp!(lo, hi) }
+    => MatchArm { pattern: pat, guard, body, span: sp(lo, hi) }
 };
 
 MatchArmBody: MatchArmBody<'ast> = {
@@ -1005,13 +1005,13 @@ ExprNoBlock: &'ast crate::ast::expressions::Expr<'ast> = {
 
 PipeExpr: &'ast crate::ast::expressions::Expr<'ast> = {
     <lo:@L> <l:PipeExpr> "|>" <r:AssignExpr> <hi:@R>
-        => pipe_expr(arena, l, r, sp!(lo, hi)),
+        => pipe_expr(arena, l, r, sp(lo, hi)),
     <e:AssignExpr> => e,
 };
 
 PipeExprNoBlock: &'ast crate::ast::expressions::Expr<'ast> = {
     <lo:@L> <l:PipeExprNoBlock> "|>" <r:AssignExprNoBlock> <hi:@R>
-        => pipe_expr(arena, l, r, sp!(lo, hi)),
+        => pipe_expr(arena, l, r, sp(lo, hi)),
     <e:AssignExprNoBlock> => e,
 };
 
@@ -1019,17 +1019,17 @@ PipeExprNoBlock: &'ast crate::ast::expressions::Expr<'ast> = {
 
 AssignExpr: &'ast crate::ast::expressions::Expr<'ast> = {
     <lo:@L> <name:Ident> ":=" <value:AssignExpr> <hi:@R>
-        => short_decl_expr(arena, intern(arena, name), value, sp!(lo, hi)),
+        => short_decl_expr(arena, intern(arena, name), value, sp(lo, hi)),
     <lo:@L> <lhs:OrExpr> <op:AssignOp> <rhs:AssignExpr> <hi:@R>
-        => assign_expr(arena, op, lhs, rhs, sp!(lo, hi)),
+        => assign_expr(arena, op, lhs, rhs, sp(lo, hi)),
     <e:OrExpr> => e,
 };
 
 AssignExprNoBlock: &'ast crate::ast::expressions::Expr<'ast> = {
     <lo:@L> <name:Ident> ":=" <value:AssignExprNoBlock> <hi:@R>
-        => short_decl_expr(arena, intern(arena, name), value, sp!(lo, hi)),
+        => short_decl_expr(arena, intern(arena, name), value, sp(lo, hi)),
     <lo:@L> <lhs:OrExprNoBlock> <op:AssignOp> <rhs:AssignExprNoBlock> <hi:@R>
-        => assign_expr(arena, op, lhs, rhs, sp!(lo, hi)),
+        => assign_expr(arena, op, lhs, rhs, sp(lo, hi)),
     <e:OrExprNoBlock> => e,
 };
 
@@ -1051,17 +1051,17 @@ AssignOp: AssignOp = {
 
 OrExpr: &'ast crate::ast::expressions::Expr<'ast> = {
     <lo:@L> <l:OrExpr> "or" <r:AndExpr> <hi:@R>
-        => binop(arena, BinOp::Or, l, r, sp!(lo, hi)),
+        => binop(arena, BinOp::Or, l, r, sp(lo, hi)),
     <lo:@L> <l:OrExpr> "||" <r:AndExpr> <hi:@R>
-        => binop(arena, BinOp::Or, l, r, sp!(lo, hi)),
+        => binop(arena, BinOp::Or, l, r, sp(lo, hi)),
     <e:AndExpr> => e,
 };
 
 OrExprNoBlock: &'ast crate::ast::expressions::Expr<'ast> = {
     <lo:@L> <l:OrExprNoBlock> "or" <r:AndExprNoBlock> <hi:@R>
-        => binop(arena, BinOp::Or, l, r, sp!(lo, hi)),
+        => binop(arena, BinOp::Or, l, r, sp(lo, hi)),
     <lo:@L> <l:OrExprNoBlock> "||" <r:AndExprNoBlock> <hi:@R>
-        => binop(arena, BinOp::Or, l, r, sp!(lo, hi)),
+        => binop(arena, BinOp::Or, l, r, sp(lo, hi)),
     <e:AndExprNoBlock> => e,
 };
 
@@ -1069,17 +1069,17 @@ OrExprNoBlock: &'ast crate::ast::expressions::Expr<'ast> = {
 
 AndExpr: &'ast crate::ast::expressions::Expr<'ast> = {
     <lo:@L> <l:AndExpr> "and" <r:NotExpr> <hi:@R>
-        => binop(arena, BinOp::And, l, r, sp!(lo, hi)),
+        => binop(arena, BinOp::And, l, r, sp(lo, hi)),
     <lo:@L> <l:AndExpr> "&&"  <r:NotExpr> <hi:@R>
-        => binop(arena, BinOp::And, l, r, sp!(lo, hi)),
+        => binop(arena, BinOp::And, l, r, sp(lo, hi)),
     <e:NotExpr> => e,
 };
 
 AndExprNoBlock: &'ast crate::ast::expressions::Expr<'ast> = {
     <lo:@L> <l:AndExprNoBlock> "and" <r:NotExprNoBlock> <hi:@R>
-        => binop(arena, BinOp::And, l, r, sp!(lo, hi)),
+        => binop(arena, BinOp::And, l, r, sp(lo, hi)),
     <lo:@L> <l:AndExprNoBlock> "&&"  <r:NotExprNoBlock> <hi:@R>
-        => binop(arena, BinOp::And, l, r, sp!(lo, hi)),
+        => binop(arena, BinOp::And, l, r, sp(lo, hi)),
     <e:NotExprNoBlock> => e,
 };
 
@@ -1087,17 +1087,17 @@ AndExprNoBlock: &'ast crate::ast::expressions::Expr<'ast> = {
 
 NotExpr: &'ast crate::ast::expressions::Expr<'ast> = {
     <lo:@L> "not" <e:NotExpr> <hi:@R>
-        => unary(arena, UnaryOp::Not, e, sp!(lo, hi)),
+        => unary(arena, UnaryOp::Not, e, sp(lo, hi)),
     <lo:@L> "!"   <e:NotExpr> <hi:@R>
-        => unary(arena, UnaryOp::Not, e, sp!(lo, hi)),
+        => unary(arena, UnaryOp::Not, e, sp(lo, hi)),
     <e:CmpExpr> => e,
 };
 
 NotExprNoBlock: &'ast crate::ast::expressions::Expr<'ast> = {
     <lo:@L> "not" <e:NotExprNoBlock> <hi:@R>
-        => unary(arena, UnaryOp::Not, e, sp!(lo, hi)),
+        => unary(arena, UnaryOp::Not, e, sp(lo, hi)),
     <lo:@L> "!"   <e:NotExprNoBlock> <hi:@R>
-        => unary(arena, UnaryOp::Not, e, sp!(lo, hi)),
+        => unary(arena, UnaryOp::Not, e, sp(lo, hi)),
     <e:CmpExprNoBlock> => e,
 };
 
@@ -1105,13 +1105,13 @@ NotExprNoBlock: &'ast crate::ast::expressions::Expr<'ast> = {
 
 CmpExpr: &'ast crate::ast::expressions::Expr<'ast> = {
     <lo:@L> <l:RangeExpr> <op:CmpOp> <r:RangeExpr> <hi:@R>
-        => binop(arena, op, l, r, sp!(lo, hi)),
+        => binop(arena, op, l, r, sp(lo, hi)),
     <e:RangeExpr> => e,
 };
 
 CmpExprNoBlock: &'ast crate::ast::expressions::Expr<'ast> = {
     <lo:@L> <l:RangeExprNoBlock> <op:CmpOp> <r:RangeExprNoBlock> <hi:@R>
-        => binop(arena, op, l, r, sp!(lo, hi)),
+        => binop(arena, op, l, r, sp(lo, hi)),
     <e:RangeExprNoBlock> => e,
 };
 
@@ -1128,17 +1128,17 @@ CmpOp: BinOp = {
 
 RangeExpr: &'ast crate::ast::expressions::Expr<'ast> = {
     <lo:@L> <l:AddExpr> ".."  <r:AddExpr> <hi:@R>
-        => binop(arena, BinOp::Range, l, r, sp!(lo, hi)),
+        => binop(arena, BinOp::Range, l, r, sp(lo, hi)),
     <lo:@L> <l:AddExpr> "..=" <r:AddExpr> <hi:@R>
-        => binop(arena, BinOp::RangeIncl, l, r, sp!(lo, hi)),
+        => binop(arena, BinOp::RangeIncl, l, r, sp(lo, hi)),
     <e:AddExpr> => e,
 };
 
 RangeExprNoBlock: &'ast crate::ast::expressions::Expr<'ast> = {
     <lo:@L> <l:AddExprNoBlock> ".."  <r:AddExprNoBlock> <hi:@R>
-        => binop(arena, BinOp::Range, l, r, sp!(lo, hi)),
+        => binop(arena, BinOp::Range, l, r, sp(lo, hi)),
     <lo:@L> <l:AddExprNoBlock> "..=" <r:AddExprNoBlock> <hi:@R>
-        => binop(arena, BinOp::RangeIncl, l, r, sp!(lo, hi)),
+        => binop(arena, BinOp::RangeIncl, l, r, sp(lo, hi)),
     <e:AddExprNoBlock> => e,
 };
 
@@ -1146,17 +1146,17 @@ RangeExprNoBlock: &'ast crate::ast::expressions::Expr<'ast> = {
 
 AddExpr: &'ast crate::ast::expressions::Expr<'ast> = {
     <lo:@L> <l:AddExpr> "+" <r:MulExpr> <hi:@R>
-        => binop(arena, BinOp::Add, l, r, sp!(lo, hi)),
+        => binop(arena, BinOp::Add, l, r, sp(lo, hi)),
     <lo:@L> <l:AddExpr> "-" <r:MulExpr> <hi:@R>
-        => binop(arena, BinOp::Sub, l, r, sp!(lo, hi)),
+        => binop(arena, BinOp::Sub, l, r, sp(lo, hi)),
     <e:MulExpr> => e,
 };
 
 AddExprNoBlock: &'ast crate::ast::expressions::Expr<'ast> = {
     <lo:@L> <l:AddExprNoBlock> "+" <r:MulExprNoBlock> <hi:@R>
-        => binop(arena, BinOp::Add, l, r, sp!(lo, hi)),
+        => binop(arena, BinOp::Add, l, r, sp(lo, hi)),
     <lo:@L> <l:AddExprNoBlock> "-" <r:MulExprNoBlock> <hi:@R>
-        => binop(arena, BinOp::Sub, l, r, sp!(lo, hi)),
+        => binop(arena, BinOp::Sub, l, r, sp(lo, hi)),
     <e:MulExprNoBlock> => e,
 };
 
@@ -1164,21 +1164,21 @@ AddExprNoBlock: &'ast crate::ast::expressions::Expr<'ast> = {
 
 MulExpr: &'ast crate::ast::expressions::Expr<'ast> = {
     <lo:@L> <l:MulExpr> "*" <r:BitOrExpr> <hi:@R>
-        => binop(arena, BinOp::Mul, l, r, sp!(lo, hi)),
+        => binop(arena, BinOp::Mul, l, r, sp(lo, hi)),
     <lo:@L> <l:MulExpr> "/" <r:BitOrExpr> <hi:@R>
-        => binop(arena, BinOp::Div, l, r, sp!(lo, hi)),
+        => binop(arena, BinOp::Div, l, r, sp(lo, hi)),
     <lo:@L> <l:MulExpr> "%" <r:BitOrExpr> <hi:@R>
-        => binop(arena, BinOp::Rem, l, r, sp!(lo, hi)),
+        => binop(arena, BinOp::Rem, l, r, sp(lo, hi)),
     <e:BitOrExpr> => e,
 };
 
 MulExprNoBlock: &'ast crate::ast::expressions::Expr<'ast> = {
     <lo:@L> <l:MulExprNoBlock> "*" <r:BitOrExprNoBlock> <hi:@R>
-        => binop(arena, BinOp::Mul, l, r, sp!(lo, hi)),
+        => binop(arena, BinOp::Mul, l, r, sp(lo, hi)),
     <lo:@L> <l:MulExprNoBlock> "/" <r:BitOrExprNoBlock> <hi:@R>
-        => binop(arena, BinOp::Div, l, r, sp!(lo, hi)),
+        => binop(arena, BinOp::Div, l, r, sp(lo, hi)),
     <lo:@L> <l:MulExprNoBlock> "%" <r:BitOrExprNoBlock> <hi:@R>
-        => binop(arena, BinOp::Rem, l, r, sp!(lo, hi)),
+        => binop(arena, BinOp::Rem, l, r, sp(lo, hi)),
     <e:BitOrExprNoBlock> => e,
 };
 
@@ -1186,53 +1186,53 @@ MulExprNoBlock: &'ast crate::ast::expressions::Expr<'ast> = {
 
 BitOrExpr: &'ast crate::ast::expressions::Expr<'ast> = {
     <lo:@L> <l:BitOrExpr> "|" <r:BitXorExpr> <hi:@R>
-        => binop(arena, BinOp::BitOr, l, r, sp!(lo, hi)),
+        => binop(arena, BinOp::BitOr, l, r, sp(lo, hi)),
     <e:BitXorExpr> => e,
 };
 
 BitOrExprNoBlock: &'ast crate::ast::expressions::Expr<'ast> = {
     <lo:@L> <l:BitOrExprNoBlock> "|" <r:BitXorExprNoBlock> <hi:@R>
-        => binop(arena, BinOp::BitOr, l, r, sp!(lo, hi)),
+        => binop(arena, BinOp::BitOr, l, r, sp(lo, hi)),
     <e:BitXorExprNoBlock> => e,
 };
 
 BitXorExpr: &'ast crate::ast::expressions::Expr<'ast> = {
     <lo:@L> <l:BitXorExpr> "^" <r:BitAndExpr> <hi:@R>
-        => binop(arena, BinOp::BitXor, l, r, sp!(lo, hi)),
+        => binop(arena, BinOp::BitXor, l, r, sp(lo, hi)),
     <e:BitAndExpr> => e,
 };
 
 BitXorExprNoBlock: &'ast crate::ast::expressions::Expr<'ast> = {
     <lo:@L> <l:BitXorExprNoBlock> "^" <r:BitAndExprNoBlock> <hi:@R>
-        => binop(arena, BinOp::BitXor, l, r, sp!(lo, hi)),
+        => binop(arena, BinOp::BitXor, l, r, sp(lo, hi)),
     <e:BitAndExprNoBlock> => e,
 };
 
 BitAndExpr: &'ast crate::ast::expressions::Expr<'ast> = {
     <lo:@L> <l:BitAndExpr> "&" <r:ShiftExpr> <hi:@R>
-        => binop(arena, BinOp::BitAnd, l, r, sp!(lo, hi)),
+        => binop(arena, BinOp::BitAnd, l, r, sp(lo, hi)),
     <e:ShiftExpr> => e,
 };
 
 BitAndExprNoBlock: &'ast crate::ast::expressions::Expr<'ast> = {
     <lo:@L> <l:BitAndExprNoBlock> "&" <r:ShiftExprNoBlock> <hi:@R>
-        => binop(arena, BinOp::BitAnd, l, r, sp!(lo, hi)),
+        => binop(arena, BinOp::BitAnd, l, r, sp(lo, hi)),
     <e:ShiftExprNoBlock> => e,
 };
 
 ShiftExpr: &'ast crate::ast::expressions::Expr<'ast> = {
     <lo:@L> <l:ShiftExpr> "<<" <r:UnaryExpr> <hi:@R>
-        => binop(arena, BinOp::Shl, l, r, sp!(lo, hi)),
+        => binop(arena, BinOp::Shl, l, r, sp(lo, hi)),
     <lo:@L> <l:ShiftExpr> ">>" <r:UnaryExpr> <hi:@R>
-        => binop(arena, BinOp::Shr, l, r, sp!(lo, hi)),
+        => binop(arena, BinOp::Shr, l, r, sp(lo, hi)),
     <e:UnaryExpr> => e,
 };
 
 ShiftExprNoBlock: &'ast crate::ast::expressions::Expr<'ast> = {
     <lo:@L> <l:ShiftExprNoBlock> "<<" <r:UnaryExprNoBlock> <hi:@R>
-        => binop(arena, BinOp::Shl, l, r, sp!(lo, hi)),
+        => binop(arena, BinOp::Shl, l, r, sp(lo, hi)),
     <lo:@L> <l:ShiftExprNoBlock> ">>" <r:UnaryExprNoBlock> <hi:@R>
-        => binop(arena, BinOp::Shr, l, r, sp!(lo, hi)),
+        => binop(arena, BinOp::Shr, l, r, sp(lo, hi)),
     <e:UnaryExprNoBlock> => e,
 };
 
@@ -1240,21 +1240,21 @@ ShiftExprNoBlock: &'ast crate::ast::expressions::Expr<'ast> = {
 
 UnaryExpr: &'ast crate::ast::expressions::Expr<'ast> = {
     <lo:@L> "-"     <e:UnaryExpr> <hi:@R>
-        => unary(arena, UnaryOp::Neg, e, sp!(lo, hi)),
+        => unary(arena, UnaryOp::Neg, e, sp(lo, hi)),
     <lo:@L> "~"     <e:UnaryExpr> <hi:@R>
-        => unary(arena, UnaryOp::BitNot, e, sp!(lo, hi)),
+        => unary(arena, UnaryOp::BitNot, e, sp(lo, hi)),
     <lo:@L> "await" <e:UnaryExpr> <hi:@R>
-        => await_expr(arena, e, sp!(lo, hi)),
+        => await_expr(arena, e, sp(lo, hi)),
     <e:CastExpr> => e,
 };
 
 UnaryExprNoBlock: &'ast crate::ast::expressions::Expr<'ast> = {
     <lo:@L> "-"     <e:UnaryExprNoBlock> <hi:@R>
-        => unary(arena, UnaryOp::Neg, e, sp!(lo, hi)),
+        => unary(arena, UnaryOp::Neg, e, sp(lo, hi)),
     <lo:@L> "~"     <e:UnaryExprNoBlock> <hi:@R>
-        => unary(arena, UnaryOp::BitNot, e, sp!(lo, hi)),
+        => unary(arena, UnaryOp::BitNot, e, sp(lo, hi)),
     <lo:@L> "await" <e:UnaryExprNoBlock> <hi:@R>
-        => await_expr(arena, e, sp!(lo, hi)),
+        => await_expr(arena, e, sp(lo, hi)),
     <e:CastExprNoBlock> => e,
 };
 
@@ -1262,13 +1262,13 @@ UnaryExprNoBlock: &'ast crate::ast::expressions::Expr<'ast> = {
 
 CastExpr: &'ast crate::ast::expressions::Expr<'ast> = {
     <lo:@L> <e:PostfixExpr> "as" <ty:Type> <hi:@R>
-        => as_expr(arena, e, ty, sp!(lo, hi)),
+        => as_expr(arena, e, ty, sp(lo, hi)),
     <e:PostfixExpr> => e,
 };
 
 CastExprNoBlock: &'ast crate::ast::expressions::Expr<'ast> = {
     <lo:@L> <e:PostfixExprNoBlock> "as" <ty:Type> <hi:@R>
-        => as_expr(arena, e, ty, sp!(lo, hi)),
+        => as_expr(arena, e, ty, sp(lo, hi)),
     <e:PostfixExprNoBlock> => e,
 };
 
@@ -1278,161 +1278,161 @@ PostfixExpr: &'ast crate::ast::expressions::Expr<'ast> = {
     // call
     <lo:@L> <base:PostfixExpr> "(" <args:Comma<CallArg>> ")" <hi:@R> => {
         let args = clone_slice(arena, args);
-        call_expr(arena, base, args, sp!(lo, hi))
+        call_expr(arena, base, args, sp(lo, hi))
     },
     // index
     <lo:@L> <base:PostfixExpr> "[" <idx:Expr> "]" <hi:@R>
-        => index_expr(arena, base, idx, sp!(lo, hi)),
+        => index_expr(arena, base, idx, sp(lo, hi)),
     // ?. field
     <lo:@L> <base:PostfixExpr> "?." <field:Ident> <hi:@R>
-        => opt_chain_field(arena, base, intern(arena, field), sp!(lo, hi)),
+        => opt_chain_field(arena, base, intern(arena, field), sp(lo, hi)),
     // ?. method call
     <lo:@L> <base:PostfixExpr> "?." <name:Ident> "(" <args:Comma<CallArg>> ")" <hi:@R> => {
         let args = clone_slice(arena, args);
-        opt_chain_method(arena, base, intern(arena, name), args, sp!(lo, hi))
+        opt_chain_method(arena, base, intern(arena, name), args, sp(lo, hi))
     },
     // . field
     <lo:@L> <base:PostfixExpr> "." <field:Ident> <hi:@R>
-        => field_expr(arena, base, intern(arena, field), sp!(lo, hi)),
+        => field_expr(arena, base, intern(arena, field), sp(lo, hi)),
     // ?
     <lo:@L> <base:PostfixExpr> "?" <hi:@R>
-        => try_expr(arena, base, sp!(lo, hi)),
+        => try_expr(arena, base, sp(lo, hi)),
     <e:PrimaryExpr> => e,
 };
 
 PostfixExprNoBlock: &'ast crate::ast::expressions::Expr<'ast> = {
     <lo:@L> <base:PostfixExprNoBlock> "(" <args:Comma<CallArg>> ")" <hi:@R> => {
         let args = clone_slice(arena, args);
-        call_expr(arena, base, args, sp!(lo, hi))
+        call_expr(arena, base, args, sp(lo, hi))
     },
     <lo:@L> <base:PostfixExprNoBlock> "[" <idx:Expr> "]" <hi:@R>
-        => index_expr(arena, base, idx, sp!(lo, hi)),
+        => index_expr(arena, base, idx, sp(lo, hi)),
     <lo:@L> <base:PostfixExprNoBlock> "?." <field:Ident> <hi:@R>
-        => opt_chain_field(arena, base, intern(arena, field), sp!(lo, hi)),
+        => opt_chain_field(arena, base, intern(arena, field), sp(lo, hi)),
     <lo:@L> <base:PostfixExprNoBlock> "?." <name:Ident> "(" <args:Comma<CallArg>> ")" <hi:@R> => {
         let args = clone_slice(arena, args);
-        opt_chain_method(arena, base, intern(arena, name), args, sp!(lo, hi))
+        opt_chain_method(arena, base, intern(arena, name), args, sp(lo, hi))
     },
     <lo:@L> <base:PostfixExprNoBlock> "." <field:Ident> <hi:@R>
-        => field_expr(arena, base, intern(arena, field), sp!(lo, hi)),
+        => field_expr(arena, base, intern(arena, field), sp(lo, hi)),
     <lo:@L> <base:PostfixExprNoBlock> "?" <hi:@R>
-        => try_expr(arena, base, sp!(lo, hi)),
+        => try_expr(arena, base, sp(lo, hi)),
     <e:PrimaryExprNoBlock> => e,
 };
 
 CallArg: Arg<'ast> = {
     <lo:@L> <name:Ident> "=" <value:Expr> <hi:@R> => Arg {
         kind: ArgKind::Named { name: intern(arena, name), value },
-        span: sp!(lo, hi),
+        span: sp(lo, hi),
     },
     <lo:@L> <e:Expr> <hi:@R> => Arg {
         kind: ArgKind::Positional(e),
-        span: sp!(lo, hi),
+        span: sp(lo, hi),
     },
 };
 
 // ── Primary ───────────────────────────────────────────────────
 
 PrimaryExpr: &'ast crate::ast::expressions::Expr<'ast> = {
-    <lo:@L> <n:IntLit>    <hi:@R> => lit_expr(arena, Literal::Int(n),    sp!(lo, hi)),
-    <lo:@L> <f:FloatLit>  <hi:@R> => lit_expr(arena, Literal::Float(f),  sp!(lo, hi)),
-    <lo:@L> <d:DoubleLit> <hi:@R> => lit_expr(arena, Literal::Double(d), sp!(lo, hi)),
+    <lo:@L> <n:IntLit>    <hi:@R> => lit_expr(arena, Literal::Int(n),    sp(lo, hi)),
+    <lo:@L> <f:FloatLit>  <hi:@R> => lit_expr(arena, Literal::Float(f),  sp(lo, hi)),
+    <lo:@L> <d:DoubleLit> <hi:@R> => lit_expr(arena, Literal::Double(d), sp(lo, hi)),
     <lo:@L> <s:StringLit> <hi:@R>
-        => lit_expr(arena, Literal::Str(arena.alloc_str(&s)), sp!(lo, hi)),
+        => lit_expr(arena, Literal::Str(arena.alloc_str(&s)), sp(lo, hi)),
     <lo:@L> <parts:InterpolatedStr> <hi:@R> => {
         let parts = intern_interp_parts(arena, parts);
-        lit_expr(arena, Literal::InterpolatedStr(parts), sp!(lo, hi))
+        lit_expr(arena, Literal::InterpolatedStr(parts), sp(lo, hi))
     },
     <lo:@L> <s:VerbatimStr> <hi:@R>
-        => lit_expr(arena, Literal::VerbatimStr(arena.alloc_str(&s)), sp!(lo, hi)),
-    <lo:@L> <c:CharLit>   <hi:@R> => lit_expr(arena, Literal::Char(c),  sp!(lo, hi)),
-    <lo:@L> "true"        <hi:@R> => lit_expr(arena, Literal::Bool(true),  sp!(lo, hi)),
-    <lo:@L> "false"       <hi:@R> => lit_expr(arena, Literal::Bool(false), sp!(lo, hi)),
-    <lo:@L> "null"        <hi:@R> => null_expr(arena, sp!(lo, hi)),
-    <lo:@L> "self"        <hi:@R> => self_expr(arena, sp!(lo, hi)),
+        => lit_expr(arena, Literal::VerbatimStr(arena.alloc_str(&s)), sp(lo, hi)),
+    <lo:@L> <c:CharLit>   <hi:@R> => lit_expr(arena, Literal::Char(c),  sp(lo, hi)),
+    <lo:@L> "true"        <hi:@R> => lit_expr(arena, Literal::Bool(true),  sp(lo, hi)),
+    <lo:@L> "false"       <hi:@R> => lit_expr(arena, Literal::Bool(false), sp(lo, hi)),
+    <lo:@L> "null"        <hi:@R> => null_expr(arena, sp(lo, hi)),
+    <lo:@L> "self"        <hi:@R> => self_expr(arena, sp(lo, hi)),
     // Struct literal: Name { field = val }
     <lo:@L> <path:QualPath> "{" <fields:Comma<FieldInitExpr>> "}" <hi:@R>
-        => struct_lit_expr(arena, path, clone_slice(arena, fields), sp!(lo, hi)),
+        => struct_lit_expr(arena, path, clone_slice(arena, fields), sp(lo, hi)),
     // Anon object: { field = val }
     <lo:@L> "{" <fields:CommaPlus<ObjectFieldExpr>> "}" <hi:@R>
-        => anon_object_expr(arena, clone_slice(arena, fields), sp!(lo, hi)),
+        => anon_object_expr(arena, clone_slice(arena, fields), sp(lo, hi)),
     // Array: [e1, e2]
     <lo:@L> "[" <elems:Comma<Expr>> "]" <hi:@R> => {
         let ptrs: Vec<&'ast crate::ast::expressions::Expr<'ast>> = elems;
         let ptrs = clone_slice(arena, ptrs);
-        array_expr(arena, ptrs, sp!(lo, hi))
+        array_expr(arena, ptrs, sp(lo, hi))
     },
     // Tuple: (a, b, ...)
     <lo:@L> "(" <first:Expr> "," <rest:CommaPlus<Expr>> ")" <hi:@R> => {
         let mut all = vec![first];
         all.extend(rest);
         let all = clone_slice(arena, all);
-        tuple_expr(arena, all, sp!(lo, hi))
+        tuple_expr(arena, all, sp(lo, hi))
     },
     // Paren
     "(" <e:Expr> ")" => e,
     // Lambda: fn(params) body
     <lo:@L> "fn" "(" <params:Comma<LambdaParam>> ")" <body:LambdaBody> <hi:@R> => {
         let params = clone_slice(arena, params);
-        lambda_expr(arena, Lambda { params, body, span: sp!(lo, hi) }, sp!(lo, hi))
+        lambda_expr(arena, Lambda { params, body, span: sp(lo, hi) }, sp(lo, hi))
     },
     // Block expr
     <lo:@L> <b:Block> <hi:@R>
-        => block_expr(arena, b, sp!(lo, hi)),
+        => block_expr(arena, b, sp(lo, hi)),
     // If expr
     <lo:@L> <if_node:IfExpr> <hi:@R>
-        => if_expr(arena, if_node, sp!(lo, hi)),
+        => if_expr(arena, if_node, sp(lo, hi)),
     // Match expr
     <lo:@L> "match" <scrutinee:ExprNoBlock> "{" <arms:MatchArm*> "}" <hi:@R> => {
         use crate::ast::expressions::MatchExpr;
         let arms = clone_slice(arena, arms);
-        let node = MatchExpr { scrutinee, arms, span: sp!(lo, hi) };
-        match_expr_node(arena, node, sp!(lo, hi))
+        let node = MatchExpr { scrutinee, arms, span: sp(lo, hi) };
+        match_expr_node(arena, node, sp(lo, hi))
     },
     // Bare ident
     <lo:@L> <name:Ident> <hi:@R>
-        => ident_expr(arena, intern(arena, name), sp!(lo, hi)),
+        => ident_expr(arena, intern(arena, name), sp(lo, hi)),
 };
 
 PrimaryExprNoBlock: &'ast crate::ast::expressions::Expr<'ast> = {
-    <lo:@L> <n:IntLit>    <hi:@R> => lit_expr(arena, Literal::Int(n),    sp!(lo, hi)),
-    <lo:@L> <f:FloatLit>  <hi:@R> => lit_expr(arena, Literal::Float(f),  sp!(lo, hi)),
-    <lo:@L> <d:DoubleLit> <hi:@R> => lit_expr(arena, Literal::Double(d), sp!(lo, hi)),
+    <lo:@L> <n:IntLit>    <hi:@R> => lit_expr(arena, Literal::Int(n),    sp(lo, hi)),
+    <lo:@L> <f:FloatLit>  <hi:@R> => lit_expr(arena, Literal::Float(f),  sp(lo, hi)),
+    <lo:@L> <d:DoubleLit> <hi:@R> => lit_expr(arena, Literal::Double(d), sp(lo, hi)),
     <lo:@L> <s:StringLit> <hi:@R>
-        => lit_expr(arena, Literal::Str(arena.alloc_str(&s)), sp!(lo, hi)),
+        => lit_expr(arena, Literal::Str(arena.alloc_str(&s)), sp(lo, hi)),
     <lo:@L> <parts:InterpolatedStr> <hi:@R> => {
         let parts = intern_interp_parts(arena, parts);
-        lit_expr(arena, Literal::InterpolatedStr(parts), sp!(lo, hi))
+        lit_expr(arena, Literal::InterpolatedStr(parts), sp(lo, hi))
     },
     <lo:@L> <s:VerbatimStr> <hi:@R>
-        => lit_expr(arena, Literal::VerbatimStr(arena.alloc_str(&s)), sp!(lo, hi)),
-    <lo:@L> <c:CharLit>   <hi:@R> => lit_expr(arena, Literal::Char(c),  sp!(lo, hi)),
-    <lo:@L> "true"        <hi:@R> => lit_expr(arena, Literal::Bool(true),  sp!(lo, hi)),
-    <lo:@L> "false"       <hi:@R> => lit_expr(arena, Literal::Bool(false), sp!(lo, hi)),
-    <lo:@L> "null"        <hi:@R> => null_expr(arena, sp!(lo, hi)),
-    <lo:@L> "self"        <hi:@R> => self_expr(arena, sp!(lo, hi)),
+        => lit_expr(arena, Literal::VerbatimStr(arena.alloc_str(&s)), sp(lo, hi)),
+    <lo:@L> <c:CharLit>   <hi:@R> => lit_expr(arena, Literal::Char(c),  sp(lo, hi)),
+    <lo:@L> "true"        <hi:@R> => lit_expr(arena, Literal::Bool(true),  sp(lo, hi)),
+    <lo:@L> "false"       <hi:@R> => lit_expr(arena, Literal::Bool(false), sp(lo, hi)),
+    <lo:@L> "null"        <hi:@R> => null_expr(arena, sp(lo, hi)),
+    <lo:@L> "self"        <hi:@R> => self_expr(arena, sp(lo, hi)),
     <lo:@L> "[" <elems:Comma<Expr>> "]" <hi:@R> => {
         let ptrs = clone_slice(arena, elems);
-        array_expr(arena, ptrs, sp!(lo, hi))
+        array_expr(arena, ptrs, sp(lo, hi))
     },
     <lo:@L> "(" <first:Expr> "," <rest:CommaPlus<Expr>> ")" <hi:@R> => {
         let mut all = vec![first];
         all.extend(rest);
         let all = clone_slice(arena, all);
-        tuple_expr(arena, all, sp!(lo, hi))
+        tuple_expr(arena, all, sp(lo, hi))
     },
     "(" <e:Expr> ")" => e,
     <lo:@L> "fn" "(" <params:Comma<LambdaParam>> ")" <body:LambdaBody> <hi:@R> => {
         let params = clone_slice(arena, params);
-        lambda_expr(arena, Lambda { params, body, span: sp!(lo, hi) }, sp!(lo, hi))
+        lambda_expr(arena, Lambda { params, body, span: sp(lo, hi) }, sp(lo, hi))
     },
     <lo:@L> <name:Ident> <hi:@R>
-        => ident_expr(arena, intern(arena, name), sp!(lo, hi)),
+        => ident_expr(arena, intern(arena, name), sp(lo, hi)),
 };
 
 LambdaParam: LambdaParam<'ast> = {
     <lo:@L> <name:Ident> <ty:(":" <Type>)?> <hi:@R>
-        => LambdaParam { name: intern(arena, name), ty, span: sp!(lo, hi) },
+        => LambdaParam { name: intern(arena, name), ty, span: sp(lo, hi) },
 };
 
 LambdaBody: LambdaBody<'ast> = {
@@ -1442,10 +1442,10 @@ LambdaBody: LambdaBody<'ast> = {
 
 FieldInitExpr: FieldInit<'ast> = {
     <lo:@L> <name:Ident> "=" <value:Expr> <hi:@R>
-        => FieldInit { name: intern(arena, name), value, span: sp!(lo, hi) },
+        => FieldInit { name: intern(arena, name), value, span: sp(lo, hi) },
 };
 
 ObjectFieldExpr: ObjectField<'ast> = {
     <lo:@L> <name:Ident> "=" <value:Expr> <hi:@R>
-        => ObjectField { name: intern(arena, name), value, span: sp!(lo, hi) },
+        => ObjectField { name: intern(arena, name), value, span: sp(lo, hi) },
 };
