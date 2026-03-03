@@ -66,6 +66,8 @@ pub static KEYWORDS: phf::Map<&'static str, TokenType> = phf_map! {
     // ── Allocator keywords ───────────────────────────────────────
     "arena"      => TokenType::Arena,
     "pool"       => TokenType::Pool,
+    "gc"         => TokenType::Gc,
+    "heap"       => TokenType::Heap,
 
     // ── Built-in collection type names ───────────────────────────
     "List"       => TokenType::KwList,
@@ -78,4 +80,4 @@ pub static KEYWORDS: phf::Map<&'static str, TokenType> = phf_map! {
 #[inline]
 pub fn get_keyword(word: &str) -> Option<TokenType> {
     KEYWORDS.get(word).cloned()
-    }
+}
