@@ -1,4 +1,5 @@
 // src/parser/grammar.lalrpop
+
 use crate::ast::arena::AstArena;
 use crate::ast::common::{
     AssignOp, BinOp, GenericParam, LifetimeParam, LifetimeConstraint,
@@ -103,14 +104,12 @@ extern {
         "low"        => TokenType::Low,
         "arena"      => TokenType::Arena,
         "pool"       => TokenType::Pool,
-
-        // Built-in collection type keywords
         "List"       => TokenType::KwList,
         "Dictionary" => TokenType::KwDictionary,
         "Set"        => TokenType::KwSet,
         "Queue"      => TokenType::KwQueue,
         "Stack"      => TokenType::KwStack,
-
+        "_"          => TokenType::Underscore,
         "+"   => TokenType::Plus,
         "-"   => TokenType::Minus,
         "*"   => TokenType::Star,
@@ -150,25 +149,25 @@ extern {
         "=>"  => TokenType::FatArrow,
         ":="  => TokenType::ColonEqual,
         "|>"  => TokenType::PipeArrow,
-        "(" => TokenType::LeftParen,
-        ")" => TokenType::RightParen,
-        "{" => TokenType::LeftBrace,
-        "}" => TokenType::RightBrace,
-        "[" => TokenType::LeftBracket,
-        "]" => TokenType::RightBracket,
-        "," => TokenType::Comma,
-        "." => TokenType::Dot,
-        ":" => TokenType::Colon,
-        ";" => TokenType::Semicolon,
-        "@" => TokenType::At,
-        Ident          => TokenType::Ident(<String>),
-        IntLit         => TokenType::IntLit(<i64>),
-        FloatLit       => TokenType::FloatLit(<f32>),
-        DoubleLit      => TokenType::DoubleLit(<f64>),
-        StringLit      => TokenType::StringLit(<String>),
+        "("   => TokenType::LeftParen,
+        ")"   => TokenType::RightParen,
+        "{"   => TokenType::LeftBrace,
+        "}"   => TokenType::RightBrace,
+        "["   => TokenType::LeftBracket,
+        "]"   => TokenType::RightBracket,
+        ","   => TokenType::Comma,
+        "."   => TokenType::Dot,
+        ":"   => TokenType::Colon,
+        ";"   => TokenType::Semicolon,
+        "@"   => TokenType::At,
+        Ident           => TokenType::Ident(<String>),
+        IntLit          => TokenType::IntLit(<i64>),
+        FloatLit        => TokenType::FloatLit(<f32>),
+        DoubleLit       => TokenType::DoubleLit(<f64>),
+        StringLit       => TokenType::StringLit(<String>),
         InterpolatedStr => TokenType::InterpolatedString(<Vec<crate::lexer::InterpolationPart>>),
-        VerbatimStr    => TokenType::VerbatimString(<String>),
-        CharLit        => TokenType::CharLit(<char>),
+        VerbatimStr     => TokenType::VerbatimString(<String>),
+        CharLit         => TokenType::CharLit(<char>),
     }
 }
 
@@ -635,6 +634,7 @@ pub Type: &'ast crate::ast::types::Type<'ast> = {
 };
 
 TypeBase: &'ast crate::ast::types::Type<'ast> = {
+    // ── Primitive types matched by identifier ────────────────────
     <lo:@L> <name:Ident> <hi:@R> => {
         match name.as_str() {
             "int"    => prim_type(arena, TypeKind::Int,    sp(lo, hi)),
@@ -680,7 +680,7 @@ TypeBase: &'ast crate::ast::types::Type<'ast> = {
         named_type(arena, path, args, sp(lo, hi))
     },
 
-    // ── Built-in collection types (now matched by keyword tokens) ──
+    // ── Built-in collection types ────────────────────────────────
     <lo:@L> "List" "<" <t:Type> ">" <hi:@R>
         => list_type(arena, Some(t), sp(lo, hi)),
     <lo:@L> "List" <hi:@R>
@@ -706,11 +706,11 @@ TypeBase: &'ast crate::ast::types::Type<'ast> = {
     <lo:@L> "&" <t:Type> <hi:@R>
         => reference_type(arena, false, None, t, sp(lo, hi)),
 
-    // Slice
+    // Slice: []T
     <lo:@L> "[" "]" <t:Type> <hi:@R>
         => slice_type(arena, t, sp(lo, hi)),
 
-    // Tuple
+    // Tuple: (A, B, ...)
     <lo:@L> "(" <first:Type> "," <rest:CommaPlus<Type>> ")" <hi:@R> => {
         let mut all = vec![first];
         all.extend(rest);
@@ -718,13 +718,13 @@ TypeBase: &'ast crate::ast::types::Type<'ast> = {
         tuple_type(arena, all, sp(lo, hi))
     },
 
-    // Function type
+    // Function type: fn(A, B) C
     <lo:@L> "fn" "(" <params:Comma<Type>> ")" <ret:Type?> <hi:@R> => {
         let params = clone_slice(arena, params);
         fn_type(arena, params, ret, false, sp(lo, hi))
     },
 
-    // Infer
+    // Infer: _
     <lo:@L> "_" <hi:@R> => infer_type(arena, sp(lo, hi)),
 };
 
