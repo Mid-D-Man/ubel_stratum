@@ -1,4 +1,5 @@
 // src/lexer/logos_lexer.rs
+
 use logos::Logos;
 use crate::lexer::{Token, TokenType, Span};
 use crate::error_management::{ErrorManager, error_types::LexicalError};
@@ -53,10 +54,17 @@ enum LogosToken {
     #[token("get")]      Get,
     #[token("set")]      Set,
 
+    // ── Collection type name keywords ─────────────────────────────
+    #[token("List")]       KwList,
+    #[token("Dictionary")] KwDictionary,
+    #[token("Set")]        KwSet,
+    #[token("Queue")]      KwQueue,
+    #[token("Stack")]      KwStack,
+
     // ── Operators — ORDER MATTERS: longer tokens first ────────────
     #[token("<<=")] LeftShiftEqual,
     #[token(">>=")] RightShiftEqual,
-    #[token("|>")]  PipeArrow,        // pipe operator — before | and >
+    #[token("|>")]  PipeArrow,
     #[token("<<")] LeftShift,
     #[token(">>")] RightShift,
     #[token("==")] EqualEqual,
@@ -77,10 +85,9 @@ enum LogosToken {
     #[token("|=")] PipeEqual,
     #[token("^=")] CaretEqual,
 
-    // Range / rest operators — longer first
-    #[token("..=")] DotDotEqual,   // ..=  inclusive range
-    #[token("...")] DotDotDot,     // ...  rest / spread
-    #[token("..")] DotDot,         // ..   exclusive range
+    #[token("..=")] DotDotEqual,
+    #[token("...")] DotDotDot,
+    #[token("..")] DotDot,
 
     #[token("+")] Plus,
     #[token("-")] Minus,
@@ -296,7 +303,6 @@ impl<'a> LogosLexer<'a> {
                 let mut parser = CommentParser::new(self.input, span_range.start, self.line, self.column);
                 match parser.parse_block_comment() {
                     Ok((_token, pos, line, col)) => {
-                        // block comments discarded
                         self.position = pos; self.line = line; self.column = col;
                         self.logos_lex = LogosToken::lexer(&self.input[pos..]);
                     }
@@ -376,6 +382,13 @@ impl<'a> LogosLexer<'a> {
             LogosToken::SelfKw    => TokenType::SelfKw,
             LogosToken::Get       => TokenType::Get,
             LogosToken::Set       => TokenType::Set,
+
+            // Collection type keywords
+            LogosToken::KwList       => TokenType::KwList,
+            LogosToken::KwDictionary => TokenType::KwDictionary,
+            LogosToken::KwSet        => TokenType::KwSet,
+            LogosToken::KwQueue      => TokenType::KwQueue,
+            LogosToken::KwStack      => TokenType::KwStack,
 
             LogosToken::Plus          => TokenType::Plus,
             LogosToken::Minus         => TokenType::Minus,
