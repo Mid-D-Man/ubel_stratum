@@ -1,0 +1,260 @@
+// src/error_management/error_types/type_error.rs
+//! Errors produced during type inference, type checking, and tier checking.
+
+use crate::lexer::Span;
+use crate::ast::common::TierAnnotation;
+use std::fmt;
+
+/// Every error that can be raised during type and tier analysis.
+#[derive(Debug, Clone)]
+pub enum TypeError {
+    // ── Type mismatch ─────────────────────────────────────────────
+    /// The types of two expressions that must agree do not.
+    TypeMismatch {
+        expected:     String,   // human-readable type name
+        found:        String,
+        span:         Span,
+        /// Where the expected type was established, if known.
+        because_of:   Option<Span>,
+    },
+
+    /// A function was called with the wrong number of arguments.
+    ArgumentCountMismatch {
+        expected: usize,
+        found:    usize,
+        span:     Span,
+    },
+
+    /// Tried to access a field that does not exist on a type.
+    NoSuchField {
+        field:   String,
+        on_type: String,
+        span:    Span,
+    },
+
+    /// Tried to call a method that does not exist on a type.
+    NoSuchMethod {
+        method:  String,
+        on_type: String,
+        span:    Span,
+    },
+
+    /// `?` operator used on a non-fallible type (not `T!`).
+    TryOnNonFallible {
+        found: String,
+        span:  Span,
+    },
+
+    /// `await` used on a non-`Task<T>` type.
+    AwaitOnNonTask {
+        found: String,
+        span:  Span,
+    },
+
+    /// A type could not be inferred — too ambiguous.
+    CannotInferType {
+        span:       Span,
+        suggestion: Option<String>,
+    },
+
+    /// A generic was instantiated with the wrong number of type arguments.
+    GenericArgCountMismatch {
+        type_name: String,
+        expected:  usize,
+        found:     usize,
+        span:      Span,
+    },
+
+    // ── Tier violations ───────────────────────────────────────────
+    /// `with arena` or arena allocator used outside `@tier(mid)`.
+    ArenaInWrongTier {
+        actual: TierAnnotation,
+        span:   Span,
+    },
+
+    /// `await` used outside `@tier(high)`.
+    AwaitInWrongTier {
+        actual: TierAnnotation,
+        span:   Span,
+    },
+
+    /// An async function is not `@tier(high)`.
+    AsyncFunctionNotHigh {
+        actual: TierAnnotation,
+        span:   Span,
+    },
+
+    /// A value that carries an arena lifetime was returned from a
+    /// cross-tier function and would outlive the arena.
+    ArenaRefEscapesBoundary {
+        /// The type that contains the arena reference.
+        escaped_type: String,
+        span:         Span,
+    },
+
+    /// `@tier(high)` code tried to call `@tier(low)` code directly.
+    /// (HIGH may only call MID; MID may call HIGH or LOW.)
+    IllegalTierCall {
+        caller_tier: TierAnnotation,
+        callee_tier: TierAnnotation,
+        callee_name: String,
+        span:        Span,
+    },
+
+    /// A MID-tier function's return type contains an arena-lifetime type.
+    /// This would make it impossible for HIGH-tier to call it safely.
+    MidReturnContainsArenaRef {
+        return_type: String,
+        span:        Span,
+    },
+
+    // ── LINQ tier violation ───────────────────────────────────────
+    /// LINQ query expressions are only valid in `@tier(high)`.
+    LinqInWrongTier {
+        actual: TierAnnotation,
+        span:   Span,
+    },
+}
+
+impl TypeError {
+    pub fn span(&self) -> Span {
+        match self {
+            TypeError::TypeMismatch               { span, .. } => *span,
+            TypeError::ArgumentCountMismatch      { span, .. } => *span,
+            TypeError::NoSuchField                { span, .. } => *span,
+            TypeError::NoSuchMethod               { span, .. } => *span,
+            TypeError::TryOnNonFallible           { span, .. } => *span,
+            TypeError::AwaitOnNonTask             { span, .. } => *span,
+            TypeError::CannotInferType            { span, .. } => *span,
+            TypeError::GenericArgCountMismatch    { span, .. } => *span,
+            TypeError::ArenaInWrongTier           { span, .. } => *span,
+            TypeError::AwaitInWrongTier           { span, .. } => *span,
+            TypeError::AsyncFunctionNotHigh       { span, .. } => *span,
+            TypeError::ArenaRefEscapesBoundary    { span, .. } => *span,
+            TypeError::IllegalTierCall            { span, .. } => *span,
+            TypeError::MidReturnContainsArenaRef  { span, .. } => *span,
+            TypeError::LinqInWrongTier            { span, .. } => *span,
+        }
+    }
+
+    pub fn message(&self) -> String {
+        match self {
+            TypeError::TypeMismatch { expected, found, .. } =>
+                format!("Type mismatch: expected `{}`, found `{}`", expected, found),
+
+            TypeError::ArgumentCountMismatch { expected, found, .. } =>
+                format!("Expected {} argument(s), found {}", expected, found),
+
+            TypeError::NoSuchField { field, on_type, .. } =>
+                format!("Type `{}` has no field `{}`", on_type, field),
+
+            TypeError::NoSuchMethod { method, on_type, .. } =>
+                format!("Type `{}` has no method `{}`", on_type, method),
+
+            TypeError::TryOnNonFallible { found, .. } =>
+                format!("`?` requires a fallible type (`T!`), found `{}`", found),
+
+            TypeError::AwaitOnNonTask { found, .. } =>
+                format!("`await` requires `Task<T>`, found `{}`", found),
+
+            TypeError::CannotInferType { .. } =>
+                "Cannot infer type — add an explicit type annotation".to_string(),
+
+            TypeError::GenericArgCountMismatch { type_name, expected, found, .. } =>
+                format!(
+                    "`{}` expects {} type argument(s), found {}",
+                    type_name, expected, found
+                ),
+
+            TypeError::ArenaInWrongTier { actual, .. } =>
+                format!(
+                    "`with arena` is only valid in `@tier(mid)`; this function is `@tier({})`",
+                    tier_name(*actual)
+                ),
+
+            TypeError::AwaitInWrongTier { actual, .. } =>
+                format!(
+                    "`await` is only valid in `@tier(high)`; this function is `@tier({})`",
+                    tier_name(*actual)
+                ),
+
+            TypeError::AsyncFunctionNotHigh { actual, .. } =>
+                format!(
+                    "Async functions must be `@tier(high)`; this function is `@tier({})`",
+                    tier_name(*actual)
+                ),
+
+            TypeError::ArenaRefEscapesBoundary { escaped_type, .. } =>
+                format!(
+                    "Value of type `{}` contains an arena reference and cannot cross the tier boundary",
+                    escaped_type
+                ),
+
+            TypeError::IllegalTierCall { caller_tier, callee_tier, callee_name, .. } =>
+                format!(
+                    "`@tier({})` code cannot call `@tier({})` function `{}`",
+                    tier_name(*caller_tier), tier_name(*callee_tier), callee_name
+                ),
+
+            TypeError::MidReturnContainsArenaRef { return_type, .. } =>
+                format!(
+                    "Return type `{}` contains an arena-lifetime reference; \
+                     this makes the function uncallable from `@tier(high)`",
+                    return_type
+                ),
+
+            TypeError::LinqInWrongTier { actual, .. } =>
+                format!(
+                    "LINQ query expressions are only valid in `@tier(high)`; \
+                     this function is `@tier({})`",
+                    tier_name(*actual)
+                ),
+        }
+    }
+
+    pub fn suggestion(&self) -> Option<String> {
+        match self {
+            TypeError::TypeMismatch { because_of: Some(span), .. } =>
+                Some(format!("Type was established at line {}", span.line)),
+
+            TypeError::CannotInferType { suggestion: Some(s), .. } =>
+                Some(s.clone()),
+
+            TypeError::ArenaInWrongTier { .. } =>
+                Some("Annotate this function with `@tier(mid)` or remove the arena block".to_string()),
+
+            TypeError::AwaitInWrongTier { .. } =>
+                Some("Annotate this function with `@tier(high)` or remove the `await`".to_string()),
+
+            TypeError::AsyncFunctionNotHigh { .. } =>
+                Some("Add `@tier(high)` annotation, or remove `async`".to_string()),
+
+            TypeError::ArenaRefEscapesBoundary { .. } =>
+                Some("Use the callback pattern: pass a closure to the MID function and return a GC-owned value from inside it".to_string()),
+
+            TypeError::IllegalTierCall { caller_tier: TierAnnotation::High, .. } =>
+                Some("HIGH tier may only call MID-tier functions directly. Wrap the LOW-tier logic in a MID-tier function".to_string()),
+
+            TypeError::LinqInWrongTier { .. } =>
+                Some("Move the LINQ query into a `@tier(high)` function, or use `.where()` / `.map()` method chains instead (which work in all tiers)".to_string()),
+
+            _ => None,
+        }
+    }
+}
+
+fn tier_name(tier: TierAnnotation) -> &'static str {
+    match tier {
+        TierAnnotation::High => "high",
+        TierAnnotation::Mid  => "mid",
+        TierAnnotation::Low  => "low",
+    }
+}
+
+impl fmt::Display for TypeError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", self.message())
+    }
+}
+
+impl std::error::Error for TypeError {}
