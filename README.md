@@ -1,10 +1,11 @@
 # Ubel Stratum
 
-**Quantum-Ready Multi-Tier Systems Language**
+**Multi-Tier Systems Language**
 
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](LICENSE)
 [![Status](https://img.shields.io/badge/status-early%20development-orange.svg)]()
 [![Built With](https://img.shields.io/badge/built%20with-Rust-orange.svg)](https://www.rust-lang.org/)
+[![Extension](https://img.shields.io/badge/source%20files-.ubl-blueviolet.svg)]()
 
 > **"The right memory model for every function."**
 
@@ -12,13 +13,13 @@
 
 ## ⚠️ Current Status: Early Development
 
-Ubel Stratum has completed its lexer and parser. The language specification and AST
-are solidified enough to begin the next phase: semantic analysis and a tree-walking
-interpreter. Implementation is active.
+Ubel Stratum has completed its lexer, parser, and is actively building semantic analysis.
+The language specification and AST are solidified. Source files use the `.ubl` extension.
+The compiler binary is called `ublc`.
 
 **Development Roadmap:**
 1. ✅ **Phase 1**: Core design, memory model, lexer (Logos), parser (LALRPOP), arena AST
-2. 🔄 **Phase 2**: Semantic analysis — name resolution, type checker, tier enforcer
+2. 🔄 **Phase 2**: Semantic analysis — name resolution, type inference, tier enforcer
 3. 📋 **Phase 3**: Tree-walking interpreter in Rust
 4. 📋 **Phase 4**: LLVM backend → native binary
 5. 📋 **Phase 5**: Standard library, tooling, package manager
@@ -75,16 +76,17 @@ with a built-in, opt-in GC for the parts of your code that need it.
 ### Execution flow for a real app
 
 ```
-source.strat
+source.ubl
     │
     ▼
-stratc (compiler)
+ublc (compiler)
     │
     ├── Lexer (Logos)
     ├── Parser (LALRPOP) → Arena AST
-    ├── Name resolution
-    ├── Type checker + Tier enforcer
-    ├── Lowering to IR
+    ├── Name resolution       ← Phase 2 (in progress)
+    ├── Type checker          ← Phase 2
+    ├── Tier enforcer         ← Phase 2
+    ├── Lowering to IR        ← Phase 4
     │
     ▼
 LLVM IR
@@ -122,7 +124,7 @@ The safest and most common pattern. MID parses into an arena, calls your HIGH cl
 with a *borrow* into the arena, the closure produces a GC-owned `R`, then the arena
 is freed. The closure's borrow is strictly contained inside the arena's lifetime.
 
-```strat
+```ubl
 // MID tier: fast JSON parser
 @tier(mid)
 fn parse_json_with<F, R>(input: string, callback: F) R
@@ -156,7 +158,7 @@ try to smuggle an arena reference out through `R`, the tier-checker rejects it.
 For processing large datasets without allocating the whole result at once.
 MID drives the iteration internally; HIGH only ever sees GC-owned values one at a time.
 
-```strat
+```ubl
 // MID tier: produces transformed items one at a time
 @tier(mid)
 fn transform_each<R>(items: &[Item], f: fn(&TransformedItem) R) List<R> {
@@ -179,7 +181,7 @@ When you only need to *read* MID-tier data without extracting values,
 the `view` pattern gives a scoped read-only window into the arena.
 This is syntactic sugar over the callback pattern and follows identical rules.
 
-```strat
+```ubl
 @tier(high)
 fn parse_config(path: string) Config {
     let config_view = read_toml_view(path)  // MID tier call; view scoped here
@@ -198,7 +200,7 @@ fn parse_config(path: string) Config {
 
 The compiler will **reject** these patterns at compile time:
 
-```strat
+```ubl
 // ❌ Storing an arena reference in a GC-managed struct
 @tier(high)
 struct BadCache {
@@ -218,6 +220,19 @@ fn bad_leak(input: string) &JsonView {   // Error: return type contains arena li
         return &parse(input)  // compiler catches this
     }
 }
+
+// ❌ await inside MID tier
+@tier(mid)
+fn bad_async(input: string) string {
+    let result = await some_future()   // Error: await is only valid in @tier(high)
+    return result
+}
+
+// ❌ LOW tier calling HIGH tier directly
+@tier(low)
+fn bad_low_call() {
+    let x = some_high_fn()   // Error: @tier(low) cannot call @tier(high) directly
+}
 ```
 
 ---
@@ -226,7 +241,7 @@ fn bad_leak(input: string) &JsonView {   // Error: return type contains arena li
 
 ### Tier annotations
 
-```strat
+```ubl
 // Default: HIGH — no annotation needed for most code
 fn handle_request(req: Request) Response {
     let user = fetch_user(req.user_id)
@@ -248,7 +263,7 @@ fn write_packet(buf: &mut [u8]) usize {
 
 ### Collections (C#-style names)
 
-```strat
+```ubl
 let mut numbers = List.new()
 numbers.push(1)
 numbers.push(2)
@@ -262,7 +277,7 @@ let names = ["Alice", "Bob"]          // inferred as List<string>
 
 ### Unified `.` access — no `::`
 
-```strat
+```ubl
 summon std.collections.List
 let list = List.new()        // type-level call
 list.push(42)                // instance call
@@ -271,7 +286,7 @@ list.push(42)                // instance call
 
 ### Error handling
 
-```strat
+```ubl
 // ! suffix means "may fail"
 fn parse_int(s: string) int! {
     // ... returns Result
@@ -290,7 +305,7 @@ Async is only allowed in HIGH tier. MID and LOW are synchronous. This is a delib
 constraint: arenas have lexical lifetimes, which are incompatible with the way async
 suspends and resumes across await points.
 
-```strat
+```ubl
 @tier(high)
 async fn fetch_user(id: int) Task<User>! {
     let resp = await http_get($"/users/{id}")?
@@ -300,7 +315,7 @@ async fn fetch_user(id: int) Task<User>! {
 
 ### Structs and methods
 
-```strat
+```ubl
 struct Rectangle {
     width: int,
     height: int
@@ -317,7 +332,7 @@ struct Rectangle {
 
 ### Pattern matching
 
-```strat
+```ubl
 match response {
     Ok(data) where data.status == 200 => process_success(data),
     Ok(data) => log_warning($"Status: {data.status}"),
@@ -330,7 +345,7 @@ match response {
 
 ### Pipe operator
 
-```strat
+```ubl
 let result = data
     |> parse?
     |> validate?
@@ -340,7 +355,7 @@ let result = data
 
 ### Extension functions
 
-```strat
+```ubl
 extend int {
     fn is_even(self) bool { return self % 2 == 0 }
 }
@@ -353,7 +368,7 @@ if 42.is_even() { println("Even!") }
 Only needed in LOW tier for complex cross-function borrows.
 Simple cases are inferred.
 
-```strat
+```ubl
 // Inferred — no annotation needed
 fn first(list: &List<int>) &int {
     return &list[0]
@@ -367,7 +382,7 @@ fn longest[lifetime L](x: &L str, y: &L str) &L str {
 
 ### RAII with `using`
 
-```strat
+```ubl
 using let file = File.open("data.txt") {
     let content = file.read()
     process(content)
@@ -376,7 +391,7 @@ using let file = File.open("data.txt") {
 
 ### LINQ (HIGH tier only)
 
-```strat
+```ubl
 @tier(high)
 fn active_adults(users: List<User>) List<string> {
     return from u in users
@@ -406,90 +421,141 @@ cargo bench
 ### CLI Usage
 
 ```bash
-# Tokenize a .strat file
-stratc lex path/to/file.strat --verbose
+# Tokenize a .ubl file
+ublc lex path/to/file.ubl --verbose
 
-# Parse a .strat file (shows top-level item count)
-stratc parse path/to/file.strat
+# Parse a .ubl file (shows top-level item count)
+ublc parse path/to/file.ubl
+
+# Run semantic analysis
+ublc check path/to/file.ubl
 ```
 
 ---
 
-## 🗺️ What Comes Next (Phase 2)
+## 🧪 Testing
 
-After the parser, the next work is **semantic analysis**. This is where the tier
-system becomes real. The semantic analysis pass has three jobs:
+Tests are organized at three levels, each catching different classes of bugs.
 
-**Name resolution** — resolve every identifier to a definition. Build the scope tree,
-handle imports, report unknown names.
+### Level 1 — Unit tests (inside source files)
 
-**Type inference and checking** — infer types for let bindings, check that function
-call arguments match parameters, ensure return types are correct.
+Data structure tests live as `#[cfg(test)]` blocks inside their own module.
+`symbol_table.rs` tests scope shadowing, duplicate detection, and resolution.
+`type_table.rs` tests interning correctness. Run with:
 
-**Tier checking** — this is the novel part. The tier checker walks the typed AST and
-enforces:
-- `with arena` blocks only appear in `@tier(mid)` functions
-- `await` only appears in `@tier(high)` functions
-- No `&'arena T` type appears in the return type of a cross-tier call
-- MID functions called from HIGH must use the callback, iterator, or view pattern
+```bash
+cargo test
+```
 
-For the **tree-walking interpreter** (Phase 3), tiers are simulated using Rust's own
-memory. HIGH-tier values are `Rc<RefCell<Value>>`. MID-tier uses `bumpalo` (already
-in `Cargo.toml`). LOW-tier uses plain Rust ownership. The interpreter proves the
-memory model is sound without requiring a full borrow checker implementation.
+### Level 2 — Integration tests (fixtures)
 
-The **full borrow checker** for LOW tier is deferred to the LLVM phase (Phase 4).
-Implementing a borrow checker in the interpreter phase would be as complex as Rust's
-NLL checker and would block progress on proving the tier model. The interpreter
-phase validates tier semantics; the LLVM phase enforces LOW-tier safety.
+Integration tests live under `tests/sema/` and drive the full lex → parse → resolve
+pipeline against real `.ubl` fixture files:
+
+```
+tests/
+└── sema/
+    ├── name_resolution_tests.rs
+    └── fixtures/
+        ├── ok_simple.ubl
+        ├── ok_forward_ref.ubl
+        ├── ok_nested_scopes.ubl
+        ├── ok_struct_methods.ubl
+        ├── ok_imports.ubl
+        ├── err_undefined_name.ubl
+        ├── err_duplicate_def.ubl
+        └── err_self_outside_method.ubl
+```
+
+Each test compiles a fixture and asserts on the error count and error kinds:
+
+```bash
+cargo test --test name_resolution_tests
+```
+
+### Level 3 — Snapshot tests (insta)
+
+Add to `Cargo.toml`:
+
+```toml
+[dev-dependencies]
+insta = "1"
+```
+
+Snapshot tests capture the full `SemaContext` debug output on the first run and
+automatically detect regressions on every subsequent run. Review changed snapshots:
+
+```bash
+cargo insta review
+```
 
 ---
 
-## 🏗️ Architecture Overview
+## 🗺️ Architecture Overview
 
 ```
 src/
 ├── lexer/
-│   ├── logos_lexer.rs      # Token stream via Logos
-│   ├── string_parser.rs    # Interpolated / verbatim strings
-│   ├── comment_parser.rs   # Nested block comments
-│   └── token.rs            # TokenType, Span
+│   ├── logos_lexer.rs       # Token stream via Logos
+│   ├── string_parser.rs     # Interpolated / verbatim strings
+│   ├── comment_parser.rs    # Nested block comments
+│   └── token.rs             # TokenType, Span
 │
 ├── parser/
-│   ├── grammar.lalrpop     # Full LALRPOP grammar
-│   ├── helpers/            # Arena-aware node builders
+│   ├── grammar.lalrpop      # Full LALRPOP grammar
+│   ├── helpers/             # Arena-aware node builders
 │   │   ├── decl.rs
 │   │   ├── expr.rs
 │   │   ├── stmt.rs
 │   │   ├── pat.rs
 │   │   └── ty.rs
-│   └── token_iter.rs       # Bridges Vec<Token> to LALRPOP
+│   └── token_iter.rs        # Bridges Vec<Token> to LALRPOP
 │
 ├── ast/
-│   ├── arena.rs            # AstArena (bumpalo wrapper)
-│   ├── common.rs           # Span, Ident, TierAnnotation, operators
-│   ├── literals.rs         # Literal, InterpolationPart
-│   ├── types.rs            # Type, TypeKind
-│   ├── patterns.rs         # Pattern, destructure patterns
-│   ├── expressions.rs      # Expr, ExprKind
-│   ├── statements.rs       # Stmt, Block, AllocatorKind
-│   ├── declarations.rs     # FunctionDecl, StructDecl, EnumDecl, …
-│   └── root.rs             # Program, Item, Import
+│   ├── arena.rs             # AstArena (bumpalo wrapper)
+│   ├── common.rs            # Span, Ident, TierAnnotation, operators
+│   ├── literals.rs          # Literal, InterpolationPart
+│   ├── types.rs             # Type, TypeKind
+│   ├── patterns.rs          # Pattern, destructure patterns
+│   ├── expressions.rs       # Expr, ExprKind
+│   ├── statements.rs        # Stmt, Block, AllocatorKind
+│   ├── declarations.rs      # FunctionDecl, StructDecl, EnumDecl, …
+│   └── root.rs              # Program, Item, Import
+│
+├── sema/                    # ← Phase 2 (in progress)
+│   ├── mod.rs               # Orchestrates all three passes
+│   ├── symbol_table.rs      # DefId, Def, DefKind, SymbolTable, ScopeStack
+│   ├── sema_context.rs      # SemaContext — all side tables together
+│   ├── type_table.rs        # TypeId, SemaType, TypeTable (with interning)
+│   ├── name_resolution.rs   # Pass 1: resolve identifiers → DefId
+│   ├── type_infer.rs        # Pass 2: constraint gen + unification (TODO)
+│   └── tier_check.rs        # Pass 3: tier rule enforcement (TODO)
 │
 ├── error_management/
 │   ├── error_types/
 │   │   ├── lexical_error.rs
-│   │   └── parse_error.rs
-│   ├── error_manager.rs
+│   │   ├── parse_error.rs
+│   │   ├── name_error.rs    # ← new: Pass 1 errors
+│   │   └── type_error.rs    # ← new: Pass 2 + 3 errors
+│   ├── error_manager.rs     # Central accumulator for all phases
 │   ├── diagnostics.rs
 │   └── logger.rs
 │
-└── main.rs                 # stratc CLI (lex / parse / check / run)
+└── main.rs                  # ublc CLI (lex / parse / check / run)
+
+tests/
+└── sema/
+    ├── name_resolution_tests.rs
+    └── fixtures/            # Real .ubl source used as test input
 ```
 
 All AST nodes are arena-allocated via `bumpalo` and carry a `'ast` lifetime.
 Every node type is `Copy`, which means the entire tree can be traversed without
 cloning and multiple passes share the same backing memory.
+
+Semantic analysis produces a `SemaContext` — a set of side tables keyed by `Span`.
+The AST is never mutated. Downstream consumers (interpreter, LLVM backend) receive
+both `Program<'ast>` and `SemaContext` together.
 
 ---
 
@@ -506,12 +572,13 @@ at your option.
 
 ## 🌟 Why "Ubel Stratum"?
 
-**Ubel** (German: "evil/bad") + **Stratum** (Latin: "layer/tier")
+**Stratum** is Latin for "layer" — a direct reference to the tier system at the
+heart of the language. Every program is a stack of strata, each with its own
+memory contract.
 
-Choosing between memory models shouldn't be painful ("evil"). It should be a clear,
-empowering decision made at the function level. The name is tongue-in-cheek: we took
-the "evil" complexity of mixed memory models and put it in the compiler where it belongs,
-so the programmer only sees the clean layered result.
+**Ubel** has no deep etymology behind it. It sounded right. Sometimes that is enough —
+Rust is named after a fungus, Go was named in a 20-minute meeting. The name carries
+the language; the language carries the meaning.
 
 ---
 
