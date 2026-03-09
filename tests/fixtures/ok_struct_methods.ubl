@@ -1,0 +1,32 @@
+// fixture: ok_struct_methods.ubl
+// A struct with two fields and two methods.
+// Tests that:
+//   - struct fields are registered in the symbol table
+//   - method bodies can use `self`
+//   - `self.field` access resolves without error
+//   - the constructor `new` can be called from outside
+// Expected: zero errors.
+
+struct Rectangle {
+    width: int,
+    height: int
+
+    pub fn new(w: int, h: int) Rectangle {
+        return Rectangle { width = w, height = h }
+    }
+
+    pub fn area(self) int {
+        return self.width * self.height
+    }
+
+    pub fn perimeter(self) int {
+        return 2 * (self.width + self.height)
+    }
+}
+
+fn main() void {
+    let rect = Rectangle.new(10, 5)
+    let a = rect.area()
+    let p = rect.perimeter()
+    println($"area={a}, perimeter={p}")
+}

@@ -1,0 +1,19 @@
+// fixture: ok_lambda_scope.ubl
+// A lambda (closure) whose parameter `x` shadows the outer `x`.
+// Tests that lambda bodies get their own scope and that the
+// outer `x` is still visible after the lambda.
+// Expected: zero errors.
+
+fn apply(value: int, f: fn(int) int) int {
+    return f(value)
+}
+
+fn main() int {
+    let x = 10
+
+    // lambda parameter `x` shadows the outer `x` inside the lambda body
+    let doubled = apply(x, fn(x) { return x * 2 })
+
+    // outer x is still 10 here
+    return x + doubled    // 10 + 20 = 30
+}

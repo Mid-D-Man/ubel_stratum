@@ -1,0 +1,9 @@
+// fixture: ok_simple.ubl
+// The simplest valid Ubel Stratum program.
+// One function, one let binding, one return.
+// Expected: zero errors, symbol table contains `main` and `x`.
+
+fn main() int {
+    let x = 42
+    return x
+}

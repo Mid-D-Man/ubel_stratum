@@ -1,0 +1,18 @@
+// fixture: err_top_level_collision.ubl
+// A function and a struct are both named `Config` at the top level.
+// Top-level names all share the module scope, so the second
+// declaration should produce a DuplicateDefinition error.
+// Expected: exactly 1 NameError::DuplicateDefinition for `Config`.
+
+struct Config {
+    host: string,
+    port: int
+}
+
+fn Config() string {     // ERROR: `Config` is already defined as a struct
+    return "oops"
+}
+
+fn main() void {
+    let c = Config()
+}

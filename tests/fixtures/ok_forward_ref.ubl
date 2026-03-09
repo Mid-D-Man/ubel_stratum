@@ -1,0 +1,13 @@
+// fixture: ok_forward_ref.ubl
+// `main` calls `greet` which is declared *after* it in the file.
+// Validates that top-level pre-declaration allows forward references.
+// Expected: zero errors.
+
+fn main() void {
+    let message = greet("world")
+    println(message)
+}
+
+fn greet(name: string) string {
+    return $"Hello, {name}!"
+}

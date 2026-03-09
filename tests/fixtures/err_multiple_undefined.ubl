@@ -1,0 +1,13 @@
+// fixture: err_multiple_undefined.ubl
+// Three distinct undefined names used in one function.
+// Tests that the error manager accumulates ALL errors rather
+// than stopping at the first one.
+// Expected: at least 3 NameError::UndefinedName errors
+//           (one each for `alpha`, `beta`, `gamma`).
+
+fn main() int {
+    let a = alpha + 1     // ERROR: `alpha` is not defined
+    let b = beta * 2      // ERROR: `beta` is not defined
+    let c = gamma - 3     // ERROR: `gamma` is not defined
+    return a + b + c
+}

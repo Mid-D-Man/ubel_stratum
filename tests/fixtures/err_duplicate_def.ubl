@@ -1,0 +1,9 @@
+// fixture: err_duplicate_def.ubl
+// `x` is declared twice in the same block scope.
+// Expected: exactly 1 NameError::DuplicateDefinition for the second `x`.
+
+fn main() int {
+    let x = 1
+    let x = 2    // ERROR: `x` is already defined in this scope
+    return x
+}

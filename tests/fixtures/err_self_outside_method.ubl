@@ -1,0 +1,7 @@
+// fixture: err_self_outside_method.ubl
+// `self` is used inside a free function (not a method).
+// Expected: exactly 1 NameError::SelfOutsideMethod.
+
+fn broken() int {
+    return self.value    // ERROR: `self` is not valid here
+}

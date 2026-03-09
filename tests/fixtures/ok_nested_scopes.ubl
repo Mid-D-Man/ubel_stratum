@@ -1,0 +1,21 @@
+// fixture: ok_nested_scopes.ubl
+// Tests variable shadowing and block-level scoping.
+// The inner `x` shadows the outer `x` inside the if block.
+// After the block, the outer `x` is visible again.
+// Expected: zero errors.
+
+fn main() int {
+    let x = 1
+
+    if x == 1 {
+        let x = 100          // shadows outer x — valid
+        let y = x + 1        // y = 101; x refers to the inner x
+        println($"inner x = {x}, y = {y}")
+    }
+
+    // x here is the outer x = 1
+    // y is out of scope here — not referenced, so no error
+
+    let result = x * 2       // result = 2
+    return result
+}

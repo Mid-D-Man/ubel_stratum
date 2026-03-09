@@ -1,0 +1,27 @@
+// fixture: ok_enum_variants.ubl
+// Enum declared, then used in a match expression.
+// Tests that enum variants are registered in the symbol table
+// and that match arm patterns resolve the variant names.
+// Expected: zero errors.
+
+enum Direction {
+    North,
+    South,
+    East,
+    West
+}
+
+fn describe(d: Direction) string {
+    match d {
+        North => return "heading north",
+        South => return "heading south",
+        East  => return "heading east",
+        West  => return "heading west",
+    }
+}
+
+fn main() void {
+    let dir = Direction.North
+    let desc = describe(dir)
+    println(desc)
+}

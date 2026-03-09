@@ -1,0 +1,16 @@
+// fixture: ok_imports.ubl
+// Imports a name with `summon` and then uses it.
+// Tests that the imported name is added to the module scope
+// and resolves correctly at the use site.
+// Expected: zero errors.
+
+summon std.collections.List
+summon std.io.println
+
+fn main() void {
+    let mut numbers = List.new()
+    numbers.push(1)
+    numbers.push(2)
+    numbers.push(3)
+    println($"count: {numbers.len()}")
+}

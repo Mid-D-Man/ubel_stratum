@@ -1,0 +1,8 @@
+// fixture: err_undefined_name.ubl
+// `y` is used but never defined anywhere in scope.
+// Expected: exactly 1 NameError::UndefinedName for `y`.
+
+fn main() int {
+    let x = y + 1    // ERROR: `y` is not defined
+    return x
+}
