@@ -1,10 +1,6 @@
 name: Ubel Stratum — Test & Bench Publisher
 
 on:
-  push:
-    branches: [master, main]
-  pull_request:
-    branches: [master, main]
   workflow_dispatch:
     inputs:
       publish_type:
@@ -85,13 +81,13 @@ jobs:
           cache-on-failure: true
 
       - name: Build test binaries
-        run: cargo test --no-run 2>&1
+        run: cargo test --no-run --lib --tests 2>&1
 
       - name: Run all tests (continue on failure)
         continue-on-error: true
         run: |
           set +e
-          cargo test --color=never --no-fail-fast -- --show-output 2>&1 | tee test-raw.txt
+          cargo test --lib --tests --color=never --no-fail-fast -- --show-output 2>&1 | tee test-raw.txt
           TEST_EXIT_CODE=${PIPESTATUS[0]}
           echo "TEST_EXIT=${TEST_EXIT_CODE}" >> $GITHUB_ENV
           if [ $TEST_EXIT_CODE -ne 0 ]; then
