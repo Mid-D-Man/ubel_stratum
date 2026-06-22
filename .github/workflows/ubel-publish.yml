@@ -21,6 +21,10 @@ permissions:
   contents: write
   actions: read
 
+env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_TERM_COLOR: always
+
 # =============================================================================
 
 jobs:
@@ -45,14 +49,10 @@ jobs:
               all)   T=true; B=true; P=true ;;
             esac
           else
-            # Tests always run on push / PR
             T=true
             MSG="${{ github.event.head_commit.message }}"
-            # --publish-bench or --publish-all triggers lexer + ast benches
             echo "$MSG" | grep -qiE '\-\-publish-(bench|all)' && B=true || true
-            # --publish-parser triggers the slow parser bench (can combine with above)
             echo "$MSG" | grep -qiE '\-\-publish-parser'      && P=true || true
-            # --publish-all also implies parser bench
             echo "$MSG" | grep -qiE '\-\-publish-all'         && P=true || true
           fi
 
@@ -66,6 +66,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: parse-trigger
     if: needs.parse-trigger.outputs.run_tests == 'true'
+    timeout-minutes: 60
 
     steps:
       - uses: actions/checkout@v4
@@ -78,17 +79,10 @@ jobs:
         id: rustver
         run: echo "ver=$(rustc --version)" >> $GITHUB_OUTPUT
 
-      - uses: actions/cache@v4
+      - uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
+          shared-key: "ubel"
+          cache-on-failure: true
 
       - name: Build test binaries
         run: cargo test --no-run 2>&1
@@ -138,7 +132,6 @@ jobs:
               print(f"  {i:3}: {repr(l)}")
           print("=============================================")
 
-          # Capture per-test stdout
           test_output = {}
           for m in re.finditer(
                   r'---- ([\w:]+(?:::\w+)*) stdout ----\n(.*?)'
@@ -261,7 +254,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: parse-trigger
     if: needs.parse-trigger.outputs.run_bench == 'true'
-    timeout-minutes: 45
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
 
@@ -273,17 +266,10 @@ jobs:
         id: rustver
         run: echo "ver=$(rustc --version)" >> $GITHUB_OUTPUT
 
-      - uses: actions/cache@v4
+      - uses: Swatinem/rust-cache@v2
         with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          key: ${{ runner.os }}-cargo-bench-${{ hashFiles('**/Cargo.lock', 'src/parser/grammar.lalrpop') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-bench-
+          shared-key: "ubel"
+          cache-on-failure: true
 
       - name: Run lexer and AST benchmarks
         continue-on-error: true
