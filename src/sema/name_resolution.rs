@@ -365,4 +365,475 @@ impl<'a> Resolver<'a> {
                 self.resolve_binding_target(binding, *mutable, stmt.span);
             }
             StmtKind::Expr(e)     => self.resolve_expr(e),
-            StmtKind::Return(e)   => { if let Some(e) =
+            StmtKind::Return(e)   => { if let Some(e) = e { self.resolve_expr(e); } }
+
+StmtKind::Fail(e)     => self.resolve_expr(e),
+
+StmtKind::Break(e)    => { if let Some(e) = e { self.resolve_expr(e); } }
+
+StmtKind::Continue    => {}
+
+StmtKind::Defer(e)    => self.resolve_expr(e),StmtKind::If(if_node) => {
+            self.resolve_expr(if_node.condition);
+            self.resolve_block(&if_node.then_block);
+            for elif in if_node.elif_branches {
+                self.resolve_expr(elif.condition);
+                self.resolve_block(&elif.block);
+            }
+            if let Some(else_b) = &if_node.else_block {
+                self.resolve_block(else_b);
+            }
+        }
+
+        StmtKind::Match { scrutinee, arms } => {
+            self.resolve_expr(scrutinee);
+            for arm in arms.iter() {
+                self.scopes.push();
+                // Declare any bindings introduced by the pattern before
+                // checking the guard — guards can reference those bindings.
+                self.resolve_pattern_bindings(&arm.pattern);
+                if let Some(guard) = arm.guard { self.resolve_expr(guard); }
+                match &arm.body {
+                    crate::ast::expressions::MatchArmBody::Expr(e) => self.resolve_expr(e),
+                    crate::ast::expressions::MatchArmBody::Block(b) => self.resolve_block(b),
+                }
+                self.scopes.pop();
+            }
+        }
+
+        StmtKind::For { binding, iter, body } => {
+            self.resolve_expr(iter);
+            self.scopes.push();
+            self.resolve_binding_target(binding, false, stmt.span);
+            self.resolve_block(body);
+            self.scopes.pop();
+        }
+
+        StmtKind::While { condition, body } => {
+            self.resolve_expr(condition);
+            self.resolve_block(body);
+        }
+
+        StmtKind::Loop(body) => self.resolve_block(body),
+
+        StmtKind::With { body, .. } => self.resolve_block(body),
+
+        StmtKind::Using { bindings, body } => {
+            self.scopes.push();
+            for b in bindings.iter() {
+                self.resolve_using_binding(b);
+            }
+            self.resolve_block(body);
+            self.scopes.pop();
+        }
+
+        StmtKind::Extract { pattern, value } => {
+            self.resolve_expr(value);
+            self.resolve_destructure(pattern, stmt.span);
+        }
+
+        StmtKind::Try { body, catch_binding, catch_body } => {
+            self.resolve_block(body);
+            if let Some(catch_b) = catch_body {
+                self.scopes.push();
+                if let Some(name) = catch_binding {
+                    self.declare(name.to_string(), DefKind::Local { mutable: false },
+                        stmt.span, Visibility::Private);
+                }
+                self.resolve_block(catch_b);
+                self.scopes.pop();
+            }
+        }
+
+        StmtKind::Unsafe(body) => self.resolve_block(body),
+    }
+}
+
+fn resolve_using_binding<'ast>(&mut self, b: &UsingBinding<'ast>) {
+    self.resolve_expr(b.value);
+    let id = self.declare(b.name.to_string(),
+        DefKind::Local { mutable: b.mutable }, b.span, Visibility::Private);
+    self.ctx.resolutions.record(b.span, id);
+}
+
+fn resolve_binding_target<'ast>(
+    &mut self,
+    target: &crate::ast::statements::BindingTarget<'ast>,
+    mutable: bool,
+    span: Span,
+) {
+    use crate::ast::statements::BindingTarget;
+    match target {
+        BindingTarget::Ident(name) => {
+            let id = self.declare(name.to_string(),
+                DefKind::Local { mutable }, span, Visibility::Private);
+            self.ctx.resolutions.record(span, id);
+        }
+        BindingTarget::Destructure(pat) => {
+            self.resolve_destructure(pat, span);
+        }
+    }
+}
+
+fn resolve_destructure<'ast>(&mut self, pat: &DestructurePattern<'ast>, span: Span) {
+    match pat {
+        DestructurePattern::Ident(name) => {
+            let id = self.declare(name.to_string(),
+                DefKind::Local { mutable: false }, span, Visibility::Private);
+            self.ctx.resolutions.record(span, id);
+        }
+        DestructurePattern::Tuple(t) => {
+            for elem in t.elements {
+                self.resolve_destructure_elem(elem, span);
+            }
+        }
+        DestructurePattern::Array(a) => {
+            for elem in a.elements {
+                self.resolve_destructure_elem(elem, span);
+            }
+        }
+        DestructurePattern::Struct(s) => {
+            for field in s.fields {
+                if let Some(pat) = &field.pattern {
+                    self.resolve_destructure(pat, field.span);
+                } else {
+                    // shorthand: `{ name }` — bind `name` directly
+                    let id = self.declare(field.field.to_string(),
+                        DefKind::Local { mutable: false }, field.span, Visibility::Private);
+                    self.ctx.resolutions.record(field.span, id);
+                }
+            }
+        }
+    }
+}
+
+fn resolve_destructure_elem<'ast>(&mut self, elem: &DestructureElement<'ast>, span: Span) {
+    match elem {
+        DestructureElement::Ident(name) => {
+            let id = self.declare(name.to_string(),
+                DefKind::Local { mutable: false }, span, Visibility::Private);
+            self.ctx.resolutions.record(span, id);
+        }
+        DestructureElement::Wildcard => {}
+        DestructureElement::Nested(p) => self.resolve_destructure(p, span),
+    }
+}
+
+/// Declare names introduced by a match arm pattern into the current scope.
+/// Pattern use-sites (`Status.Active`, enum paths) are NOT declarations —
+/// only `PatternKind::Ident` and extract fields introduce new bindings.
+fn resolve_pattern_bindings<'ast>(&mut self, pat: &Pattern<'ast>) {
+    match &pat.kind {
+        PatternKind::Wildcard | PatternKind::Literal(_) => {}
+        PatternKind::Ident { name, mutable } => {
+            let id = self.declare(name.to_string(),
+                DefKind::Local { mutable: *mutable }, pat.span, Visibility::Private);
+            self.ctx.resolutions.record(pat.span, id);
+        }
+        PatternKind::Tuple(pats) | PatternKind::Or(pats) => {
+            for p in pats.iter() { self.resolve_pattern_bindings(p); }
+        }
+        PatternKind::Array { elements, .. } => {
+            for p in elements.iter() { self.resolve_pattern_bindings(p); }
+        }
+        PatternKind::Struct { fields, .. } => {
+            for f in fields.iter() {
+                if let Some(sub_pat) = &f.pattern {
+                    self.resolve_pattern_bindings(sub_pat);
+                } else {
+                    // shorthand `{ name }` — binds `name`
+                    let id = self.declare(f.field.to_string(),
+                        DefKind::Local { mutable: false }, pat.span, Visibility::Private);
+                    self.ctx.resolutions.record(pat.span, id);
+                }
+            }
+        }
+        PatternKind::Enum { path, payload } => {
+            // Resolve the enum/variant path as a use, not a binding.
+            self.resolve_qual_path(path, pat.span);
+            match payload {
+                EnumPatternPayload::Tuple(pats) => {
+                    for p in pats.iter() { self.resolve_pattern_bindings(p); }
+                }
+                EnumPatternPayload::Struct(fields) => {
+                    for f in fields.iter() {
+                        if let Some(sub_pat) = &f.pattern {
+                            self.resolve_pattern_bindings(sub_pat);
+                        } else {
+                            let id = self.declare(f.field.to_string(),
+                                DefKind::Local { mutable: false }, pat.span, Visibility::Private);
+                            self.ctx.resolutions.record(pat.span, id);
+                        }
+                    }
+                }
+                EnumPatternPayload::None => {}
+            }
+        }
+        PatternKind::Range { .. } => {}
+        PatternKind::Extract(fields) => {
+            for f in fields.iter() {
+                if let Some(sub_pat) = &f.pattern {
+                    self.resolve_pattern_bindings(sub_pat);
+                } else {
+                    let id = self.declare(f.field.to_string(),
+                        DefKind::Local { mutable: false }, pat.span, Visibility::Private);
+                    self.ctx.resolutions.record(pat.span, id);
+                }
+            }
+        }
+    }
+}
+
+// ── Expression resolution ─────────────────────────────────────
+
+fn resolve_expr<'ast>(&mut self, expr: &Expr<'ast>) {
+    match &expr.kind {
+        ExprKind::Ident(name) => {
+            self.resolve_name(name, expr.span);
+        }
+
+        ExprKind::SelfExpr => {
+            if !self.in_method {
+                self.errors.add_name_error(NameError::SelfOutsideMethod { span: expr.span });
+            }
+        }
+
+        ExprKind::Lit(_) => {}
+
+        // Short-decl `x := expr` — resolve rhs, then declare x.
+        ExprKind::ShortDecl { name, value } => {
+            self.resolve_expr(value);
+            let id = self.declare(name.to_string(),
+                DefKind::Local { mutable: true }, expr.span, Visibility::Private);
+            self.ctx.resolutions.record(expr.span, id);
+        }
+
+        ExprKind::BinOp { lhs, rhs, .. } => {
+            self.resolve_expr(lhs);
+            self.resolve_expr(rhs);
+        }
+        ExprKind::UnaryOp { operand, .. } => self.resolve_expr(operand),
+        ExprKind::Assign { target, value, .. } => {
+            self.resolve_expr(target);
+            self.resolve_expr(value);
+        }
+        ExprKind::Pipe { left, right } => {
+            self.resolve_expr(left);
+            self.resolve_expr(right);
+        }
+        ExprKind::Call { callee, args } => {
+            self.resolve_expr(callee);
+            for arg in args.iter() {
+                match &arg.kind {
+                    crate::ast::expressions::ArgKind::Positional(e) => self.resolve_expr(e),
+                    crate::ast::expressions::ArgKind::Named { value, .. } => self.resolve_expr(value),
+                }
+            }
+        }
+        ExprKind::Field { target, .. }
+        | ExprKind::OptionalChain { target, .. } => self.resolve_expr(target),
+        ExprKind::Index { target, index } => {
+            self.resolve_expr(target);
+            self.resolve_expr(index);
+        }
+        ExprKind::Try(e) | ExprKind::Await(e) => self.resolve_expr(e),
+        ExprKind::As { expr: e, .. } => self.resolve_expr(e),
+        ExprKind::Tuple(es) | ExprKind::Array(es) => {
+            for e in es.iter() { self.resolve_expr(e); }
+        }
+        ExprKind::Dict(entries) => {
+            for entry in entries.iter() {
+                self.resolve_expr(entry.key);
+                self.resolve_expr(entry.value);
+            }
+        }
+        ExprKind::AnonObject(fields) => {
+            for f in fields.iter() { self.resolve_expr(f.value); }
+        }
+        ExprKind::StructLit { path, fields } => {
+            self.resolve_qual_path(path, expr.span);
+            for f in fields.iter() { self.resolve_expr(f.value); }
+        }
+        ExprKind::Lambda(lambda) => {
+            self.scopes.push();
+            for p in lambda.params.iter() {
+                // FIX: record lambda params against their span so type_infer
+                // can look them up when resolving Ident uses inside the body.
+                let id = self.declare(p.name.to_string(),
+                    DefKind::Local { mutable: false }, p.span, Visibility::Private);
+                self.ctx.resolutions.record(p.span, id);
+            }
+            match &lambda.body {
+                crate::ast::expressions::LambdaBody::Block(b) => self.resolve_block(b),
+                crate::ast::expressions::LambdaBody::Expr(e)  => self.resolve_expr(e),
+            }
+            self.scopes.pop();
+        }
+        ExprKind::Block(b) => self.resolve_block(b),
+        ExprKind::If(if_node) => {
+            self.resolve_expr(if_node.condition);
+            self.resolve_block(&if_node.then_block);
+            for elif in if_node.elif_branches {
+                self.resolve_expr(elif.condition);
+                self.resolve_block(&elif.block);
+            }
+            if let Some(else_b) = &if_node.else_block {
+                self.resolve_block(else_b);
+            }
+        }
+        ExprKind::Match(m) => {
+            self.resolve_expr(m.scrutinee);
+            for arm in m.arms.iter() {
+                self.scopes.push();
+                self.resolve_pattern_bindings(&arm.pattern);
+                if let Some(guard) = arm.guard { self.resolve_expr(guard); }
+                match &arm.body {
+                    crate::ast::expressions::MatchArmBody::Expr(e) => self.resolve_expr(e),
+                    crate::ast::expressions::MatchArmBody::Block(b) => self.resolve_block(b),
+                }
+                self.scopes.pop();
+            }
+        }
+        ExprKind::Linq(linq) => {
+            self.resolve_expr(linq.source);
+            self.scopes.push();
+            self.declare(linq.binding.to_string(),
+                DefKind::Local { mutable: false }, expr.span, Visibility::Private);
+            for clause in linq.clauses.iter() {
+                match clause {
+                    crate::ast::expressions::LinqClause::Where(e)
+                    | crate::ast::expressions::LinqClause::OrderBy { expr: e, .. }
+                    | crate::ast::expressions::LinqClause::GroupBy(e) => self.resolve_expr(e),
+                    crate::ast::expressions::LinqClause::Let { name, value } => {
+                        self.resolve_expr(value);
+                        self.declare(name.to_string(),
+                            DefKind::Local { mutable: false }, expr.span, Visibility::Private);
+                    }
+                }
+            }
+            self.resolve_expr(linq.select);
+            self.scopes.pop();
+        }
+        ExprKind::OrElse { expr: e, fallback } => {
+            self.resolve_expr(e);
+            if let crate::ast::expressions::OrElseFallback::Expr(fb) = fallback {
+                self.resolve_expr(fb);
+            }
+        }
+    }
+}
+
+// ── Qualified path resolution ─────────────────────────────────
+
+/// Resolve a dotted path like `std.io.File` or just `MyStruct`.
+/// Records the resolution against `span`.
+fn resolve_qual_path(&mut self, path: &[&str], span: Span) {
+    if path.is_empty() { return; }
+
+    if path.len() == 1 {
+        self.resolve_name(path[0], span);
+        return;
+    }
+
+    // For a multi-segment path, the root segment must be in scope.
+    // Subsequent segments are field/variant accesses resolved during
+    // type checking (Pass 2). We record only the root here.
+    let root = path[0];
+    if let Some(def_id) = self.scopes.resolve(root) {
+        self.ctx.resolutions.record(span, def_id);
+    } else {
+        self.errors.add_name_error(NameError::UnresolvedPathSegment {
+            full_path:       path.join("."),
+            unresolved_at:   root.to_string(),
+            resolved_so_far: String::new(),
+            span,
+        });
+    }
+}
+
+/// Resolve a single name and record it.
+fn resolve_name(&mut self, name: &str, span: Span) {
+    if let Some(id) = self.scopes.resolve(name) {
+        self.ctx.resolutions.record(span, id);
+    } else {
+        let suggestion = self.find_similar(name);
+        self.errors.add_name_error(NameError::UndefinedName {
+            name:         name.to_string(),
+            span,
+            did_you_mean: suggestion,
+        });
+    }
+}
+
+// ── Helpers ───────────────────────────────────────────────────
+
+fn declare(
+    &mut self,
+    name:       String,
+    kind:       DefKind,
+    span:       Span,
+    visibility: Visibility,
+) -> DefId {
+    let id = self.ctx.symbols.insert(name.clone(), kind, span, visibility);
+    if let Some(existing_id) = self.scopes.define(name.clone(), id) {
+        self.errors.add_name_error(NameError::DuplicateDefinition {
+            name,
+            first_defined: self.ctx.symbols.lookup(existing_id).defined_at,
+            redefined_at:  span,
+        });
+    }
+    id
+}
+
+fn find_similar(&self, target: &str) -> Option<String> {
+    let mut best: Option<(usize, String)> = None;
+    for def in self.ctx.symbols.iter() {
+        let dist = edit_distance(&def.name, target);
+        if dist <= 1 {
+            if best.as_ref().map_or(true, |(d, _)| dist < *d) {
+                best = Some((dist, def.name.clone()));
+            }
+        }
+    }
+    best.map(|(_, name)| name)
+                }}
+// ── Utility ───────────────────────────────────────────────────────
+fn edit_distance(a: &str, b: &str) -> usize {
+
+let a: Vec<char> = a.chars().collect();
+
+let b: Vec<char> = b.chars().collect();
+
+let m = a.len();
+
+let n = b.len();
+
+if m.abs_diff(n) > 2 { return 2; }
+
+let mut dp = vec![vec![0usize; n + 1]; m + 1];
+
+for i in 0..=m { dp[i][0] = i; }
+
+for j in 0..=n { dp[0][j] = j; }
+
+for i in 1..=m {
+
+for j in 1..=n {
+
+dp[i][j] = if a[i - 1] == b[j - 1] {
+
+dp[i - 1][j - 1]
+
+} else {
+
+1 + dp[i - 1][j].min(dp[i][j - 1]).min(dp[i - 1][j - 1])
+
+};
+
+}
+
+}
+
+dp[m][n].min(2)
+
+                }
