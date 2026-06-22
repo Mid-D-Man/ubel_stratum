@@ -12,7 +12,7 @@ logos        = "0.14"
 lalrpop-util = { version = "0.20", features = ["lexer"] }
 clap         = { version = "4.5",  features = ["derive"] }
 thiserror    = "1.0"
-miette       = { version = "7.0",  features = ["fancy"] }
+miette       = "7.0"
 phf          = { version = "0.11", features = ["macros"] }
 lazy_static  = "1.4"
 bumpalo      = { version = "3",    features = ["collections"] }
@@ -21,8 +21,7 @@ bumpalo      = { version = "3",    features = ["collections"] }
 lalrpop = "0.20"
 
 [dev-dependencies]
-criterion = { version = "0.5", features = ["html_reports"] }
-proptest  = "1.4"
+criterion = "0.5"
 
 [[bin]]
 name = "stratc"
@@ -43,6 +42,17 @@ harness = false
 [[bench]]
 name = "parser_bench"
 harness = false
+
+[[test]]
+name = "name_resolution_tests"
+path = "tests/sema/name_resolution_tests.rs"
+
+# ── Profiles ──────────────────────────────────────────────────────────────────
+
+[profile.dev]
+opt-level     = 0
+codegen-units = 16
+debug         = 1
 
 [profile.release]
 opt-level     = 3
