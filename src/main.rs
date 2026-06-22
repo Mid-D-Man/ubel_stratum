@@ -4,6 +4,7 @@ mod lexer;
 mod error_management;
 mod ast;
 mod parser;
+mod sema;
 
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
@@ -25,21 +26,21 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Tokenize a .strat file (show tokens)
+    /// Tokenize a .ubl file
     Lex {
         file: PathBuf,
         #[arg(short, long)]
         verbose: bool,
     },
-    /// Parse a .strat file (show AST)
+    /// Parse a .ubl file
     Parse {
         file: PathBuf,
         #[arg(short, long, default_value = "text")]
         format: String,
     },
-    /// Check syntax and types
+    /// Check syntax, names, types, and tier rules
     Check { file: PathBuf },
-    /// Run a .strat file (interpreter)
+    /// Run a .ubl file (interpreter — not yet implemented)
     Run {
         file: PathBuf,
         args: Vec<String>,
@@ -51,10 +52,10 @@ fn main() {
     if cli.quiet { Logger::disable(); }
 
     let exit_code = match cli.command {
-        Commands::Lex { file, verbose }    => handle_lex(file, verbose),
-        Commands::Parse { file, format }   => handle_parse(file, format),
-        Commands::Check { file }           => handle_check(file),
-        Commands::Run { file, args }       => handle_run(file, args),
+        Commands::Lex { file, verbose }  => handle_lex(file, verbose),
+        Commands::Parse { file, format } => handle_parse(file, format),
+        Commands::Check { file }         => handle_check(file),
+        Commands::Run { file, args }     => handle_run(file, args),
     };
     std::process::exit(exit_code);
 }
@@ -106,10 +107,35 @@ fn handle_parse(file: PathBuf, _format: String) -> i32 {
     }
 }
 
-fn handle_check(_file: PathBuf) -> i32 {
-    Logger::error("Check command not yet implemented"); 1
+fn handle_check(file: PathBuf) -> i32 {
+    Logger::info(&format!("Checking: {:?}", file));
+    let source = match fs::read_to_string(&file) {
+        Ok(s)  => s,
+        Err(e) => { Logger::error(&format!("Failed to read file: {}", e)); return 1; }
+    };
+    let tokens = match lexer::tokenize(&source) {
+        Ok(t)   => t,
+        Err(em) => { Logger::error("❌ Lexing failed:"); em.report_all(); return 1; }
+    };
+    let arena = ast::arena::AstArena::with_capacity(256 * 1024);
+    let program = match parser::parse(&arena, tokens, source.clone()) {
+        Ok(p)   => p,
+        Err(em) => { Logger::error("❌ Parsing failed:"); em.report_all(); return 1; }
+    };
+    match sema::analyse(&program, &arena, source) {
+        Ok(_ctx) => {
+            Logger::info("✅ Check passed — no errors");
+            0
+        }
+        Err(em) => {
+            Logger::error("❌ Check failed:");
+            em.report_all();
+            1
+        }
+    }
 }
 
 fn handle_run(_file: PathBuf, _args: Vec<String>) -> i32 {
-    Logger::error("Run command not yet implemented"); 1
-                   }
+    Logger::error("Run command not yet implemented");
+    1
+}
