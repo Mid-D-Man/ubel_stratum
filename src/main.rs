@@ -35,10 +35,8 @@ enum Commands {
         verbose: bool,
     },
     /// Parse a .ubl file and show top-level item count.
-    Parse {
-        file: PathBuf,
-    },
-    /// Run all semantic analysis passes (name resolution, type inference, tier check).
+    Parse { file: PathBuf },
+    /// Run name resolution, type inference, and tier checking.
     Check { file: PathBuf },
     /// Run a .ubl file through the tree-walking interpreter.
     Run {
@@ -52,21 +50,23 @@ fn main() {
     if cli.quiet { Logger::disable(); }
 
     let exit_code = match cli.command {
-        Commands::Lex { file, verbose }   => handle_lex(file, verbose),
+        Commands::Lex   { file, verbose } => handle_lex(file, verbose),
         Commands::Parse { file }          => handle_parse(file),
         Commands::Check { file }          => handle_check(file),
-        Commands::Run { file, args }      => handle_run(file, args),
+        Commands::Run   { file, args }    => handle_run(file, args),
     };
     std::process::exit(exit_code);
 }
 
-// ── Lex ───────────────────────────────────────────────────────────
+fn read_source(file: &PathBuf) -> Result<String, i32> {
+    fs::read_to_string(file).map_err(|e| {
+        Logger::error(&format!("failed to read file: {}", e));
+        1
+    })
+}
 
 fn handle_lex(file: PathBuf, verbose: bool) -> i32 {
-    let source = match fs::read_to_string(&file) {
-        Ok(s)  => s,
-        Err(e) => { Logger::error(&format!("failed to read file: {}", e)); return 1; }
-    };
+    let source = match read_source(&file) { Ok(s) => s, Err(c) => return c };
     match lexer::tokenize(&source) {
         Ok(tokens) => {
             if verbose {
@@ -85,13 +85,8 @@ fn handle_lex(file: PathBuf, verbose: bool) -> i32 {
     }
 }
 
-// ── Parse ─────────────────────────────────────────────────────────
-
 fn handle_parse(file: PathBuf) -> i32 {
-    let source = match fs::read_to_string(&file) {
-        Ok(s)  => s,
-        Err(e) => { Logger::error(&format!("failed to read file: {}", e)); return 1; }
-    };
+    let source = match read_source(&file) { Ok(s) => s, Err(c) => return c };
     let tokens = match lexer::tokenize(&source) {
         Ok(t)   => t,
         Err(em) => { Logger::error("❌ lex failed:"); em.report_all(); return 1; }
@@ -106,13 +101,8 @@ fn handle_parse(file: PathBuf) -> i32 {
     }
 }
 
-// ── Check ─────────────────────────────────────────────────────────
-
 fn handle_check(file: PathBuf) -> i32 {
-    let source = match fs::read_to_string(&file) {
-        Ok(s)  => s,
-        Err(e) => { Logger::error(&format!("failed to read file: {}", e)); return 1; }
-    };
+    let source = match read_source(&file) { Ok(s) => s, Err(c) => return c };
     let tokens = match lexer::tokenize(&source) {
         Ok(t)   => t,
         Err(em) => { Logger::error("❌ lex failed:"); em.report_all(); return 1; }
@@ -123,43 +113,34 @@ fn handle_check(file: PathBuf) -> i32 {
         Err(em) => { Logger::error("❌ parse failed:"); em.report_all(); return 1; }
     };
     match sema::analyse(&program, &arena, source) {
-        Ok(_ctx) => {
-            Logger::info("✅ check passed — no errors");
-            0
-        }
-        Err(em) => {
-            Logger::error("❌ check failed:");
-            em.report_all();
-            1
-        }
+        Ok(_)   => { Logger::info("✅ check passed — no errors"); 0 }
+        Err(em) => { Logger::error("❌ check failed:"); em.report_all(); 1 }
     }
 }
 
-// ── Run ───────────────────────────────────────────────────────────
-
 fn handle_run(file: PathBuf, _args: Vec<String>) -> i32 {
-    let source = match fs::read_to_string(&file) {
-        Ok(s)  => s,
-        Err(e) => { Logger::error(&format!("failed to read file: {}", e)); return 1; }
-    };
+    let source = match read_source(&file) { Ok(s) => s, Err(c) => return c };
     let tokens = match lexer::tokenize(&source) {
         Ok(t)   => t,
         Err(em) => { Logger::error("❌ lex failed:"); em.report_all(); return 1; }
     };
+    // Arena must outlive the interpreter (which stores &'ast references).
     let arena = ast::arena::AstArena::with_capacity(256 * 1024);
     let program = match parser::parse(&arena, tokens, source.clone()) {
         Ok(p)   => p,
         Err(em) => { Logger::error("❌ parse failed:"); em.report_all(); return 1; }
     };
-    // Run sema first to catch errors before interpreting.
+    // Run sema first — catch type and tier errors before executing.
     if let Err(em) = sema::analyse(&program, &arena, source) {
         Logger::error("❌ type errors — fix before running:");
         em.report_all();
         return 1;
     }
-    let mut interp = interpreter::Interpreter::new();
+    // FIX: pass &arena so the interpreter can re-parse interpolated string
+    // expressions at runtime using the same persistent arena.
+    let mut interp = interpreter::Interpreter::new(&arena);
     match interp.run_program(&program) {
         Ok(())   => 0,
         Err(msg) => { eprintln!("\x1b[31mruntime error:\x1b[0m {}", msg); 1 }
     }
-  }
+    }
