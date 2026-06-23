@@ -1,70 +1,65 @@
 // src/sema/tier_check.rs
-//! Pass 3 — Tier Enforcement.
+//! Pass 3 — Tier Rule Enforcement.
 //!
-//! Walks the fully-resolved, fully-typed AST and enforces the memory-tier
-//! rules that only make sense after both name-resolution and type-inference
-//! have run.
+//! Runs after name_resolution (Pass 1) and type_infer (Pass 2).
+//! All identifier uses already have DefIds; all expressions already have TypeIds.
+//! This pass simply enforces the tier rules by walking the AST and consulting
+//! both the symbol table (for callee tiers) and the type table
+//! (for ArenaRef escape detection).
 //!
-//! # Rules checked
+//! # Rules enforced
 //!
-//! | Rule                                                  | Error                    |
-//! |-------------------------------------------------------|--------------------------|
-//! | `with arena` inside non-`@tier(mid)` function        | `ArenaInWrongTier`       |
-//! | `await` inside non-`@tier(high)` function            | `AwaitInWrongTier`       |
-//! | `async fn` not `@tier(high)`                         | `AsyncFunctionNotHigh`   |
-//! | LINQ query inside non-`@tier(high)` function         | `LinqInWrongTier`        |
-//! | `@tier(low)` calling `@tier(high)` or `@tier(mid)`  | `IllegalTierCall`        |
-//! | `@tier(mid)` calling `@tier(high)`                   | `IllegalTierCall`        |
-//! | Value with `ArenaRef` type escapes to `@tier(high)`  | `ArenaRefEscapesBoundary`|
+//! - `async fn` must be `@tier(high)`
+//! - `@tier(mid)` function return type must not contain ArenaRef
+//! - `with arena(…)` only inside `@tier(mid)`
+//! - `await` only inside `@tier(high)`
+//! - LINQ query syntax only inside `@tier(high)`
+//! - `@tier(mid)` → `@tier(high)` call: forbidden
+//! - `@tier(low)` → `@tier(high)` call: forbidden
+//! - `@tier(low)` → `@tier(mid)` call: forbidden
 
 #![allow(dead_code)]
 
-use crate::ast::common::{Span, TierAnnotation};
+use crate::ast::common::{TierAnnotation, Span};
 use crate::ast::declarations::{
-    ExtendDecl, FunctionDecl, ImplBlock, MethodDecl,
-    StructDecl, StructMember, TraitDecl, TraitItem,
+    FunctionDecl, MethodDecl, StructDecl, StructMember, TraitItem,
 };
 use crate::ast::expressions::{
     ArgKind, Expr, ExprKind, LambdaBody, LinqClause,
     MatchArmBody, OrElseFallback,
 };
 use crate::ast::root::{Item, Program};
-use crate::ast::statements::{AllocatorKind, BindingTarget, Block, Stmt, StmtKind};
+use crate::ast::statements::{AllocatorKind, Block, Stmt, StmtKind};
 use crate::error_management::{ErrorManager, error_types::TypeError};
 use crate::sema::sema_context::SemaContext;
 use crate::sema::symbol_table::{DefId, DefKind};
+use crate::sema::type_table::SemaType;
 
-// ── Entry point ────────────────────────────────────────────────────────────
+// ── Entry point ───────────────────────────────────────────────────
 
 pub fn check<'ast>(
     program: &Program<'ast>,
-    ctx:     &mut SemaContext,
+    ctx:     &SemaContext,
     errors:  &mut ErrorManager,
 ) {
     let mut checker = TierChecker::new(ctx, errors);
     checker.check_program(program);
 }
 
-// ── TierChecker ───────────────────────────────────────────────────────────
+// ── Checker ───────────────────────────────────────────────────────
 
 struct TierChecker<'a> {
-    ctx:           &'a mut SemaContext,
-    errors:        &'a mut ErrorManager,
-    current_tier:  TierAnnotation,
-    current_async: bool,
+    ctx:          &'a SemaContext,
+    errors:       &'a mut ErrorManager,
+    current_tier: TierAnnotation,
 }
 
 impl<'a> TierChecker<'a> {
-    fn new(ctx: &'a mut SemaContext, errors: &'a mut ErrorManager) -> Self {
-        TierChecker {
-            ctx,
-            errors,
-            current_tier:  TierAnnotation::High,
-            current_async: false,
-        }
+    fn new(ctx: &'a SemaContext, errors: &'a mut ErrorManager) -> Self {
+        TierChecker { ctx, errors, current_tier: TierAnnotation::High }
     }
 
-    // ── Top-level ─────────────────────────────────────────────────────────
+    // ── Top level ─────────────────────────────────────────────────
 
     fn check_program<'ast>(&mut self, program: &Program<'ast>) {
         for item in program.items {
@@ -76,17 +71,25 @@ impl<'a> TierChecker<'a> {
         match item {
             Item::Function(f) => self.check_function(f),
             Item::Struct(s)   => self.check_struct(s),
-            Item::Impl(i)     => self.check_impl(i),
-            Item::Extend(x)   => self.check_extend(x),
-            Item::Trait(t)    => self.check_trait(t),
-            _                 => {}
+            Item::Impl(i) => {
+                for m in i.methods { self.check_method(m); }
+            }
+            Item::Extend(x) => {
+                for m in x.methods { self.check_method(m); }
+            }
+            Item::Trait(t) => {
+                for it in t.items {
+                    if let TraitItem::DefaultMethod(m) = it {
+                        self.check_method(m);
+                    }
+                }
+            }
+            _ => {}
         }
     }
 
-    // ── Function / method ─────────────────────────────────────────────────
-
     fn check_function<'ast>(&mut self, f: &FunctionDecl<'ast>) {
-        // async fn must be @tier(high)
+        // Rule: async functions must be HIGH tier.
         if f.is_async && f.tier != TierAnnotation::High {
             self.errors.add_type_error(TypeError::AsyncFunctionNotHigh {
                 actual: f.tier,
@@ -94,20 +97,15 @@ impl<'a> TierChecker<'a> {
             });
         }
 
-        // MID-tier return type must not contain ArenaRef
+        // Rule: MID-tier return type must not contain an ArenaRef.
         if f.tier == TierAnnotation::Mid {
-            if let Some(ret) = &f.return_type {
-                self.check_return_for_arena_escape(ret.ty.span, f.span);
-            }
+            self.check_mid_return_type(f.name, f.span);
         }
 
-        let prev_tier  = self.current_tier;
-        let prev_async = self.current_async;
-        self.current_tier  = f.tier;
-        self.current_async = f.is_async;
+        let prev = self.current_tier;
+        self.current_tier = f.tier;
         self.check_block(&f.body);
-        self.current_tier  = prev_tier;
-        self.current_async = prev_async;
+        self.current_tier = prev;
     }
 
     fn check_method<'ast>(&mut self, m: &MethodDecl<'ast>) {
@@ -117,20 +115,10 @@ impl<'a> TierChecker<'a> {
                 span:   m.span,
             });
         }
-
-        if m.tier == TierAnnotation::Mid {
-            if let Some(ret) = &m.return_type {
-                self.check_return_for_arena_escape(ret.ty.span, m.span);
-            }
-        }
-
-        let prev_tier  = self.current_tier;
-        let prev_async = self.current_async;
-        self.current_tier  = m.tier;
-        self.current_async = m.is_async;
+        let prev = self.current_tier;
+        self.current_tier = m.tier;
         self.check_block(&m.body);
-        self.current_tier  = prev_tier;
-        self.current_async = prev_async;
+        self.current_tier = prev;
     }
 
     fn check_struct<'ast>(&mut self, s: &StructDecl<'ast>) {
@@ -141,67 +129,60 @@ impl<'a> TierChecker<'a> {
         }
     }
 
-    fn check_impl<'ast>(&mut self, i: &ImplBlock<'ast>) {
-        for m in i.methods { self.check_method(m); }
-    }
+    /// For a MID-tier function named `name`, look up its function TypeId and
+    /// check that the return type doesn't contain ArenaRef.
+    fn check_mid_return_type(&mut self, name: &str, span: Span) {
+        let Some(def_id) = self.ctx.top_level.get(name).copied() else { return; };
+        let Some(fn_ty)  = self.ctx.def_types.get(&def_id).copied() else { return; };
 
-    fn check_extend<'ast>(&mut self, x: &ExtendDecl<'ast>) {
-        for m in x.methods { self.check_method(m); }
-    }
+        // Extract the return TypeId without holding a borrow on ctx.types.
+        let ret_ty = match self.ctx.types.get(fn_ty) {
+            SemaType::Function { return_type, .. } => *return_type,
+            _ => return,
+        };
 
-    fn check_trait<'ast>(&mut self, t: &TraitDecl<'ast>) {
-        for item in t.items {
-            if let TraitItem::DefaultMethod(m) = item {
-                self.check_method(m);
-            }
+        // Now safe to call contains_arena_ref with a fresh borrow.
+        if self.ctx.types.get(ret_ty).contains_arena_ref(&self.ctx.types) {
+            let display = self.ctx.types.get(ret_ty).display(&self.ctx.types);
+            self.errors.add_type_error(TypeError::MidReturnContainsArenaRef {
+                return_type: display,
+                span,
+            });
         }
     }
 
-    // ── Block / statement ─────────────────────────────────────────────────
+    // ── Block / Statement ─────────────────────────────────────────
 
     fn check_block<'ast>(&mut self, block: &Block<'ast>) {
-        for stmt in block.stmts { self.check_stmt(stmt); }
+        for stmt in block.stmts {
+            self.check_stmt(stmt);
+        }
     }
 
     fn check_stmt<'ast>(&mut self, stmt: &Stmt<'ast>) {
         match &stmt.kind {
-
+            // Rule: `with arena(…)` only in MID tier.
             StmtKind::With { allocator, body } => {
-                // `with arena(...)` only valid in @tier(mid)
-                if matches!(allocator, AllocatorKind::Arena(_))
-                    && self.current_tier != TierAnnotation::Mid
-                {
-                    self.errors.add_type_error(TypeError::ArenaInWrongTier {
-                        actual: self.current_tier,
-                        span:   stmt.span,
-                    });
+                if let AllocatorKind::Arena(_) = allocator {
+                    if self.current_tier != TierAnnotation::Mid {
+                        self.errors.add_type_error(TypeError::ArenaInWrongTier {
+                            actual: self.current_tier,
+                            span:   stmt.span,
+                        });
+                    }
                 }
                 self.check_block(body);
             }
 
-            StmtKind::Return(maybe_e) => {
-                if let Some(e) = maybe_e {
-                    self.check_expr(e);
-                    // MID-tier: returning an arena-ref would escape the boundary
-                    if self.current_tier == TierAnnotation::Mid {
-                        self.check_expr_for_arena_escape(e.span, stmt.span);
-                    }
-                }
-            }
-
-            StmtKind::Let { value, .. } => {
-                self.check_expr(value);
-                // HIGH-tier: a let-binding holding an arena-ref escapes
-                if self.current_tier == TierAnnotation::High {
-                    self.check_expr_for_arena_escape(value.span, stmt.span);
-                }
-            }
-
-            StmtKind::Expr(e)   => self.check_expr(e),
-            StmtKind::Fail(e)   => self.check_expr(e),
-            StmtKind::Defer(e)  => self.check_expr(e),
-            StmtKind::Break(e)  => { if let Some(e) = e { self.check_expr(e); } }
-            StmtKind::Continue  => {}
+            StmtKind::Let { value, .. }    => self.check_expr(value),
+            StmtKind::Expr(e)              => self.check_expr(e),
+            StmtKind::Return(Some(e))      => self.check_expr(e),
+            StmtKind::Return(None)         => {}
+            StmtKind::Fail(e)              => self.check_expr(e),
+            StmtKind::Break(Some(e))       => self.check_expr(e),
+            StmtKind::Break(None)          => {}
+            StmtKind::Continue             => {}
+            StmtKind::Defer(e)             => self.check_expr(e),
 
             StmtKind::If(if_node) => {
                 self.check_expr(if_node.condition);
@@ -236,7 +217,7 @@ impl<'a> TierChecker<'a> {
                 self.check_block(body);
             }
 
-            StmtKind::Loop(body)   => self.check_block(body),
+            StmtKind::Loop(body)  => self.check_block(body),
 
             StmtKind::Using { bindings, body } => {
                 for b in bindings.iter() { self.check_expr(b.value); }
@@ -254,11 +235,11 @@ impl<'a> TierChecker<'a> {
         }
     }
 
-    // ── Expressions ───────────────────────────────────────────────────────
+    // ── Expressions ───────────────────────────────────────────────
 
     fn check_expr<'ast>(&mut self, expr: &Expr<'ast>) {
         match &expr.kind {
-
+            // Rule: `await` only in HIGH tier.
             ExprKind::Await(inner) => {
                 if self.current_tier != TierAnnotation::High {
                     self.errors.add_type_error(TypeError::AwaitInWrongTier {
@@ -269,83 +250,89 @@ impl<'a> TierChecker<'a> {
                 self.check_expr(inner);
             }
 
-            ExprKind::Linq(_) => {
+            // Rule: LINQ only in HIGH tier.
+            ExprKind::Linq(linq) => {
                 if self.current_tier != TierAnnotation::High {
                     self.errors.add_type_error(TypeError::LinqInWrongTier {
                         actual: self.current_tier,
                         span:   expr.span,
                     });
                 }
-                // Don't recurse — root error is sufficient, avoids cascades.
+                self.check_expr(linq.source);
+                for clause in linq.clauses.iter() {
+                    match clause {
+                        LinqClause::Where(e)
+                        | LinqClause::OrderBy { expr: e, .. }
+                        | LinqClause::GroupBy(e) => self.check_expr(e),
+                        LinqClause::Let { value, .. } => self.check_expr(value),
+                    }
+                }
+                self.check_expr(linq.select);
             }
 
+            // Rule: cross-tier call restrictions.
             ExprKind::Call { callee, args } => {
                 self.check_expr(callee);
+                // Look up callee's DefId from the resolution map using the
+                // callee expression's span, then check its tier.
+                if let Some(callee_def_id) = self.ctx.resolutions.get(callee.span) {
+                    self.check_callee_tier(callee_def_id, expr.span);
+                }
                 for arg in args.iter() {
                     match &arg.kind {
                         ArgKind::Positional(e)       => self.check_expr(e),
                         ArgKind::Named { value, .. } => self.check_expr(value),
                     }
                 }
-                self.check_call_tier(callee.span, expr.span);
             }
+
+            // ── Leaf / structural traversal ────────────────────────
+            ExprKind::Lit(_) | ExprKind::Ident(_) | ExprKind::SelfExpr => {}
+            ExprKind::ShortDecl { value, .. } => self.check_expr(value),
 
             ExprKind::BinOp { lhs, rhs, .. } => {
                 self.check_expr(lhs);
                 self.check_expr(rhs);
             }
             ExprKind::UnaryOp { operand, .. } => self.check_expr(operand),
-
             ExprKind::Assign { target, value, .. } => {
                 self.check_expr(target);
                 self.check_expr(value);
             }
-
             ExprKind::Pipe { left, right } => {
                 self.check_expr(left);
                 self.check_expr(right);
             }
-
             ExprKind::Field { target, .. }
             | ExprKind::OptionalChain { target, .. } => self.check_expr(target),
-
             ExprKind::Index { target, index } => {
                 self.check_expr(target);
                 self.check_expr(index);
             }
-
-            ExprKind::Try(e) => self.check_expr(e),
-            ExprKind::As { expr: e, .. } => self.check_expr(e),
-
-            ExprKind::Tuple(es) | ExprKind::Array(es) => {
-                for e in es.iter() { self.check_expr(e); }
+            ExprKind::Try(inner) => self.check_expr(inner),
+            ExprKind::As { expr: inner, .. } => self.check_expr(inner),
+            ExprKind::Tuple(elems) | ExprKind::Array(elems) => {
+                for e in elems.iter() { self.check_expr(e); }
             }
-
             ExprKind::Dict(entries) => {
                 for entry in entries.iter() {
                     self.check_expr(entry.key);
                     self.check_expr(entry.value);
                 }
             }
-
             ExprKind::AnonObject(fields) => {
                 for f in fields.iter() { self.check_expr(f.value); }
             }
-
             ExprKind::StructLit { fields, .. } => {
                 for f in fields.iter() { self.check_expr(f.value); }
             }
-
             ExprKind::Lambda(lambda) => {
-                // Lambdas inherit the enclosing tier.
                 match &lambda.body {
                     LambdaBody::Block(b) => self.check_block(b),
                     LambdaBody::Expr(e)  => self.check_expr(e),
                 }
             }
-
             ExprKind::Block(b) => self.check_block(b),
-
             ExprKind::If(if_node) => {
                 self.check_expr(if_node.condition);
                 self.check_block(&if_node.then_block);
@@ -357,7 +344,6 @@ impl<'a> TierChecker<'a> {
                     self.check_block(else_b);
                 }
             }
-
             ExprKind::Match(m) => {
                 self.check_expr(m.scrutinee);
                 for arm in m.arms.iter() {
@@ -368,100 +354,62 @@ impl<'a> TierChecker<'a> {
                     }
                 }
             }
-
-            ExprKind::OrElse { expr: e, fallback } => {
-                self.check_expr(e);
+            ExprKind::OrElse { expr: inner, fallback } => {
+                self.check_expr(inner);
                 if let OrElseFallback::Expr(fb) = fallback {
                     self.check_expr(fb);
                 }
             }
-
-            ExprKind::ShortDecl { value, .. } => self.check_expr(value),
-
-            // Leaves
-            ExprKind::Lit(_) | ExprKind::Ident(_) | ExprKind::SelfExpr => {}
         }
     }
 
-    // ── Helpers ───────────────────────────────────────────────────────────
-
-    /// Check whether a call from the current tier to `callee_span`'s definition
-    /// is a legal cross-tier call.
-    fn check_call_tier(&mut self, callee_span: Span, call_span: Span) {
-        let callee_id = match self.ctx.resolutions.get(callee_span) {
-            Some(id) => id,
-            None     => return,
-        };
-
-        let callee_tier = match self.def_tier(callee_id) {
-            Some(t) => t,
-            None    => return,
-        };
-
-        let callee_name = self.ctx.symbols.lookup(callee_id).name.clone();
-
-        match (self.current_tier, callee_tier) {
-            // LOW cannot call HIGH or MID
-            (TierAnnotation::Low, TierAnnotation::High)
-            | (TierAnnotation::Low, TierAnnotation::Mid) => {
-                self.errors.add_type_error(TypeError::IllegalTierCall {
-                    caller_tier: self.current_tier,
-                    callee_tier,
-                    callee_name,
-                    span: call_span,
-                });
-            }
-            // MID cannot call HIGH
-            (TierAnnotation::Mid, TierAnnotation::High) => {
-                self.errors.add_type_error(TypeError::IllegalTierCall {
-                    caller_tier: self.current_tier,
-                    callee_tier,
-                    callee_name,
-                    span: call_span,
-                });
-            }
-            _ => {}
+    /// Look up a callee's tier from the symbol table and enforce cross-tier rules.
+    /// Uses bounds-checked access to avoid panicking on DefId::INVALID.
+    fn check_callee_tier(&mut self, callee_def_id: DefId, call_span: Span) {
+        // DefId::INVALID.0 == usize::MAX, which is always >= symbols.len().
+        if callee_def_id.0 >= self.ctx.symbols.len() {
+            return; // unresolved or builtin — skip
         }
+        let callee_def  = self.ctx.symbols.lookup(callee_def_id);
+        let callee_tier = match &callee_def.kind {
+            DefKind::Function { tier, .. } => *tier,
+            DefKind::Method   { tier, .. } => *tier,
+            _ => return, // not a callable def kind
+        };
+        let callee_name = callee_def.name.clone();
+        self.enforce_tier_call(self.current_tier, callee_tier, &callee_name, call_span);
     }
 
-    /// Check whether the expression at `expr_span` has an `ArenaRef` type,
-    /// which would escape the arena boundary if used in this context.
-    fn check_expr_for_arena_escape(&mut self, expr_span: Span, stmt_span: Span) {
-        let type_id = match self.ctx.expr_types.get(&expr_span).copied() {
-            Some(id) => id,
-            None     => return,
-        };
-        if self.ctx.types.get(type_id).contains_arena_ref(&self.ctx.types) {
-            let type_name = self.ctx.types.get(type_id).display(&self.ctx.types);
-            self.errors.add_type_error(TypeError::ArenaRefEscapesBoundary {
-                escaped_type: type_name,
-                span:         stmt_span,
+    /// Enforce the cross-tier call matrix:
+    ///
+    /// | Caller | Callee | Allowed |
+    /// |--------|--------|---------|
+    /// | HIGH   | MID    | ✓ (callback / view patterns encouraged but not enforced here) |
+    /// | HIGH   | LOW    | ✓ |
+    /// | MID    | HIGH   | ✗ — would escape arena lifetime |
+    /// | MID    | LOW    | ✓ |
+    /// | LOW    | HIGH   | ✗ |
+    /// | LOW    | MID    | ✗ |
+    fn enforce_tier_call(
+        &mut self,
+        caller: TierAnnotation,
+        callee: TierAnnotation,
+        callee_name: &str,
+        span: Span,
+    ) {
+        let forbidden = matches!(
+            (caller, callee),
+            (TierAnnotation::Mid, TierAnnotation::High)
+            | (TierAnnotation::Low, TierAnnotation::High)
+            | (TierAnnotation::Low, TierAnnotation::Mid)
+        );
+        if forbidden {
+            self.errors.add_type_error(TypeError::IllegalTierCall {
+                caller_tier: caller,
+                callee_tier: callee,
+                callee_name: callee_name.to_string(),
+                span,
             });
         }
     }
-
-    /// Check whether a type-annotation span has an ArenaRef type (for return types).
-    fn check_return_for_arena_escape(&mut self, type_span: Span, fn_span: Span) {
-        let type_id = match self.ctx.expr_types.get(&type_span).copied() {
-            Some(id) => id,
-            None     => return,
-        };
-        if self.ctx.types.get(type_id).contains_arena_ref(&self.ctx.types) {
-            let type_name = self.ctx.types.get(type_id).display(&self.ctx.types);
-            self.errors.add_type_error(TypeError::MidReturnContainsArenaRef {
-                return_type: type_name,
-                span:        fn_span,
-            });
-        }
-    }
-
-    /// Look up the tier of a definition. Returns `None` for non-function defs.
-    fn def_tier(&self, id: DefId) -> Option<TierAnnotation> {
-        let def = self.ctx.symbols.lookup(id);
-        match &def.kind {
-            DefKind::Function { tier, .. } => Some(*tier),
-            DefKind::Method   { tier, .. } => Some(*tier),
-            _                              => None,
-        }
-    }
-  }
+                }
