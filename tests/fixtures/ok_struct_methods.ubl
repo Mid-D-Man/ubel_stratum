@@ -1,14 +1,11 @@
-// fixture: ok_struct_methods.ubl
-// A struct with two fields and two methods.
-// Tests that:
-//   - struct fields are registered in the symbol table
-//   - method bodies can use `self`
-//   - `self.field` access resolves without error
-//   - the constructor `new` can be called from outside
+// tests/fixtures/ok_struct_methods.ubl
+// Struct with two fields and methods.
+// Commas removed from field list — grammar uses StructMember*
+// with no comma separator between members.
 // Expected: zero errors.
 
 struct Rectangle {
-    width: int,
+    width: int
     height: int
 
     pub fn new(w: int, h: int) Rectangle {
