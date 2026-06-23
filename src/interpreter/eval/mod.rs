@@ -1,5 +1,5 @@
 // src/interpreter/eval/mod.rs
-//! `Interpreter` struct, function table, and call dispatch.
+//! Interpreter struct, function table, and call dispatch.
 
 #![allow(dead_code)]
 
@@ -12,19 +12,32 @@ use std::collections::HashMap;
 use crate::ast::arena::AstArena;
 use crate::ast::common::TierAnnotation;
 use crate::ast::declarations::{FunctionDecl, MethodDecl, ParamKind, StructMember};
+use crate::ast::expressions::Expr;
 use crate::ast::root::{Item, Program};
 use crate::ast::statements::Block;
 use crate::interpreter::builtins::{all_builtins, BuiltinFn};
 use crate::interpreter::env::Environment;
 use crate::interpreter::value::{EvalResult, FunctionId, Signal, Value};
 
+// ── FunctionBody ──────────────────────────────────────────────────
+
+pub enum FunctionBody<'ast> {
+    /// User-defined function with a block body.
+    Ast { block: Block<'ast> },
+    /// Lambda with an expression body: `fn(x) x * 2`
+    /// Stored as a reference into the arena so no allocation is needed.
+    ExprBody { expr: &'ast Expr<'ast> },
+    /// Native Rust built-in.
+    Builtin(BuiltinFn),
+}
+
 // ── FunctionDef ───────────────────────────────────────────────────
 
-/// One entry in the interpreter's function table.
 pub struct FunctionDef<'ast> {
     pub name:     Option<String>,
     /// Parameter names in declaration order.
-    /// `self` variants are excluded here — they are handled by `call_method`.
+    /// `self` / `&self` / `mut self` params are excluded — they are bound
+    /// by `call_method` directly.
     pub params:   Vec<String>,
     pub body:     FunctionBody<'ast>,
     /// Environment captured at definition time (closure snapshot).
@@ -33,34 +46,28 @@ pub struct FunctionDef<'ast> {
     pub is_async: bool,
 }
 
-pub enum FunctionBody<'ast> {
-    /// User-defined function body. `Block<'ast>` is Copy so we own a copy.
-    Ast { block: Block<'ast> },
-    /// Native Rust built-in.
-    Builtin(BuiltinFn),
-}
-
 // ── Interpreter ───────────────────────────────────────────────────
 
-/// Tree-walking interpreter. Parameterised over `'ast` because `FunctionDef`
-/// stores arena-allocated `Block<'ast>` nodes.
+/// Tree-walking interpreter.
 ///
-/// `Value` and `Environment` are both lifetime-free, so closures and heap
-/// values can be passed around freely.
+/// The `'ast` lifetime is needed because `FunctionDef` stores arena-allocated
+/// `Block<'ast>` and `&'ast Expr<'ast>` references.  `Value` and `Environment`
+/// are both lifetime-free, so closures and runtime values can be passed around
+/// freely without the compiler tracking AST provenance through them.
 pub struct Interpreter<'ast> {
     pub(crate) env:          Environment,
     pub(crate) functions:    Vec<FunctionDef<'ast>>,
     /// struct_type_name → method_name → FunctionId.
-    /// Built during the pre-declare pass of `run_program`.
+    /// Static and instance methods both live here; the call site determines
+    /// whether a receiver is passed.
     pub(crate) method_table: HashMap<String, HashMap<String, FunctionId>>,
-    /// Reference to the original AST arena — used to re-parse interpolated
-    /// string expressions at runtime via `parser::parse_expr`.
+    /// The arena used to parse the program.  Kept here so interpolated-string
+    /// expression holes (`$"Hello {expr}"`) can be parsed at runtime via
+    /// `crate::parser::parse_expr`.
     pub(crate) arena:        &'ast AstArena,
 }
 
 impl<'ast> Interpreter<'ast> {
-    /// Create a fresh interpreter. `arena` must be the same arena used to
-    /// parse the program that will be run.
     pub fn new(arena: &'ast AstArena) -> Self {
         let mut interp = Interpreter {
             env:          Environment::new(),
@@ -89,31 +96,30 @@ impl<'ast> Interpreter<'ast> {
         }
     }
 
-    /// Append a FunctionDef and return its FunctionId.
     pub fn alloc_function(&mut self, def: FunctionDef<'ast>) -> FunctionId {
         let id = self.functions.len();
         self.functions.push(def);
         id
     }
 
-    /// Register a top-level function declaration and return its FunctionId.
-    /// Extracts all necessary data before the mutable call to avoid
-    /// borrow-checker conflicts.
-    pub fn register_fn(&mut self, f: &'ast FunctionDecl<'ast>) -> FunctionId {
+    /// Register a top-level function declaration.
+    /// Takes `FunctionDecl<'ast>` by value — it is `Copy` so fields
+    /// (`body: Block<'ast>`, etc.) are copied off the stack while the
+    /// underlying arena data they point to lives as long as `'ast`.
+    pub fn register_fn(&mut self, f: FunctionDecl<'ast>) -> FunctionId {
         let params: Vec<String> = f.params.iter()
             .filter_map(|p| match p.kind {
                 ParamKind::Named { name, .. } => Some(name.to_string()),
                 _ => None,
             })
             .collect();
-        let block    = f.body;           // Copy
+        let block    = f.body;  // Block<'ast> is Copy
         let closure  = self.env.snapshot();
-        let name     = f.name.to_string();
+        let name_str = f.name.to_string();
         let tier     = f.tier;
         let is_async = f.is_async;
-
         self.alloc_function(FunctionDef {
-            name:    Some(name),
+            name:    Some(name_str),
             params,
             body:    FunctionBody::Ast { block },
             closure,
@@ -122,14 +128,9 @@ impl<'ast> Interpreter<'ast> {
         })
     }
 
-    /// Register a struct method. The FunctionId is stored in `method_table`
-    /// and looked up during method-call dispatch.
-    pub fn register_method(
-        &mut self,
-        struct_name: &str,
-        m: &'ast MethodDecl<'ast>,
-    ) -> FunctionId {
-        // Non-`self` params only — `self` is bound by `call_method`.
+    /// Register a struct method. The FunctionId is stored in `method_table`.
+    pub fn register_method(&mut self, struct_name: &str, m: MethodDecl<'ast>) -> FunctionId {
+        // Only Named params — `self` variants are handled at call sites.
         let params: Vec<String> = m.params.iter()
             .filter_map(|p| match p.kind {
                 ParamKind::Named { name, .. } => Some(name.to_string()),
@@ -138,12 +139,11 @@ impl<'ast> Interpreter<'ast> {
             .collect();
         let block    = m.body;
         let closure  = self.env.snapshot();
-        let name     = format!("{}::{}", struct_name, m.name);
+        let name_str = format!("{}::{}", struct_name, m.name);
         let tier     = m.tier;
         let is_async = m.is_async;
-
         self.alloc_function(FunctionDef {
-            name:    Some(name),
+            name:    Some(name_str),
             params,
             body:    FunctionBody::Ast { block },
             closure,
@@ -154,13 +154,13 @@ impl<'ast> Interpreter<'ast> {
 
     // ── Program entry point ───────────────────────────────────────
 
-    /// Pre-declare all top-level items (enables mutual recursion), then call `main`.
     pub fn run_program(&mut self, program: &'ast Program<'ast>) -> Result<(), String> {
-        // Pre-declare pass: register functions and struct methods before executing
-        // any body, so forward references and mutual recursion work correctly.
+        // Pre-declare pass: register everything before running any body so
+        // forward references and mutual recursion work.
         for item in program.items.iter().copied() {
             match item {
                 Item::Function(f) => {
+                    // f: FunctionDecl<'ast> — Copy value whose fields point into 'ast arena
                     let id = self.register_fn(f);
                     self.env.define(f.name, Value::Function(id));
                 }
@@ -179,7 +179,6 @@ impl<'ast> Interpreter<'ast> {
             }
         }
 
-        // Find `main` and run it.
         let main_val = self.env.get("main").cloned()
             .ok_or_else(|| "no `main` function found".to_string())?;
 
@@ -197,93 +196,125 @@ impl<'ast> Interpreter<'ast> {
 
     // ── Call dispatch ─────────────────────────────────────────────
 
-    /// Call a function by FunctionId with already-evaluated argument values.
+    /// Call a function by FunctionId with already-evaluated arguments.
     ///
-    /// All data is extracted from the function table before any mutation
-    /// of `self`, avoiding borrow-checker conflicts.
+    /// Uses a local enum to carry extracted body data so the immutable borrow
+    /// on `self.functions` is fully released before any mutation of `self.env`.
     pub fn call_function(&mut self, id: FunctionId, args: &[Value]) -> EvalResult {
-        // Extract everything we need, releasing the immutable borrow on
-        // `self.functions` before any mutable operations below.
-        let (is_builtin, builtin_fn, block_opt, param_names, closure) = {
+        // Phase 1: extract body data — immutable borrow on self.functions.
+        enum BodyData<'a> {
+            Builtin(BuiltinFn),
+            Block(Block<'a>),
+            Expr(&'a Expr<'a>),
+        }
+
+        let (body, param_names, closure) = {
             let def = &self.functions[id];
-            match &def.body {
-                FunctionBody::Builtin(f) => (true, Some(*f), None, vec![], Environment::new()),
-                FunctionBody::Ast { block } => {
-                    (false, None, Some(*block), def.params.clone(), def.closure.clone())
-                }
-            }
+            let body = match &def.body {
+                FunctionBody::Builtin(f)        => BodyData::Builtin(*f),
+                FunctionBody::Ast { block }     => BodyData::Block(*block),
+                FunctionBody::ExprBody { expr } => BodyData::Expr(expr),
+            };
+            (body, def.params.clone(), def.closure.clone())
         }; // ← immutable borrow released here
 
-        if is_builtin {
-            return builtin_fn.unwrap()(args);
-        }
+        // Phase 2: run the body — may mutate self freely.
+        match body {
+            BodyData::Builtin(f) => f(args),
 
-        let block = block_opt.unwrap();
+            BodyData::Block(block) => {
+                let caller_env = std::mem::replace(&mut self.env, closure);
+                self.env.push();
+                for (name, val) in param_names.iter().zip(args.iter()) {
+                    self.env.define(name, val.clone());
+                }
+                let result = stmt::eval_block(self, &block);
+                self.env = caller_env;
+                match result {
+                    Ok(v) | Err(Signal::Return(v)) => Ok(v),
+                    Err(other)                     => Err(other),
+                }
+            }
 
-        // Swap in the closure as the new environment, push a frame, bind params.
-        let caller_env = std::mem::replace(&mut self.env, closure);
-        self.env.push();
-        for (name, val) in param_names.iter().zip(args.iter()) {
-            self.env.define(name, val.clone());
-        }
-
-        let result = stmt::eval_block(self, &block);
-
-        // Always restore the caller's environment.
-        self.env = caller_env;
-
-        match result {
-            Ok(v) | Err(Signal::Return(v)) => Ok(v),
-            Err(other)                     => Err(other),
+            BodyData::Expr(e) => {
+                let caller_env = std::mem::replace(&mut self.env, closure);
+                self.env.push();
+                for (name, val) in param_names.iter().zip(args.iter()) {
+                    self.env.define(name, val.clone());
+                }
+                let result = expr::eval_expr(self, e);
+                self.env = caller_env;
+                match result {
+                    Ok(v) | Err(Signal::Return(v)) => Ok(v),
+                    Err(other)                     => Err(other),
+                }
+            }
         }
     }
 
-    /// Call a struct method with an explicit receiver.
-    /// Defines `self` in the call frame before binding regular parameters.
+    /// Call a struct method with an explicit `self` receiver.
     pub fn call_method(
         &mut self,
         id:       FunctionId,
         receiver: Value,
         args:     &[Value],
     ) -> EvalResult {
-        let (is_builtin, builtin_fn, block_opt, param_names, closure) = {
+        enum BodyData<'a> {
+            Builtin(BuiltinFn),
+            Block(Block<'a>),
+            Expr(&'a Expr<'a>),
+        }
+
+        let (body, param_names, closure) = {
             let def = &self.functions[id];
-            match &def.body {
-                FunctionBody::Builtin(f) => (true, Some(*f), None, vec![], Environment::new()),
-                FunctionBody::Ast { block } => {
-                    (false, None, Some(*block), def.params.clone(), def.closure.clone())
-                }
-            }
+            let body = match &def.body {
+                FunctionBody::Builtin(f)        => BodyData::Builtin(*f),
+                FunctionBody::Ast { block }     => BodyData::Block(*block),
+                FunctionBody::ExprBody { expr } => BodyData::Expr(expr),
+            };
+            (body, def.params.clone(), def.closure.clone())
         };
 
-        if is_builtin {
-            // Builtins called as methods get receiver prepended to args.
-            let mut all_args = vec![receiver];
-            all_args.extend_from_slice(args);
-            return builtin_fn.unwrap()(&all_args);
-        }
-
-        let block = block_opt.unwrap();
-        let caller_env = std::mem::replace(&mut self.env, closure);
-        self.env.push();
-        self.env.define("self", receiver);   // ← receiver visible as `self`
-        for (name, val) in param_names.iter().zip(args.iter()) {
-            self.env.define(name, val.clone());
-        }
-
-        let result = stmt::eval_block(self, &block);
-        self.env = caller_env;
-
-        match result {
-            Ok(v) | Err(Signal::Return(v)) => Ok(v),
-            Err(other)                     => Err(other),
+        match body {
+            BodyData::Builtin(f) => {
+                let mut all = vec![receiver];
+                all.extend_from_slice(args);
+                f(&all)
+            }
+            BodyData::Block(block) => {
+                let caller_env = std::mem::replace(&mut self.env, closure);
+                self.env.push();
+                self.env.define("self", receiver);
+                for (name, val) in param_names.iter().zip(args.iter()) {
+                    self.env.define(name, val.clone());
+                }
+                let result = stmt::eval_block(self, &block);
+                self.env = caller_env;
+                match result {
+                    Ok(v) | Err(Signal::Return(v)) => Ok(v),
+                    Err(other)                     => Err(other),
+                }
+            }
+            BodyData::Expr(e) => {
+                let caller_env = std::mem::replace(&mut self.env, closure);
+                self.env.push();
+                self.env.define("self", receiver);
+                for (name, val) in param_names.iter().zip(args.iter()) {
+                    self.env.define(name, val.clone());
+                }
+                let result = expr::eval_expr(self, e);
+                self.env = caller_env;
+                match result {
+                    Ok(v) | Err(Signal::Return(v)) => Ok(v),
+                    Err(other)                     => Err(other),
+                }
+            }
         }
     }
 
-    /// Resolve a name in the current environment, panicking on miss.
     pub fn lookup(&self, name: &str) -> EvalResult {
         self.env.get(name)
             .cloned()
             .ok_or_else(|| Signal::Panic(format!("undefined name '{}'", name)))
     }
-}
+                }
