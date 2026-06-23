@@ -1,35 +1,23 @@
 // src/sema/type_infer.rs
 //! Pass 2 — Type Inference and Arena Coloring.
 //!
-//! Two sub-passes:
+//! 2a. Signature collection — records def_types for every top-level
+//!     declaration without touching bodies, enabling forward references.
 //!
-//!   2a. Signature collection — walk all top-level declarations and record
-//!       `def_types` for every function signature, struct, enum, and const
-//!       without touching any body. Mirrors the pre-declare step in Pass 1
-//!       so bodies can forward-reference function types freely.
+//! 2b. Body inference — bidirectional checking inside each body.
+//!     Expected type known → check; otherwise infer and record.
 //!
-//!   2b. Body inference — walk each function / method body doing bidirectional
-//!       checking: when an expected type is known (return position, annotated
-//!       `let`) we check; otherwise we infer and record.
-//!
-//! Arena coloring is woven into 2b. When inference enters a `with arena(…)`
-//! block it pushes a fresh `ArenaId` onto a stack; every value *constructed*
-//! inside that block (struct literals, array literals, tuples) is stamped as
-//! `SemaType::ArenaRef { arena, .. }`. Whether an arena-ref is *allowed* at a
-//! given site is tier_check's job (Pass 3) — we only tag provenance here.
+//! Arena coloring is woven into 2b. Entering a `with arena(…)` block
+//! pushes a fresh ArenaId; every constructed value inside gets stamped
+//! SemaType::ArenaRef. Whether that's *allowed* at a given site is
+//! tier_check's job — we only tag provenance here.
 //!
 //! # Known rough edges (not airtight yet)
-//!
-//! - No occurs-check in unification. Cyclic types will loop; not a real issue
-//!   until recursive types appear in user code.
-//! - Generic instantiation stubbed — generic calls infer return as Unknown,
-//!   no error emitted. Will land with the trait-solver in a later pass.
-//! - Method-call chains (`.foo()`) resolve the receiver type but leave the
-//!   result Unknown pending field/method tables being built from struct defs.
-//! - Multi-element destructuring shares one Span across all bound names;
-//!   they all get the collection element type or Unknown. Pre-existing AST gap.
-//! - `self` parameter type is Unknown until we thread current_struct_type
-//!   through InferCtx — planned for when method resolution lands.
+//! - No occurs-check in unification.
+//! - Generic instantiation returns Unknown; no error emitted.
+//! - Method-call chains leave result Unknown pending field/method tables.
+//! - Multi-element destructuring shares one Span; all get collection elem type.
+//! - `self` param type is Unknown until current_struct_type is threaded in.
 
 #![allow(dead_code, unused_variables, unused_imports)]
 
@@ -39,7 +27,7 @@ use crate::ast::common::{BinOp, Span, UnaryOp};
 use crate::ast::declarations::{
     ConstDecl, EnumDecl, ExtendDecl, FunctionDecl, ImplBlock,
     MethodDecl, Param, ParamKind, ReturnType, StructDecl, StructMember,
-    TraitItem, TypeAlias,
+    TraitItem, TypeAlias, MethodSig,
 };
 use crate::ast::expressions::{
     ArgKind, Expr, ExprKind, LambdaBody, LinqClause,
@@ -68,20 +56,13 @@ pub fn infer<'ast>(
 
 // ── Unifier ───────────────────────────────────────────────────────
 
-/// Simple substitution-based unifier for type variables.
-/// Maps type variable indices to concrete TypeIds.
-/// No occurs-check — sufficient for Phase 2.
 struct Unifier {
     subst: HashMap<u32, TypeId>,
 }
 
 impl Unifier {
-    fn new() -> Self {
-        Unifier { subst: HashMap::new() }
-    }
+    fn new() -> Self { Unifier { subst: HashMap::new() } }
 
-    /// Chase the substitution chain until we hit a concrete type or an
-    /// unbound variable.
     fn apply(&self, mut id: TypeId, types: &crate::sema::type_table::TypeTable) -> TypeId {
         loop {
             match types.get(id) {
@@ -94,11 +75,9 @@ impl Unifier {
         }
     }
 
-    /// Bind a free type variable. Returns `false` if it was already bound to
-    /// a *different* type (the caller should emit a mismatch error).
     fn bind(&mut self, var: u32, ty: TypeId) -> bool {
         match self.subst.get(&var) {
-            None          => { self.subst.insert(var, ty); true }
+            None            => { self.subst.insert(var, ty); true }
             Some(&existing) => existing == ty,
         }
     }
@@ -110,14 +89,9 @@ struct InferCtx<'a> {
     ctx:              &'a mut SemaContext,
     errors:           &'a mut ErrorManager,
     unifier:          Unifier,
-    /// Declared return TypeId for the function currently being inferred.
     current_return:   Option<TypeId>,
-    /// Whether the current function's return type carries `!`.
     current_fallible: bool,
-    /// Stack of active arena ids. The top is the current innermost arena.
-    /// Using a stack so nested `with arena` blocks work correctly.
     arena_stack:      Vec<ArenaId>,
-    /// Counter for issuing fresh ArenaIds.
     next_arena:       usize,
 }
 
@@ -126,15 +100,15 @@ impl<'a> InferCtx<'a> {
         InferCtx {
             ctx,
             errors,
-            unifier: Unifier::new(),
-            current_return: None,
+            unifier:          Unifier::new(),
+            current_return:   None,
             current_fallible: false,
-            arena_stack: Vec::new(),
-            next_arena: 0,
+            arena_stack:      Vec::new(),
+            next_arena:       0,
         }
     }
 
-    // ── Cheap type constructors ───────────────────────────────────
+    // ── Cheap constructors ────────────────────────────────────────
 
     fn fresh_var(&mut self) -> TypeId { self.ctx.types.fresh_var() }
     fn unknown(&mut self)   -> TypeId { self.ctx.types.intern(SemaType::Unknown) }
@@ -143,7 +117,6 @@ impl<'a> InferCtx<'a> {
     fn int_ty(&mut self)    -> TypeId { self.ctx.types.intern(SemaType::Int) }
     fn str_ty(&mut self)    -> TypeId { self.ctx.types.intern(SemaType::Str) }
 
-    /// Resolve type variables through the current substitution.
     fn apply(&self, id: TypeId) -> TypeId {
         self.unifier.apply(id, &self.ctx.types)
     }
@@ -157,24 +130,20 @@ impl<'a> InferCtx<'a> {
         id
     }
 
-    fn pop_arena(&mut self) {
-        self.arena_stack.pop();
-    }
+    fn pop_arena(&mut self) { self.arena_stack.pop(); }
 
     fn current_arena(&self) -> Option<ArenaId> {
         self.arena_stack.last().copied()
     }
 
-    /// If we are inside a `with arena` block, wrap `inner_ty` as an ArenaRef.
-    /// Called on any freshly *constructed* value (struct lit, array lit, tuple).
-    /// Function-call results and field accesses propagate arena-ness through
-    /// the type system naturally once ArenaRef appears in a type.
+    /// Wrap `inner_ty` as an ArenaRef if inside a `with arena` block.
+    /// Called on freshly *constructed* values only.
     fn maybe_arena_ref(&mut self, inner_ty: TypeId) -> TypeId {
         match self.current_arena() {
             Some(arena) => self.ctx.types.insert(SemaType::ArenaRef {
                 arena,
                 mutable: false,
-                inner: inner_ty,
+                inner:   inner_ty,
             }),
             None => inner_ty,
         }
@@ -182,18 +151,17 @@ impl<'a> InferCtx<'a> {
 
     // ── AST type → SemaType ───────────────────────────────────────
 
-    /// Convert a syntactic `Type<'ast>` node into a `TypeId` interned in the
-    /// type table. Generic args are recursively converted. Unresolved Named
-    /// types fall back to Unknown.
+    /// Convert a syntactic `Type<'ast>` node into a TypeId.
+    /// Uses `match ty.kind` (not `&ty.kind`) since TypeKind is Copy,
+    /// avoiding match-ergonomics reference confusion throughout.
     fn ast_type_to_sema<'ast>(&mut self, ty: &Type<'ast>) -> TypeId {
-        match &ty.kind {
+        match ty.kind {
             TypeKind::Int    => self.ctx.types.intern(SemaType::Int),
             TypeKind::Uint   => self.ctx.types.intern(SemaType::Uint),
             TypeKind::Long   => self.ctx.types.intern(SemaType::Long),
             TypeKind::Ulong  => self.ctx.types.intern(SemaType::Ulong),
-            // Short/Ushort widen to Int/Uint for now; byte forms map to i8/u8.
-            TypeKind::Short  => self.ctx.types.intern(SemaType::Int),
-            TypeKind::Ushort => self.ctx.types.intern(SemaType::Uint),
+            TypeKind::Short  => self.ctx.types.intern(SemaType::Int),   // widen
+            TypeKind::Ushort => self.ctx.types.intern(SemaType::Uint),  // widen
             TypeKind::Byte   => self.ctx.types.intern(SemaType::I8),
             TypeKind::Ubyte  => self.ctx.types.intern(SemaType::U8),
             TypeKind::Float  => self.ctx.types.intern(SemaType::Float),
@@ -240,25 +208,27 @@ impl<'a> InferCtx<'a> {
                     .unwrap_or_else(|| self.fresh_var());
                 self.ctx.types.insert(SemaType::Stack(elem))
             }
-
             TypeKind::Named { path, args } => {
                 let root = path.first().copied().unwrap_or("");
                 let arg_ids: Vec<TypeId> = args.iter()
                     .map(|a| self.ast_type_to_sema(a))
                     .collect();
                 match self.ctx.top_level_def(root) {
-                    Some(def_id) => self.ctx.types.insert(SemaType::Named { def: def_id, args: arg_ids }),
-                    None         => self.unknown(),
+                    Some(def_id) => self.ctx.types.insert(SemaType::Named {
+                        def: def_id, args: arg_ids,
+                    }),
+                    None => self.unknown(),
                 }
             }
-
             TypeKind::Tuple(fields) => {
-                let ids: Vec<TypeId> = fields.iter().map(|f| self.ast_type_to_sema(f)).collect();
+                let ids: Vec<TypeId> = fields.iter()
+                    .map(|f| self.ast_type_to_sema(f))
+                    .collect();
                 self.ctx.types.insert(SemaType::Tuple(ids))
             }
             TypeKind::Array { len, elem } => {
                 let elem_id = self.ast_type_to_sema(elem);
-                self.ctx.types.insert(SemaType::Array { len: *len, elem: elem_id })
+                self.ctx.types.insert(SemaType::Array { len, elem: elem_id })
             }
             TypeKind::Slice(elem) => {
                 let elem_id = self.ast_type_to_sema(elem);
@@ -274,8 +244,6 @@ impl<'a> InferCtx<'a> {
                 self.ctx.types.intern(SemaType::Task(inner_id))
             }
             TypeKind::Reference { inner, .. } => {
-                // Without a lifetime annotation we model as GcRef for now.
-                // tier_check will flag uses in LOW-tier code.
                 let inner_id = self.ast_type_to_sema(inner);
                 self.ctx.types.insert(SemaType::GcRef(inner_id))
             }
@@ -300,8 +268,7 @@ impl<'a> InferCtx<'a> {
         }
     }
 
-    /// Convert an optional `ReturnType<'ast>` annotation to `(TypeId, is_fallible)`.
-    /// `None` → `(Void, false)`.
+    /// Convert an optional return annotation to `(TypeId, is_fallible)`.
     fn return_type_to_sema<'ast>(&mut self, ret: Option<&ReturnType<'ast>>) -> (TypeId, bool) {
         match ret {
             None => (self.void_ty(), false),
@@ -319,50 +286,52 @@ impl<'a> InferCtx<'a> {
 
     // ── Phase 2a: Signature collection ────────────────────────────
 
-    /// Walk every top-level declaration and build `def_types` entries for
-    /// function signatures, struct/enum identities, field types, and consts
-    /// — without touching any function body. Lets bodies forward-reference
-    /// types freely.
     fn collect_signatures<'ast>(&mut self, program: &Program<'ast>) {
         for item in program.items {
             match item {
-                Item::Function(f)  => { self.collect_fn_sig(f); }
-                Item::Struct(s)    => { self.collect_struct_sig(s); }
-                Item::Enum(e)      => { self.collect_enum_sig(e); }
-                Item::Const(c)     => { self.collect_const_sig(c); }
-                Item::Impl(i)      => { self.collect_impl_sigs(i); }
-                Item::Extend(x)    => { self.collect_extend_sigs(x); }
-                Item::Trait(t)     => {
+                Item::Function(f) => { self.collect_fn_sig(f); }
+                Item::Struct(s)   => { self.collect_struct_sig(s); }
+                Item::Enum(e)     => { self.collect_enum_sig(e); }
+                Item::Const(c)    => { self.collect_const_sig(c); }
+                Item::Impl(i)     => {
+                    for m in i.methods { self.collect_method_sig(m); }
+                }
+                Item::Extend(x) => {
+                    for m in x.methods { self.collect_method_sig(m); }
+                }
+                Item::Trait(t) => {
+                    // FIX: split DefaultMethod (MethodDecl) and MethodSig
+                    // into separate arms — they are different types.
                     for it in t.items {
-                        if let TraitItem::DefaultMethod(m) | TraitItem::MethodSig(m) = it {
-                            // MethodSig has the same fields we need.
-                            // We handle both via their span-recorded DefId.
-                        }
-                        if let TraitItem::DefaultMethod(m) = it {
-                            self.collect_method_sig(m);
+                        match it {
+                            TraitItem::DefaultMethod(m) => {
+                                self.collect_method_sig(m);
+                            }
+                            TraitItem::MethodSig(sig) => {
+                                self.collect_trait_method_sig(sig);
+                            }
+                            TraitItem::AssociatedType { .. } => {}
                         }
                     }
                 }
-                Item::TypeAlias(_) => { /* alias expansion deferred */ }
+                Item::TypeAlias(_) => {} // alias expansion deferred
             }
         }
     }
 
     fn collect_fn_sig<'ast>(&mut self, f: &FunctionDecl<'ast>) -> TypeId {
         let param_tys: Vec<TypeId> = f.params.iter()
-            .filter_map(|p| match &p.kind {
+            .filter_map(|p| match p.kind {
                 ParamKind::Named { ty, .. } => ty.map(|t| self.ast_type_to_sema(t)),
-                _ => None, // self params typed during struct context
+                _ => None,
             })
             .collect();
-
         let (ret_ty, is_fallible) = self.return_type_to_sema(f.return_type.as_ref());
         let fn_ty = self.ctx.types.insert(SemaType::Function {
             params: param_tys,
             return_type: ret_ty,
             is_fallible,
         });
-
         if let Some(def_id) = self.ctx.top_level_def(f.name) {
             self.ctx.set_def_type(def_id, fn_ty);
         }
@@ -371,43 +340,56 @@ impl<'a> InferCtx<'a> {
 
     fn collect_method_sig<'ast>(&mut self, m: &MethodDecl<'ast>) -> TypeId {
         let param_tys: Vec<TypeId> = m.params.iter()
-            .filter_map(|p| match &p.kind {
+            .filter_map(|p| match p.kind {
                 ParamKind::Named { ty, .. } => ty.map(|t| self.ast_type_to_sema(t)),
                 _ => None,
             })
             .collect();
-
         let (ret_ty, is_fallible) = self.return_type_to_sema(m.return_type.as_ref());
         let fn_ty = self.ctx.types.insert(SemaType::Function {
             params: param_tys,
             return_type: ret_ty,
             is_fallible,
         });
-
-        // The method's DefId was recorded by name_resolution against its span.
         if let Some(def_id) = self.ctx.resolutions.get(m.span) {
             self.ctx.set_def_type(def_id, fn_ty);
         }
         fn_ty
     }
 
+    /// Collect type for a required method signature (no body) in a trait.
+    fn collect_trait_method_sig<'ast>(&mut self, sig: &MethodSig<'ast>) {
+        let param_tys: Vec<TypeId> = sig.params.iter()
+            .filter_map(|p| match p.kind {
+                ParamKind::Named { ty, .. } => ty.map(|t| self.ast_type_to_sema(t)),
+                _ => None,
+            })
+            .collect();
+        let (ret_ty, is_fallible) = self.return_type_to_sema(sig.return_type.as_ref());
+        let fn_ty = self.ctx.types.insert(SemaType::Function {
+            params: param_tys,
+            return_type: ret_ty,
+            is_fallible,
+        });
+        if let Some(def_id) = self.ctx.resolutions.get(sig.span) {
+            self.ctx.set_def_type(def_id, fn_ty);
+        }
+    }
+
     fn collect_struct_sig<'ast>(&mut self, s: &StructDecl<'ast>) {
         let Some(def_id) = self.ctx.top_level_def(s.name) else { return; };
-
-        // The struct type itself: Named { def, args: [] }.
         let struct_ty = self.ctx.types.insert(SemaType::Named { def: def_id, args: vec![] });
         self.ctx.set_def_type(def_id, struct_ty);
-
         for member in s.members {
             match member {
                 StructMember::Field(f) => {
                     let field_ty = self.ast_type_to_sema(f.ty);
-                    if let Some(field_def_id) = self.ctx.resolutions.get(f.span) {
-                        self.ctx.set_def_type(field_def_id, field_ty);
+                    if let Some(field_def) = self.ctx.resolutions.get(f.span) {
+                        self.ctx.set_def_type(field_def, field_ty);
                     }
                 }
                 StructMember::Method(m)   => { self.collect_method_sig(m); }
-                StructMember::Property(_) => { /* TODO: property types */ }
+                StructMember::Property(_) => {}
             }
         }
     }
@@ -416,8 +398,6 @@ impl<'a> InferCtx<'a> {
         let Some(def_id) = self.ctx.top_level_def(e.name) else { return; };
         let enum_ty = self.ctx.types.insert(SemaType::Named { def: def_id, args: vec![] });
         self.ctx.set_def_type(def_id, enum_ty);
-
-        // Each variant has the enum's type.
         for variant in e.variants {
             if let Some(var_def) = self.ctx.resolutions.get(variant.span) {
                 self.ctx.set_def_type(var_def, enum_ty);
@@ -432,14 +412,6 @@ impl<'a> InferCtx<'a> {
         self.ctx.set_def_type(def_id, ty);
     }
 
-    fn collect_impl_sigs<'ast>(&mut self, i: &ImplBlock<'ast>) {
-        for m in i.methods { self.collect_method_sig(m); }
-    }
-
-    fn collect_extend_sigs<'ast>(&mut self, x: &ExtendDecl<'ast>) {
-        for m in x.methods { self.collect_method_sig(m); }
-    }
-
     // ── Phase 2b: Body inference ──────────────────────────────────
 
     fn infer_bodies<'ast>(&mut self, program: &Program<'ast>) {
@@ -448,7 +420,7 @@ impl<'a> InferCtx<'a> {
                 Item::Function(f) => self.infer_function_body(f),
                 Item::Struct(s)   => self.infer_struct_bodies(s),
                 Item::Const(c)    => self.infer_const_body(c),
-                Item::Impl(i)     => {
+                Item::Impl(i) => {
                     for m in i.methods { self.infer_method_body(m); }
                 }
                 Item::Extend(x) => {
@@ -467,38 +439,29 @@ impl<'a> InferCtx<'a> {
     }
 
     fn infer_function_body<'ast>(&mut self, f: &FunctionDecl<'ast>) {
-        // Seed param def_types so Ident lookups inside the body work.
         for param in f.params { self.seed_param(param); }
-
         let (ret_ty, is_fallible) = self.return_type_to_sema(f.return_type.as_ref());
         let prev_ret      = self.current_return.replace(ret_ty);
         let prev_fallible = self.current_fallible;
         self.current_fallible = is_fallible;
-
         self.infer_block(&f.body);
-
         self.current_return   = prev_ret;
         self.current_fallible = prev_fallible;
     }
 
     fn infer_method_body<'ast>(&mut self, m: &MethodDecl<'ast>) {
         for param in m.params { self.seed_param(param); }
-
         let (ret_ty, is_fallible) = self.return_type_to_sema(m.return_type.as_ref());
         let prev_ret      = self.current_return.replace(ret_ty);
         let prev_fallible = self.current_fallible;
         self.current_fallible = is_fallible;
-
         self.infer_block(&m.body);
-
         self.current_return   = prev_ret;
         self.current_fallible = prev_fallible;
     }
 
-    /// Record a parameter's type against its DefId so body Ident lookups
-    /// can find it via def_types.
     fn seed_param<'ast>(&mut self, param: &Param<'ast>) {
-        match &param.kind {
+        match param.kind {
             ParamKind::Named { ty, .. } => {
                 let ty_id = ty.map(|t| self.ast_type_to_sema(t))
                     .unwrap_or_else(|| self.fresh_var());
@@ -507,7 +470,7 @@ impl<'a> InferCtx<'a> {
                     self.ctx.set_binding_type(param.span, ty_id);
                 }
             }
-            _ => {} // self params — TODO when current_struct_type is threaded in
+            _ => {} // self params — TODO when current_struct_type threaded in
         }
     }
 
@@ -532,8 +495,6 @@ impl<'a> InferCtx<'a> {
 
     // ── Block ─────────────────────────────────────────────────────
 
-    /// Returns the type of the last expression statement, or Void if the
-    /// block is empty or ends on a control-flow / binding statement.
     fn infer_block<'ast>(&mut self, block: &Block<'ast>) -> TypeId {
         let mut last = self.void_ty();
         for stmt in block.stmts {
@@ -546,8 +507,7 @@ impl<'a> InferCtx<'a> {
 
     fn infer_stmt<'ast>(&mut self, stmt: &Stmt<'ast>) -> TypeId {
         match &stmt.kind {
-
-            StmtKind::Let { mutable, binding, ty, value } => {
+            StmtKind::Let { binding, ty, value, .. } => {
                 let rhs_ty = self.infer_expr(value);
                 let bind_ty = match ty {
                     Some(ann) => {
@@ -560,15 +520,11 @@ impl<'a> InferCtx<'a> {
                 self.record_binding(binding, bind_ty, stmt.span);
                 self.void_ty()
             }
-
             StmtKind::Expr(e) => self.infer_expr(e),
-
             StmtKind::Return(maybe_e) => {
                 let ret = maybe_e.map(|e| self.infer_expr(e))
                     .unwrap_or_else(|| self.void_ty());
                 if let Some(expected) = self.current_return {
-                    // Strip the Fallible wrapper — `return x` inside `fn f() T!`
-                    // returns the inner T, not T!.
                     let expected_inner = match self.ctx.types.get(expected) {
                         SemaType::Fallible(inner) => *inner,
                         _ => expected,
@@ -577,37 +533,21 @@ impl<'a> InferCtx<'a> {
                 }
                 self.void_ty()
             }
-
-            StmtKind::Fail(e) => {
-                self.infer_expr(e);
-                self.void_ty()
-            }
-
-            StmtKind::Break(maybe_e) => {
-                if let Some(e) = maybe_e { self.infer_expr(e); }
-                self.void_ty()
-            }
-
-            StmtKind::Continue => self.void_ty(),
-
-            StmtKind::Defer(e) => {
-                self.infer_expr(e);
-                self.void_ty()
-            }
+            StmtKind::Fail(e)        => { self.infer_expr(e); self.void_ty() }
+            StmtKind::Break(maybe_e) => { maybe_e.map(|e| self.infer_expr(e)); self.void_ty() }
+            StmtKind::Continue       => self.void_ty(),
+            StmtKind::Defer(e)       => { self.infer_expr(e); self.void_ty() }
 
             StmtKind::If(if_node) => {
-                let cond = self.infer_expr(if_node.condition);
+                let cond    = self.infer_expr(if_node.condition);
                 let bool_ty = self.bool_ty();
                 self.unify(bool_ty, cond, if_node.condition.span);
-
                 let then_ty = self.infer_block(&if_node.then_block);
-
                 for elif in if_node.elif_branches {
                     let ct = self.infer_expr(elif.condition);
                     self.unify(bool_ty, ct, elif.condition.span);
                     self.infer_block(&elif.block);
                 }
-
                 if let Some(else_b) = &if_node.else_block {
                     let else_ty = self.infer_block(else_b);
                     let void_ty = self.void_ty();
@@ -615,10 +555,8 @@ impl<'a> InferCtx<'a> {
                         self.unify(then_ty, else_ty, stmt.span);
                     }
                 }
-
                 self.void_ty()
             }
-
             StmtKind::Match { scrutinee, arms } => {
                 self.infer_expr(scrutinee);
                 for arm in arms.iter() {
@@ -630,7 +568,6 @@ impl<'a> InferCtx<'a> {
                 }
                 self.void_ty()
             }
-
             StmtKind::For { binding, iter, body } => {
                 let iter_ty = self.infer_expr(iter);
                 let elem_ty = self.element_type_of(iter_ty);
@@ -638,29 +575,20 @@ impl<'a> InferCtx<'a> {
                 self.infer_block(body);
                 self.void_ty()
             }
-
             StmtKind::While { condition, body } => {
-                let cond = self.infer_expr(condition);
+                let cond    = self.infer_expr(condition);
                 let bool_ty = self.bool_ty();
                 self.unify(bool_ty, cond, condition.span);
                 self.infer_block(body);
                 self.void_ty()
             }
-
-            StmtKind::Loop(body) => {
-                self.infer_block(body);
-                self.void_ty()
-            }
-
-            StmtKind::With { allocator: _, body } => {
-                // Push a fresh arena context for the duration of this block.
-                // Every value constructed inside gets arena-colored.
+            StmtKind::Loop(body) => { self.infer_block(body); self.void_ty() }
+            StmtKind::With { body, .. } => {
                 let _arena_id = self.push_arena();
                 self.infer_block(body);
                 self.pop_arena();
                 self.void_ty()
             }
-
             StmtKind::Using { bindings, body } => {
                 for b in bindings.iter() {
                     let ty = self.infer_expr(b.value);
@@ -672,29 +600,16 @@ impl<'a> InferCtx<'a> {
                 self.infer_block(body);
                 self.void_ty()
             }
-
-            StmtKind::Extract { pattern: _, value } => {
-                // TODO: split the RHS type across destructure pattern bindings.
-                self.infer_expr(value);
-                self.void_ty()
-            }
-
-            StmtKind::Try { body, catch_binding: _, catch_body } => {
+            StmtKind::Extract { value, .. } => { self.infer_expr(value); self.void_ty() }
+            StmtKind::Try { body, catch_body, .. } => {
                 self.infer_block(body);
                 if let Some(cb) = catch_body { self.infer_block(cb); }
                 self.void_ty()
             }
-
-            StmtKind::Unsafe(body) => {
-                self.infer_block(body);
-                self.void_ty()
-            }
+            StmtKind::Unsafe(body) => { self.infer_block(body); self.void_ty() }
         }
     }
 
-    /// Record a binding's type into `def_types` and `binding_types`.
-    /// For destructure patterns we record the whole collection type against
-    /// the statement span; per-element typing is deferred.
     fn record_binding<'ast>(&mut self, target: &BindingTarget<'ast>, ty: TypeId, span: Span) {
         match target {
             BindingTarget::Ident(_) => {
@@ -704,15 +619,11 @@ impl<'a> InferCtx<'a> {
                 }
             }
             BindingTarget::Destructure(_) => {
-                // TODO: split types when per-element spans are available.
                 self.ctx.set_binding_type(span, ty);
             }
         }
     }
 
-    /// Get the element type of a collection type.
-    /// If the collection type is Unknown or a fresh var, returns a fresh var
-    /// so loop bodies can still proceed.
     fn element_type_of(&mut self, collection_ty: TypeId) -> TypeId {
         let resolved = self.apply(collection_ty);
         match self.ctx.types.get(resolved) {
@@ -720,10 +631,9 @@ impl<'a> InferCtx<'a> {
             | SemaType::Set(e)
             | SemaType::Queue(e)
             | SemaType::Stack(e)
-            | SemaType::Slice(e)          => *e,
-            SemaType::Array { elem, .. }  => *elem,
+            | SemaType::Slice(e)         => *e,
+            SemaType::Array { elem, .. } => *elem,
             SemaType::ArenaRef { inner, .. } => {
-                // Peel one ArenaRef layer and retry.
                 let inner = *inner;
                 self.element_type_of(inner)
             }
@@ -733,7 +643,6 @@ impl<'a> InferCtx<'a> {
 
     // ── Expressions ───────────────────────────────────────────────
 
-    /// Infer the type of an expression and record it in `expr_types`.
     fn infer_expr<'ast>(&mut self, expr: &Expr<'ast>) -> TypeId {
         let ty = self.infer_expr_inner(expr);
         self.ctx.set_expr_type(expr.span, ty);
@@ -742,7 +651,6 @@ impl<'a> InferCtx<'a> {
 
     fn infer_expr_inner<'ast>(&mut self, expr: &Expr<'ast>) -> TypeId {
         match &expr.kind {
-
             ExprKind::Lit(lit) => self.infer_literal(lit),
 
             ExprKind::Ident(_) => {
@@ -753,12 +661,8 @@ impl<'a> InferCtx<'a> {
                 }
             }
 
-            ExprKind::SelfExpr => {
-                // TODO: thread current_struct_type through InferCtx.
-                self.unknown()
-            }
+            ExprKind::SelfExpr => self.unknown(), // TODO: current_struct_type
 
-            // `x := expr` — resolve rhs, declare x with that type.
             ExprKind::ShortDecl { value, .. } => {
                 let ty = self.infer_expr(value);
                 if let Some(def_id) = self.ctx.resolutions.get(expr.span) {
@@ -777,8 +681,6 @@ impl<'a> InferCtx<'a> {
 
             ExprKind::Pipe { left, right } => {
                 self.infer_expr(left);
-                // Right side is a function applied to left's value.
-                // Simplified: just infer right and use its result.
                 self.infer_expr(right)
             }
 
@@ -802,17 +704,17 @@ impl<'a> InferCtx<'a> {
                 let callee_ty = self.infer_expr(callee);
                 for arg in args.iter() {
                     match &arg.kind {
-                        ArgKind::Positional(e)    => { self.infer_expr(e); }
+                        ArgKind::Positional(e)       => { self.infer_expr(e); }
                         ArgKind::Named { value, .. } => { self.infer_expr(value); }
                     }
                 }
                 self.call_return_type(callee_ty, expr.span)
             }
 
-            ExprKind::Field { target, field: _ } => {
+            ExprKind::Field { target, .. }
+            | ExprKind::OptionalChain { target, .. } => {
                 self.infer_expr(target);
-                // TODO: field table lookup once struct types are complete.
-                self.unknown()
+                self.unknown() // TODO: field table
             }
 
             ExprKind::Index { target, index } => {
@@ -821,21 +723,14 @@ impl<'a> InferCtx<'a> {
                 self.element_type_of(coll)
             }
 
-            ExprKind::OptionalChain { target, .. } => {
-                self.infer_expr(target);
-                self.unknown() // TODO: field/method table
-            }
-
-            ExprKind::Try(inner) => {
+            ExprKind::Try(inner)   => {
                 let inner_ty = self.infer_expr(inner);
                 self.unwrap_fallible(inner_ty)
             }
-
             ExprKind::Await(inner) => {
                 let inner_ty = self.infer_expr(inner);
                 self.unwrap_task(inner_ty, expr.span)
             }
-
             ExprKind::As { expr: inner, ty } => {
                 self.infer_expr(inner);
                 self.ast_type_to_sema(ty)
@@ -878,15 +773,14 @@ impl<'a> InferCtx<'a> {
                 self.maybe_arena_ref(dict_ty)
             }
 
-            // Anonymous object `{ x = 1, y = 2 }` — no structural record type yet.
             ExprKind::AnonObject(fields) => {
                 for f in fields.iter() { self.infer_expr(f.value); }
-                self.unknown()
+                self.unknown() // no structural record type yet
             }
 
             ExprKind::StructLit { path, fields } => {
                 for f in fields.iter() { self.infer_expr(f.value); }
-                let root = path.first().copied().unwrap_or("");
+                let root      = path.first().copied().unwrap_or("");
                 let struct_ty = self.ctx.top_level_def(root)
                     .and_then(|id| self.ctx.def_type(id))
                     .unwrap_or_else(|| self.unknown());
@@ -903,21 +797,17 @@ impl<'a> InferCtx<'a> {
                     }
                     ty
                 }).collect();
-
                 let ret_var       = self.fresh_var();
                 let prev_ret      = self.current_return.replace(ret_var);
                 let prev_fallible = self.current_fallible;
                 self.current_fallible = false;
-
                 let body_ty = match &lambda.body {
                     LambdaBody::Block(b) => self.infer_block(b),
                     LambdaBody::Expr(e)  => self.infer_expr(e),
                 };
                 self.unify(ret_var, body_ty, lambda.span);
-
                 self.current_return   = prev_ret;
                 self.current_fallible = prev_fallible;
-
                 let ret_resolved = self.apply(ret_var);
                 self.ctx.types.insert(SemaType::Function {
                     params:      param_tys,
@@ -929,10 +819,9 @@ impl<'a> InferCtx<'a> {
             ExprKind::Block(b) => self.infer_block(b),
 
             ExprKind::If(if_node) => {
-                let cond = self.infer_expr(if_node.condition);
+                let cond    = self.infer_expr(if_node.condition);
                 let bool_ty = self.bool_ty();
                 self.unify(bool_ty, cond, if_node.condition.span);
-
                 let then_ty = self.infer_block(&if_node.then_block);
                 for elif in if_node.elif_branches {
                     let ct = self.infer_expr(elif.condition);
@@ -984,7 +873,6 @@ impl<'a> InferCtx<'a> {
                     let fb_ty = self.infer_expr(fb);
                     self.unify(inner_ty, fb_ty, expr.span);
                 }
-                // `x or default` unwraps Optional<T> → T.
                 self.unwrap_optional(inner_ty)
             }
         }
@@ -994,13 +882,14 @@ impl<'a> InferCtx<'a> {
 
     fn infer_literal<'ast>(&mut self, lit: &Literal<'ast>) -> TypeId {
         match lit {
-            Literal::Int(_)                       => self.ctx.types.intern(SemaType::Int),
-            Literal::Float(_)                     => self.ctx.types.intern(SemaType::Float),
-            Literal::Double(_)                    => self.ctx.types.intern(SemaType::Double),
-            Literal::Bool(_)                      => self.ctx.types.intern(SemaType::Bool),
-            Literal::Char(_)                      => self.ctx.types.intern(SemaType::Char),
-            Literal::Null                         => self.ctx.types.intern(SemaType::Null),
-            Literal::Str(_) | Literal::VerbatimStr(_)
+            Literal::Int(_)   => self.ctx.types.intern(SemaType::Int),
+            Literal::Float(_) => self.ctx.types.intern(SemaType::Float),
+            Literal::Double(_)=> self.ctx.types.intern(SemaType::Double),
+            Literal::Bool(_)  => self.ctx.types.intern(SemaType::Bool),
+            Literal::Char(_)  => self.ctx.types.intern(SemaType::Char),
+            Literal::Null     => self.ctx.types.intern(SemaType::Null),
+            Literal::Str(_)
+            | Literal::VerbatimStr(_)
             | Literal::InterpolatedStr(_)
             | Literal::InterpolatedVerbatimStr(_) => self.ctx.types.intern(SemaType::Str),
         }
@@ -1010,25 +899,21 @@ impl<'a> InferCtx<'a> {
 
     fn binop_result(&mut self, op: BinOp, lhs: TypeId, rhs: TypeId, span: Span) -> TypeId {
         match op {
-            // Arithmetic + bitwise: operands must unify; result is their type.
             BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Rem
             | BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor | BinOp::Shl | BinOp::Shr => {
                 self.unify(lhs, rhs, span);
                 self.apply(lhs)
             }
-            // Comparison: any comparable types; result is bool.
             BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
                 self.unify(lhs, rhs, span);
                 self.bool_ty()
             }
-            // Logical: operands should be bool; result is bool.
             BinOp::And | BinOp::Or => {
                 let bool_ty = self.bool_ty();
                 self.unify(bool_ty, lhs, span);
                 self.unify(bool_ty, rhs, span);
                 bool_ty
             }
-            // Range: result is Unknown until we add a Range SemaType.
             BinOp::Range | BinOp::RangeIncl => self.unknown(),
         }
     }
@@ -1040,7 +925,6 @@ impl<'a> InferCtx<'a> {
         match self.ctx.types.get(resolved) {
             SemaType::Task(inner) => *inner,
             SemaType::Var(_) => {
-                // Constrain: ty = Task<fresh_var>.
                 let inner = self.fresh_var();
                 let task  = self.ctx.types.intern(SemaType::Task(inner));
                 self.unify(resolved, task, span);
@@ -1072,17 +956,12 @@ impl<'a> InferCtx<'a> {
         }
     }
 
-    /// Extract the return type of a function type. Emits an error and returns
-    /// ERROR if the callee is definitely not callable.
     fn call_return_type(&mut self, callee_ty: TypeId, span: Span) -> TypeId {
         let resolved = self.apply(callee_ty);
         match self.ctx.types.get(resolved) {
             SemaType::Function { return_type, .. } => *return_type,
-            SemaType::Var(_) => {
-                // Callee type not known yet — return a fresh var.
-                self.fresh_var()
-            }
-            SemaType::Unknown => self.unknown(),
+            SemaType::Var(_)   => self.fresh_var(),
+            SemaType::Unknown  => self.unknown(),
             _ => {
                 self.errors.add_type_error(TypeError::NoSuchMethod {
                     method:  "<call>".into(),
@@ -1101,32 +980,32 @@ impl<'a> InferCtx<'a> {
         let b = self.apply(b);
         if a == b { return; }
 
-        // Bind type variables.
-        let a_var = matches!(self.ctx.types.get(a), SemaType::Var(_));
-        let b_var = matches!(self.ctx.types.get(b), SemaType::Var(_));
-        if a_var {
-            if let SemaType::Var(v) = *self.ctx.types.get(a) {
+        // FIX: use reference patterns so we don't try to move out of &SemaType.
+        // u32 is Copy so binding through &SemaType::Var(v) gives v: u32.
+        let a_is_var = matches!(self.ctx.types.get(a), SemaType::Var(_));
+        let b_is_var = matches!(self.ctx.types.get(b), SemaType::Var(_));
+
+        if a_is_var {
+            if let &SemaType::Var(v) = self.ctx.types.get(a) {
                 self.unifier.bind(v, b);
                 return;
             }
         }
-        if b_var {
-            if let SemaType::Var(v) = *self.ctx.types.get(b) {
+        if b_is_var {
+            if let &SemaType::Var(v) = self.ctx.types.get(b) {
                 self.unifier.bind(v, a);
                 return;
             }
         }
 
-        // Unknown / ERROR absorb without cascading errors.
-        let a_is_unk = matches!(self.ctx.types.get(a), SemaType::Unknown);
-        let b_is_unk = matches!(self.ctx.types.get(b), SemaType::Unknown);
-        if a_is_unk || b_is_unk { return; }
+        // Unknown / ERROR absorb without cascading.
+        let a_unk = matches!(self.ctx.types.get(a), SemaType::Unknown);
+        let b_unk = matches!(self.ctx.types.get(b), SemaType::Unknown);
+        if a_unk || b_unk { return; }
         if a == TypeId::ERROR || b == TypeId::ERROR { return; }
 
-        // Structural compatibility for composite types.
         if self.structurally_compatible(a, b) { return; }
 
-        // Genuine mismatch.
         self.errors.add_type_error(TypeError::TypeMismatch {
             expected:   self.display_type(a),
             found:      self.display_type(b),
@@ -1135,24 +1014,28 @@ impl<'a> InferCtx<'a> {
         });
     }
 
-    /// Returns true if two concrete types are structurally compatible and
-    /// recursively unifies their type arguments. Handles the common
-    /// wrapper types so unify doesn't always have to reach the error branch.
+    /// Returns true if two concrete types are structurally compatible,
+    /// recursively unifying their type arguments. Extracts inner TypeIds
+    /// (which are Copy) before calling unify to avoid borrow conflicts.
     fn structurally_compatible(&mut self, a: TypeId, b: TypeId) -> bool {
-        // We must extract the inner ids before calling self.unify recursively
-        // to avoid a borrow conflict on self.ctx.types.
-        let inner = match (self.ctx.types.get(a), self.ctx.types.get(b)) {
-            (SemaType::List(ia),      SemaType::List(ib))      => Some((*ia, *ib)),
-            (SemaType::Optional(ia),  SemaType::Optional(ib))  => Some((*ia, *ib)),
-            (SemaType::Fallible(ia),  SemaType::Fallible(ib))  => Some((*ia, *ib)),
-            (SemaType::Task(ia),      SemaType::Task(ib))      => Some((*ia, *ib)),
-            (SemaType::Slice(ia),     SemaType::Slice(ib))     => Some((*ia, *ib)),
-            (SemaType::GcRef(ia),     SemaType::GcRef(ib))     => Some((*ia, *ib)),
-            (SemaType::Named { def: da, .. }, SemaType::Named { def: db, .. }) => {
-                if da == db { return true; } else { return false; }
+        // Extract inner id pairs first, releasing the immutable borrow on
+        // self.ctx.types before we call self.unify (which needs &mut self).
+        let inner: Option<(TypeId, TypeId)> = {
+            let at = self.ctx.types.get(a);
+            let bt = self.ctx.types.get(b);
+            match (at, bt) {
+                (SemaType::List(ia),     SemaType::List(ib))     => Some((*ia, *ib)),
+                (SemaType::Optional(ia), SemaType::Optional(ib)) => Some((*ia, *ib)),
+                (SemaType::Fallible(ia), SemaType::Fallible(ib)) => Some((*ia, *ib)),
+                (SemaType::Task(ia),     SemaType::Task(ib))     => Some((*ia, *ib)),
+                (SemaType::Slice(ia),    SemaType::Slice(ib))    => Some((*ia, *ib)),
+                (SemaType::GcRef(ia),    SemaType::GcRef(ib))    => Some((*ia, *ib)),
+                (SemaType::Named { def: da, .. }, SemaType::Named { def: db, .. }) => {
+                    return da == db;
+                }
+                _ => None,
             }
-            _ => None,
-        };
+        }; // immutable borrow released here
         if let Some((ia, ib)) = inner {
             self.unify(ia, ib, Span::at(0));
             true
@@ -1167,4 +1050,4 @@ impl<'a> InferCtx<'a> {
         if id == TypeId::ERROR { return "<error>".into(); }
         self.ctx.types.get(id).display(&self.ctx.types)
     }
-}
+    }
