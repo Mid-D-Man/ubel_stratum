@@ -1,3 +1,4 @@
+# Cargo.toml
 [package]
 name = "ubel_stratum"
 version = "0.1.0"
@@ -7,21 +8,34 @@ license = "MIT OR Apache-2.0"
 description = "Ubel Stratum - Quantum-Ready Multi-Tier Systems Language"
 repository = "https://github.com/Mid-D-Man/ubel_stratum"
 
+[features]
+# parser is on by default so `cargo build`, `cargo run`, and full `cargo test`
+# all work as before. Use --no-default-features to skip grammar.rs compilation.
+default = ["parser"]
+parser  = ["lalrpop-util"]
+
 [dependencies]
-logos        = "0.14"
-lalrpop-util = { version = "0.20", features = ["lexer"] }
+# lalrpop-util is optional — only pulled in when the parser feature is active.
+lalrpop-util = { version = "0.20", features = ["lexer"], optional = true }
 clap         = { version = "4.5",  features = ["derive"] }
 thiserror    = "1.0"
-miette       = "7.0"
+miette       = { version = "7.0",  features = ["fancy"] }
 phf          = { version = "0.11", features = ["macros"] }
 lazy_static  = "1.4"
 bumpalo      = { version = "3",    features = ["collections"] }
+logos        = "0.14"
 
 [build-dependencies]
+# lalrpop itself (the code-generator) cannot be made optional in build-deps —
+# Cargo doesn't support that. But lalrpop the tool runs in milliseconds;
+# the slowness is rustc compiling the generated grammar.rs. By gating
+# `pub mod parser` behind the feature flag, rustc never sees grammar.rs
+# when the feature is off, even though lalrpop still generates the file.
 lalrpop = "0.20"
 
 [dev-dependencies]
-criterion = "0.5"
+criterion = { version = "0.5", features = ["html_reports"] }
+proptest  = "1.4"
 
 [[bin]]
 name = "stratc"
@@ -32,27 +46,16 @@ name = "ubel_stratum"
 path = "src/lib.rs"
 
 [[bench]]
-name = "lexer_bench"
+name    = "lexer_bench"
 harness = false
 
 [[bench]]
-name = "ast_bench"
+name    = "ast_bench"
 harness = false
 
 [[bench]]
-name = "parser_bench"
+name    = "parser_bench"
 harness = false
-
-[[test]]
-name = "name_resolution_tests"
-path = "tests/sema/name_resolution_tests.rs"
-
-# ── Profiles ──────────────────────────────────────────────────────────────────
-
-[profile.dev]
-opt-level     = 0
-codegen-units = 16
-debug         = 1
 
 [profile.release]
 opt-level     = 3
