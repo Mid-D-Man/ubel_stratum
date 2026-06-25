@@ -1,0 +1,25 @@
+# .github/workflows/parser-crate-migrate.yml
+name: Parser Crate — One-Shot Migration
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Preview without writing — run true first, then false to apply'
+        required: false
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+
+jobs:
+  migrate:
+    uses: Mid-D-Man/mdix-scaffold/.github/workflows/generate-structure.yml@main
+    permissions:
+      contents: write
+    with:
+      template:       '.mdix/parser-crate-migration/migrate.mdix'
+      dry_run:        ${{ inputs.dry_run || 'true' }}
+      file_strategy:  'overwrite'
+      override_stubs: 'true'
