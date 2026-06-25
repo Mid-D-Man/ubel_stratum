@@ -67,8 +67,8 @@
   // patch_replace_text mode 1 = exact literal substring → replaces first match.
   patch_files::
     patch_replace_text(
-      "ubel_stratum_parser/src/grammar.lalrpop"
-      "use crate::parser::helpers::{self, *};"
+      "ubel_stratum_parser/src/grammar.lalrpop",
+      "use crate::parser::helpers::{self, *};",
       "use crate::helpers::{self, *};"
     )
 
