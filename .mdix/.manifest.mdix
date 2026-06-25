@@ -1,14 +1,14 @@
 @CONFIG(
   version    -> "1.0.0"
-  generated  -> "2026-06-25T19:16:58Z"
+  generated  -> "2026-06-25T19:34:29Z"
   features   -> "data"
   debug_mode -> "off"
 )
 
 @DATA(
   template      = ".mdix/parser-crate-migration/migrate.mdix"
-  template_hash = "2d13be460eea"
-  last_run      = "2026-06-25T19:16:58Z"
+  template_hash = "38fe8c9c173b"
+  last_run      = "2026-06-25T19:34:29Z"
   new_this_run  = 0
   overridden    = 0
   skipped       = 0
