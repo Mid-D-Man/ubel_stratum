@@ -1,0 +1,75 @@
+// .mdix/parser-crate-migration/migrate.mdix
+// =============================================================================
+// ONE-SHOT MIGRATION — extract parser into ubel_stratum_parser workspace crate
+// =============================================================================
+//
+// PRE-CONDITIONS: commit all new/updated files from the refactor PR first:
+//   ✓ ubel_stratum_parser/Cargo.toml
+//   ✓ ubel_stratum_parser/build.rs
+//   ✓ ubel_stratum_parser/src/lib.rs
+//   ✓ ubel_stratum_parser/src/main.rs     (new binary — replaces src/main.rs)
+//   ✓ ubel_stratum_parser/benches/parser_bench.rs
+//   ✓ Cargo.toml                           (workspace root, lalrpop removed)
+//   ✓ build.rs                             (empty fn main)
+//   ✓ src/lib.rs                           (parser module removed)
+//   ✓ .github/workflows/ubel-publish.yml   (updated)
+//
+// THEN run this template via parser-crate-migrate.yml (dry_run=true first!)
+// =============================================================================
+
+@CONFIG(
+  version    -> "1.0.0"
+  author     -> "Mid-D-Man"
+  features   -> "quickfuncs,data"
+  debug_mode -> "regular"
+)
+
+@QUICKFUNCS(
+
+  ~move<object>(src, dst) {
+    return { from_path = src, to_path = dst }
+  }
+
+  ~delete_file<object>(path) {
+    return { path = path }
+  }
+
+  ~patch_replace_text<object>(path, anchor, content) {
+    return { path = path, op = "replace_text", anchor = anchor, content = content }
+  }
+
+)
+
+@DATA(
+
+  // ── Pass 1: Remove files that have been superseded by new crate versions ──
+  delete_files::
+    delete_file("src/parser/mod.rs")
+    delete_file("src/main.rs")
+    delete_file("benches/parser_bench.rs")
+
+  // ── Pass 2: Move parser internals into ubel_stratum_parser/src/ ───────────
+  // move() creates destination parent directories automatically.
+  move_files::
+    move("src/parser/grammar.lalrpop",   "ubel_stratum_parser/src/grammar.lalrpop")
+    move("src/parser/token_iter.rs",     "ubel_stratum_parser/src/token_iter.rs")
+    move("src/parser/helpers/mod.rs",    "ubel_stratum_parser/src/helpers/mod.rs")
+    move("src/parser/helpers/decl.rs",   "ubel_stratum_parser/src/helpers/decl.rs")
+    move("src/parser/helpers/expr.rs",   "ubel_stratum_parser/src/helpers/expr.rs")
+    move("src/parser/helpers/pat.rs",    "ubel_stratum_parser/src/helpers/pat.rs")
+    move("src/parser/helpers/stmt.rs",   "ubel_stratum_parser/src/helpers/stmt.rs")
+    move("src/parser/helpers/ty.rs",     "ubel_stratum_parser/src/helpers/ty.rs")
+
+  // ── Pass 5: Surgical fix — one import path changes when crate moves ────────
+  // grammar.lalrpop line 32:
+  //   BEFORE: use crate::parser::helpers::{self, *};
+  //   AFTER:  use crate::helpers::{self, *};
+  // patch_replace_text mode 1 = exact literal substring → replaces first match.
+  patch_files::
+    patch_replace_text(
+      "ubel_stratum_parser/src/grammar.lalrpop"
+      "use crate::parser::helpers::{self, *};"
+      "use crate::helpers::{self, *};"
+    )
+
+)
