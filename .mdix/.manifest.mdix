@@ -1,0 +1,22 @@
+@CONFIG(
+  version    -> "1.0.0"
+  generated  -> "2026-06-25T19:16:58Z"
+  features   -> "data"
+  debug_mode -> "off"
+)
+
+@DATA(
+  template      = ".mdix/parser-crate-migration/migrate.mdix"
+  template_hash = "2d13be460eea"
+  last_run      = "2026-06-25T19:16:58Z"
+  new_this_run  = 0
+  overridden    = 0
+  skipped       = 0
+  deleted       = 0
+  renamed       = 0
+  moved         = 0
+  updated       = 0
+
+  created_files::
+    "(none)"
+)
