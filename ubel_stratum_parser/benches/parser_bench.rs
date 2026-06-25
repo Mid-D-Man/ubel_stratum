@@ -6,7 +6,13 @@ use ubel_stratum::ast::arena::AstArena;
 use ubel_stratum::lexer;
 use ubel_stratum_parser as parser;
 
-// ── Source fixtures ───────────────────────────────────────────────────────────
+// ── Source fixtures (valid Ubel Stratum syntax) ───────────────────────────────
+// Syntax rules confirmed from grammar.lalrpop:
+//   fn name(param: type) ReturnType { }   -- no '->', no colon before return
+//   struct Name { field: type }            -- fields separated by newlines
+//   Name { field = value, field2 = value2 } -- struct literals use '='
+//   []Type                                  -- slice type
+//   int, float, bool, string               -- primitive types (lowercase)
 
 const EMPTY_PROGRAM: &str = "";
 
@@ -22,16 +28,26 @@ fn main() {
 const SMALL_SOURCE: &str = r#"
 package math
 
-fn add(a: Int, b: Int) -> Int {
-    return a + b
+fn add(x: int, y: int) int {
+    return x + y
 }
 
-fn subtract(a: Int, b: Int) -> Int {
-    return a - b
+fn subtract(x: int, y: int) int {
+    return x - y
 }
 
-fn multiply(a: Int, b: Int) -> Int {
-    return a * b
+fn multiply(x: int, y: int) int {
+    return x * y
+}
+
+fn clamp(val: int, lo: int, hi: int) int {
+    if val < lo {
+        return lo
+    } elif val > hi {
+        return hi
+    } else {
+        return val
+    }
 }
 
 fn main() {
@@ -40,9 +56,10 @@ fn main() {
     let sum  = add(x, y)
     let diff = subtract(x, y)
     let prod = multiply(x, y)
+    let c    = clamp(prod, 0, 100)
     print(sum)
     print(diff)
-    print(prod)
+    print(c)
 }
 "#;
 
@@ -50,49 +67,47 @@ const MEDIUM_SOURCE: &str = r#"
 package inventory
 
 struct Item {
-    id:    Int
-    name:  String
-    price: Float
-    qty:   Int
+    id:    int
+    name:  string
+    price: float
+    qty:   int
 }
 
-fn new_item(id: Int, name: String, price: Float, qty: Int) -> Item {
-    return Item { id: id, name: name, price: price, qty: qty }
+fn new_item(id: int, name: string, price: float, qty: int) Item {
+    return Item { id = id, name = name, price = price, qty = qty }
 }
 
-fn total_value(item: Item) -> Float {
-    return item.price * item.qty as Float
+fn total_value(item: Item) float {
+    return item.price * item.qty as float
 }
 
-fn apply_discount(item: Item, pct: Float) -> Item {
+fn apply_discount(item: Item, pct: float) Item {
     let discounted = item.price * (1.0 - pct / 100.0)
-    return Item { id: item.id, name: item.name, price: discounted, qty: item.qty }
+    return Item { id = item.id, name = item.name, price = discounted, qty = item.qty }
 }
 
-fn find_expensive(items: [Item], threshold: Float) -> [Item] {
-    let result = []
-    for item in items {
-        if item.price > threshold {
-            result.push(item)
-        }
-    }
-    return result
+fn is_expensive(item: Item, threshold: float) bool {
+    return item.price > threshold
 }
 
 fn main() {
-    let items = [
-        new_item(1, "Widget A", 9.99,  100),
-        new_item(2, "Widget B", 24.99, 50),
-        new_item(3, "Gadget X", 149.99, 10),
-        new_item(4, "Gadget Y", 299.99, 5),
-    ]
+    let a = new_item(1, "Widget A", 9.99,   100)
+    let b = new_item(2, "Widget B", 24.99,  50)
+    let c = new_item(3, "Gadget X", 149.99, 10)
+    let d = new_item(4, "Gadget Y", 299.99, 5)
 
-    let expensive = find_expensive(items, 50.0)
-    for e in expensive {
-        let discounted = apply_discount(e, 10.0)
+    if is_expensive(c, 50.0) {
+        let discounted = apply_discount(c, 10.0)
         print(discounted.name)
         print(total_value(discounted))
     }
+    if is_expensive(d, 50.0) {
+        let discounted = apply_discount(d, 15.0)
+        print(discounted.name)
+        print(total_value(discounted))
+    }
+    print(total_value(a))
+    print(total_value(b))
 }
 "#;
 
@@ -100,74 +115,69 @@ const LARGE_SOURCE: &str = r#"
 package simulation
 
 struct Vec3 {
-    x: Float
-    y: Float
-    z: Float
+    x: float
+    y: float
+    z: float
 }
 
-fn vec3_add(a: Vec3, b: Vec3) -> Vec3 {
-    return Vec3 { x: a.x + b.x, y: a.y + b.y, z: a.z + b.z }
+fn vec3_add(a: Vec3, b: Vec3) Vec3 {
+    return Vec3 { x = a.x + b.x, y = a.y + b.y, z = a.z + b.z }
 }
 
-fn vec3_scale(v: Vec3, s: Float) -> Vec3 {
-    return Vec3 { x: v.x * s, y: v.y * s, z: v.z * s }
+fn vec3_scale(v: Vec3, s: float) Vec3 {
+    return Vec3 { x = v.x * s, y = v.y * s, z = v.z * s }
 }
 
-fn vec3_dot(a: Vec3, b: Vec3) -> Float {
+fn vec3_dot(a: Vec3, b: Vec3) float {
     return a.x * b.x + a.y * b.y + a.z * b.z
 }
 
-fn vec3_len_sq(v: Vec3) -> Float {
+fn vec3_len_sq(v: Vec3) float {
     return vec3_dot(v, v)
 }
 
 struct Particle {
     pos:  Vec3
     vel:  Vec3
-    mass: Float
+    mass: float
 }
 
-fn particle_update(p: Particle, dt: Float) -> Particle {
-    let new_pos = vec3_add(p.pos, vec3_scale(p.vel, dt))
-    return Particle { pos: new_pos, vel: p.vel, mass: p.mass }
-}
-
-fn particle_apply_force(p: Particle, force: Vec3, dt: Float) -> Particle {
-    let accel   = vec3_scale(force, 1.0 / p.mass)
+fn particle_step(p: Particle, gravity: Vec3, dt: float) Particle {
+    let accel   = vec3_scale(gravity, 1.0 / p.mass)
     let new_vel = vec3_add(p.vel, vec3_scale(accel, dt))
-    return Particle { pos: p.pos, vel: new_vel, mass: p.mass }
+    let new_pos = vec3_add(p.pos, vec3_scale(new_vel, dt))
+    return Particle { pos = new_pos, vel = new_vel, mass = p.mass }
 }
 
-fn simulate(particles: [Particle], steps: Int, dt: Float) -> [Particle] {
-    let gravity = Vec3 { x: 0.0, y: -9.81, z: 0.0 }
-    let state   = particles
-    let i = 0
+fn simulate_step(p0: Particle, p1: Particle, p2: Particle, gravity: Vec3, dt: float) float {
+    let r0 = particle_step(p0, gravity, dt)
+    let r1 = particle_step(p1, gravity, dt)
+    let r2 = particle_step(p2, gravity, dt)
+    return vec3_len_sq(r0.pos) + vec3_len_sq(r1.pos) + vec3_len_sq(r2.pos)
+}
+
+fn run_simulation(gravity: Vec3, steps: int, dt: float) float {
+    let p0 = Particle { pos = Vec3 { x = 0.0, y = 10.0, z = 0.0 }, vel = Vec3 { x = 1.0, y = 0.0, z = 0.0 }, mass = 1.0 }
+    let p1 = Particle { pos = Vec3 { x = 5.0, y = 20.0, z = 0.0 }, vel = Vec3 { x = 0.0, y = 2.0, z = 0.0 }, mass = 2.0 }
+    let p2 = Particle { pos = Vec3 { x = 2.0, y = 5.0,  z = 3.0 }, vel = Vec3 { x = 1.0, y = 1.0, z = 1.0 }, mass = 0.5 }
+    let acc = 0.0
+    let i   = 0
     while i < steps {
-        let j    = 0
-        let next = []
-        while j < state.len() {
-            let p = state[j]
-            let p2 = particle_apply_force(p, gravity, dt)
-            let p3 = particle_update(p2, dt)
-            next.push(p3)
-            j = j + 1
-        }
-        state = next
-        i = i + 1
+        let energy = simulate_step(p0, p1, p2, gravity, dt)
+        acc = acc + energy
+        i   = i + 1
     }
-    return state
+    return acc
 }
 
 fn main() {
-    let particles = [
-        Particle { pos: Vec3 { x: 0.0, y: 10.0, z: 0.0 }, vel: Vec3 { x: 1.0, y: 0.0, z: 0.0 }, mass: 1.0 },
-        Particle { pos: Vec3 { x: 5.0, y: 20.0, z: 0.0 }, vel: Vec3 { x: 0.0, y: 2.0, z: 0.0 }, mass: 2.0 },
-        Particle { pos: Vec3 { x: 2.0, y:  5.0, z: 3.0 }, vel: Vec3 { x: 1.0, y: 1.0, z: 1.0 }, mass: 0.5 },
-    ]
-    let result = simulate(particles, 100, 0.016)
-    for r in result {
-        print(vec3_len_sq(r.pos))
-    }
+    let gravity = Vec3 { x = 0.0, y = -9.81, z = 0.0 }
+    let result  = run_simulation(gravity, 60, 0.016)
+    print(result)
+
+    let g2     = Vec3 { x = 0.0, y = -1.62, z = 0.0 }
+    let result2 = run_simulation(g2, 60, 0.016)
+    print(result2)
 }
 "#;
 
@@ -177,14 +187,14 @@ fn lex_only(source: &str) -> Vec<ubel_stratum::Token> {
     lexer::tokenize(source).expect("lex failed")
 }
 
-fn parse_with_arena(tokens: Vec<ubel_stratum::Token>, source: &str) {
+fn parse_only(tokens: Vec<ubel_stratum::Token>, source: &str) {
     let arena = AstArena::with_capacity(512 * 1024);
     let _ = parser::parse(&arena, tokens, source.to_string());
 }
 
 fn lex_and_parse(source: &str) {
     let tokens = lex_only(source);
-    parse_with_arena(tokens, source);
+    parse_only(tokens, source);
 }
 
 // ── Benchmarks ────────────────────────────────────────────────────────────────
@@ -224,10 +234,9 @@ fn bench_parse(c: &mut Criterion) {
     ];
     for (name, src) in cases {
         g.throughput(Throughput::Bytes(src.len() as u64));
-        // Pre-lex so we're benchmarking only the parser pass
         let tokens = lex_only(src);
         g.bench_with_input(BenchmarkId::new("parse_only", name), src, |b, s| {
-            b.iter(|| parse_with_arena(black_box(tokens.clone()), black_box(s)))
+            b.iter(|| parse_only(black_box(tokens.clone()), black_box(s)))
         });
     }
     g.finish();
