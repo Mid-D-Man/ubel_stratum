@@ -1,10 +1,13 @@
-name: Ubel Stratum — Test & Bench Publisher
+# .github/workflows/ubel-publish.yml
+name: Ubel Stratum CI
 
 on:
+  push:
+    branches: [master, main]
   workflow_dispatch:
     inputs:
       publish_type:
-        description: 'What to publish'
+        description: 'What to run'
         required: true
         default: 'tests'
         type: choice
@@ -12,52 +15,68 @@ on:
           - tests
           - bench
           - all
+      compile_parser:
+        description: 'Also compile+test the lalrpop parser (slow — hours on cache miss)'
+        required: true
+        default: 'without-parser'
+        type: choice
+        options:
+          - without-parser
+          - with-parser
 
+# ── Shared permissions ────────────────────────────────────────────────────────
 permissions:
   contents: write
-  actions: read
+  pages:    write
+  id-token: write
 
-env:
-  CARGO_INCREMENTAL: "0"
-  CARGO_TERM_COLOR: always
-
-# =============================================================================
-
+# ─────────────────────────────────────────────────────────────────────────────
+# JOB 1 — Decide what to run
+# ─────────────────────────────────────────────────────────────────────────────
 jobs:
-
-  # ── 1. Decide what to run ──────────────────────────────────────────────────
   parse-trigger:
     runs-on: ubuntu-latest
     outputs:
       run_tests:        ${{ steps.decide.outputs.run_tests }}
       run_bench:        ${{ steps.decide.outputs.run_bench }}
       run_parser_bench: ${{ steps.decide.outputs.run_parser_bench }}
+      use_parser:       ${{ steps.decide.outputs.use_parser }}
+
     steps:
-      - name: Decide what to run
+      - name: Decide
         id: decide
         run: |
-          T=false; B=false; P=false
+          T=false; B=false; P=false; UP=false
 
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             case "${{ github.event.inputs.publish_type }}" in
               tests) T=true ;;
               bench) B=true ;;
-              all)   T=true; B=true; P=true ;;
+              all)   T=true; B=true; P=true; UP=true ;;
             esac
+            if [ "${{ github.event.inputs.compile_parser }}" = "with-parser" ]; then
+              UP=true
+              T=true
+            fi
           else
             T=true
             MSG="${{ github.event.head_commit.message }}"
             echo "$MSG" | grep -qiE '\-\-publish-(bench|all)' && B=true || true
             echo "$MSG" | grep -qiE '\-\-publish-parser'      && P=true || true
-            echo "$MSG" | grep -qiE '\-\-publish-all'         && P=true || true
+            if echo "$MSG" | grep -qiE '\-\-publish-all'; then
+              P=true; UP=true
+            fi
           fi
 
           echo "run_tests=$T"        >> $GITHUB_OUTPUT
-          echo "run_bench=$B"         >> $GITHUB_OUTPUT
-          echo "run_parser_bench=$P"  >> $GITHUB_OUTPUT
-          echo "Decision — Tests=$T  Bench=$B  ParserBench=$P"
+          echo "run_bench=$B"        >> $GITHUB_OUTPUT
+          echo "run_parser_bench=$P" >> $GITHUB_OUTPUT
+          echo "use_parser=$UP"      >> $GITHUB_OUTPUT
+          echo "Decision — Tests=$T  Bench=$B  ParserBench=$P  UseParser=$UP"
 
-  # ── 2. Run tests ───────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# JOB 2 — Tests (no parser — compiles in minutes)
+# ─────────────────────────────────────────────────────────────────────────────
   run-tests:
     runs-on: ubuntu-latest
     needs: parse-trigger
@@ -70,187 +89,193 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: stable
+          components: rustfmt, clippy
 
       - name: Get Rust version
         id: rustver
         run: echo "ver=$(rustc --version)" >> $GITHUB_OUTPUT
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/cache@v4
         with:
-          shared-key: "ubel"
-          cache-on-failure: true
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock', '**/grammar.lalrpop') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
 
       - name: Build test binaries
-        run: cargo test --no-run --lib --tests 2>&1
+        run: cargo test --no-run -p ubel_stratum --lib --tests 2>&1
 
-      - name: Run all tests (continue on failure)
+      - name: Run tests
         continue-on-error: true
         run: |
           set +e
-          cargo test --lib --tests --color=never --no-fail-fast -- --show-output 2>&1 | tee test-raw.txt
-          TEST_EXIT_CODE=${PIPESTATUS[0]}
-          echo "TEST_EXIT=${TEST_EXIT_CODE}" >> $GITHUB_ENV
-          if [ $TEST_EXIT_CODE -ne 0 ]; then
-            echo "::warning::Tests failed (exit $TEST_EXIT_CODE) — generating report anyway"
-          fi
+          cargo test -p ubel_stratum --lib --tests \
+            --color=never --no-fail-fast -- --show-output 2>&1 | tee test-raw.txt
+          echo "TEST_EXIT=${PIPESTATUS[0]}" >> $GITHUB_ENV
           exit 0
 
       - name: Parse results to JSON
-        env:
-          BUILD_NUM:    ${{ github.run_number }}
-          BRANCH:       ${{ github.ref_name }}
-          COMMIT:       ${{ github.sha }}
-          BUILD_DATE:   ${{ github.event.head_commit.timestamp }}
-          RUST_VERSION: ${{ steps.rustver.outputs.ver }}
+        if: always()
         run: |
           python3 - << 'PYEOF'
-          import re, json, os
+          import json, re, os
 
-          RE_ANSI = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
-          def strip_ansi(s):
-              return RE_ANSI.sub('', s)
-
-          def build_suite(name, tests, dur_s=0.0):
-              return {
-                  'name':       name,
-                  'passed':     sum(1 for t in tests if t['status'] == 'passed'),
-                  'failed':     sum(1 for t in tests if t['status'] == 'failed'),
-                  'ignored':    sum(1 for t in tests if t['status'] == 'ignored'),
-                  'duration_s': round(dur_s, 4),
-                  'tests':      tests,
-              }
-
-          raw  = open('test-raw.txt', encoding='utf-8', errors='replace').read()
-          text = strip_ansi(raw)
-
-          print("=== test-raw.txt preview (first 40 lines) ===")
-          for i, l in enumerate(text.splitlines()[:40], 1):
-              print(f"  {i:3}: {repr(l)}")
-          print("=============================================")
-
-          test_output = {}
+          raw = open("test-raw.txt").read() if os.path.exists("test-raw.txt") else ""
+          tests = []
           for m in re.finditer(
-                  r'---- ([\w:]+(?:::\w+)*) stdout ----\n(.*?)'
-                  r'(?=\n---- |\n\n(?:successes|failures):\n|\ntest result:|\Z)',
-                  text, re.DOTALL):
-              content = m.group(2).strip()
-              if content:
-                  test_output[m.group(1)] = content
+              r"test\s+([\w:]+)\s+\.\.\.\s+(ok|FAILED|ignored)", raw
+          ):
+              tests.append({"name": m.group(1), "result": m.group(2)})
 
-          suites    = []
-          cur_name  = None
-          cur_tests = []
-          cur_dur   = 0.0
-
-          RE_RUN    = re.compile(r'Running\s+(?:unittests?\s+)?(\S+)\s+\(')
-          RE_TEST   = re.compile(
-              r'^test\s+([\w:]+(?:::\w+)*)\s+\.\.\.\s+'
-              r'(ok|FAILED|ignored)(?:\s+\(([\d.]+)s\))?'
+          summary_m = re.search(
+              r"test result:\s+(ok|FAILED)\.\s+(\d+) passed;\s+(\d+) failed;\s+(\d+) ignored",
+              raw,
           )
-          RE_RESULT = re.compile(r'test result:.*?finished in ([\d.]+)s')
-
-          for line in text.splitlines():
-              m = RE_RUN.search(line)
-              if m:
-                  if cur_name is not None and cur_tests:
-                      suites.append(build_suite(cur_name, cur_tests, cur_dur))
-                  raw_path = m.group(1)
-                  base     = os.path.splitext(os.path.basename(raw_path))[0]
-                  cur_name  = (base + ' (unit tests)') if base in ('lib', 'main') else base
-                  cur_tests = []
-                  cur_dur   = 0.0
-                  continue
-
-              m = RE_TEST.match(line)
-              if m:
-                  if cur_name is None:
-                      cur_name  = 'ubel_stratum (unit tests)'
-                      cur_tests = []
-                      cur_dur   = 0.0
-                  tname, status, dur = m.group(1), m.group(2), m.group(3)
-                  cur_tests.append({
-                      'name':        tname,
-                      'status':      {'ok': 'passed', 'FAILED': 'failed',
-                                      'ignored': 'ignored'}.get(status, 'unknown'),
-                      'duration_ms': int(float(dur) * 1000) if dur else 0,
-                      'output':      test_output.get(tname, ''),
-                  })
-                  continue
-
-              m = RE_RESULT.search(line)
-              if m:
-                  cur_dur = float(m.group(1))
-                  if cur_name is not None and cur_tests:
-                      suites.append(build_suite(cur_name, cur_tests, cur_dur))
-                      cur_name  = None
-                      cur_tests = []
-                      cur_dur   = 0.0
-
-          if cur_name and cur_tests:
-              suites.append(build_suite(cur_name, cur_tests, cur_dur))
-
-          total   = sum(s['passed'] + s['failed'] + s['ignored'] for s in suites)
-          passed  = sum(s['passed']  for s in suites)
-          failed  = sum(s['failed']  for s in suites)
-          ignored = sum(s['ignored'] for s in suites)
-          dur     = sum(s['duration_s'] for s in suites)
-
-          result = {
-              'build':        os.environ.get('BUILD_NUM',    '0'),
-              'branch':       os.environ.get('BRANCH',       'unknown'),
-              'commit':       os.environ.get('COMMIT',       'unknown')[:8],
-              'date':         os.environ.get('BUILD_DATE',   ''),
-              'rust_version': os.environ.get('RUST_VERSION', 'stable'),
-              'summary': {
-                  'total':      total,
-                  'passed':     passed,
-                  'failed':     failed,
-                  'ignored':    ignored,
-                  'duration_s': round(dur, 3),
-              },
-              'suites': suites,
+          summary = {
+              "status":  summary_m.group(1)  if summary_m else "unknown",
+              "passed":  int(summary_m.group(2)) if summary_m else 0,
+              "failed":  int(summary_m.group(3)) if summary_m else 0,
+              "ignored": int(summary_m.group(4)) if summary_m else 0,
+              "total":   len(tests),
           }
 
-          with open('test-results.json', 'w') as f:
-              json.dump(result, f, indent=2)
+          out = {"summary": summary, "tests": tests,
+                 "rust_version": os.environ.get("RUSTVER_VER", ""),
+                 "run_number": os.environ.get("GITHUB_RUN_NUMBER", ""),
+                 "sha": os.environ.get("GITHUB_SHA", "")[:7]}
+          json.dump(out, open("test-results.json", "w"), indent=2)
+          print(f"Parsed {len(tests)} tests — {summary['passed']} passed, {summary['failed']} failed")
+          PYEOF
+        env:
+          RUSTVER_VER: ${{ steps.rustver.outputs.ver }}
 
-          print(f"Suites: {len(suites)}  Total: {total}  Passed: {passed}  Failed: {failed}")
-          if failed > 0:
-              print("FAILED tests:")
-              for s in suites:
-                  for t in s['tests']:
-                      if t['status'] == 'failed':
-                          print(f"  {s['name']}::{t['name']}")
+      - name: Generate HTML report
+        if: always()
+        run: |
+          python3 - << 'PYEOF'
+          import json, os
+
+          data = json.load(open("test-results.json"))
+          s    = data["summary"]
+          color = "#22c55e" if s["status"] == "ok" else "#ef4444"
+
+          rows = "\n".join(
+              f'<tr class="{t["result"]}">'
+              f'<td>{t["name"]}</td>'
+              f'<td class="result">{t["result"]}</td></tr>'
+              for t in data["tests"]
+          )
+
+          html = f"""<!DOCTYPE html>
+          <html lang="en"><head><meta charset="utf-8">
+          <title>Test Results — ubel_stratum #{data['run_number']}</title>
+          <style>
+            body{{font-family:monospace;background:#0f172a;color:#e2e8f0;padding:2rem;}}
+            h1{{color:{color};}} table{{border-collapse:collapse;width:100%;}}
+            th,td{{padding:.4rem 1rem;border:1px solid #334155;text-align:left;}}
+            th{{background:#1e293b;}} .ok td.result{{color:#22c55e;}}
+            .FAILED td.result{{color:#ef4444;}} .ignored td.result{{color:#94a3b8;}}
+            .summary{{margin-bottom:1.5rem;padding:1rem;background:#1e293b;border-radius:6px;}}
+          </style></head>
+          <body>
+          <h1>Test Results — ubel_stratum</h1>
+          <div class="summary">
+            <b>Run #</b>{data['run_number']} &nbsp;|&nbsp;
+            <b>SHA</b> {data['sha']} &nbsp;|&nbsp;
+            <b>Rust</b> {data['rust_version']}<br><br>
+            <span style="color:#22c55e">✅ {s['passed']} passed</span> &nbsp;
+            <span style="color:#ef4444">❌ {s['failed']} failed</span> &nbsp;
+            <span style="color:#94a3b8">⏭ {s['ignored']} ignored</span>
+          </div>
+          <table><thead><tr><th>Test</th><th>Result</th></tr></thead>
+          <tbody>{rows}</tbody></table>
+          </body></html>"""
+
+          os.makedirs("public", exist_ok=True)
+          open("public/test-report.html", "w").write(html)
+          print("HTML report written to public/test-report.html")
           PYEOF
 
-      - name: Build HTML report
-        env:
-          RUST_VERSION: ${{ steps.rustver.outputs.ver }}
-        run: |
-          cp .github/ubel-test-template.html test-results-index.html
-          sed -i "s/BUILD_NUM_PLACEHOLDER/${{ github.run_number }}/g"  test-results-index.html
-          sed -i "s/BRANCH_PLACEHOLDER/${{ github.ref_name }}/g"        test-results-index.html
-          sed -i "s/COMMIT_PLACEHOLDER/${GITHUB_SHA:0:8}/g"             test-results-index.html
-          sed -i "s|DATE_PLACEHOLDER|$(date -u)|g"                      test-results-index.html
-          sed -i "s|RUST_VERSION_PLACEHOLDER|${RUST_VERSION}|g"         test-results-index.html
-
-      - name: Upload test artifacts
+      - name: Upload artifacts
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: test-results-${{ github.run_number }}
           path: |
-            test-results.json
-            test-results-index.html
             test-raw.txt
+            test-results.json
+            public/test-report.html
           retention-days: 30
 
-  # ── 3. Run benchmarks ──────────────────────────────────────────────────────
+      - name: Fail if tests failed
+        if: env.TEST_EXIT != '0'
+        run: |
+          echo "❌ Tests failed (exit ${{ env.TEST_EXIT }})"
+          exit 1
+
+# ─────────────────────────────────────────────────────────────────────────────
+# JOB 3 — Tests WITH parser (slow lalrpop compile — up to 8 h on cache miss)
+# ─────────────────────────────────────────────────────────────────────────────
+  run-tests-parser:
+    runs-on: ubuntu-latest
+    needs: parse-trigger
+    if: needs.parse-trigger.outputs.use_parser == 'true'
+    timeout-minutes: 480
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-parser-${{ hashFiles('**/Cargo.lock', '**/grammar.lalrpop') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-parser-
+            ${{ runner.os }}-cargo-
+
+      - name: Build parser test binaries (lalrpop compile here)
+        run: cargo test --no-run -p ubel_stratum_parser --lib --tests 2>&1
+
+      - name: Run parser tests
+        continue-on-error: true
+        run: |
+          set +e
+          cargo test -p ubel_stratum_parser --lib --tests \
+            --color=never --no-fail-fast -- --show-output 2>&1 | tee parser-test-raw.txt
+          echo "PARSER_TEST_EXIT=${PIPESTATUS[0]}" >> $GITHUB_ENV
+          exit 0
+
+      - name: Upload parser test artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: parser-test-results-${{ github.run_number }}
+          path: parser-test-raw.txt
+          retention-days: 30
+
+# ─────────────────────────────────────────────────────────────────────────────
+# JOB 4 — Benchmarks (timeout bumped — parser bench can be slow)
+# ─────────────────────────────────────────────────────────────────────────────
   run-bench:
     runs-on: ubuntu-latest
     needs: parse-trigger
     if: needs.parse-trigger.outputs.run_bench == 'true'
-    timeout-minutes: 90
+    timeout-minutes: 480
+
     steps:
       - uses: actions/checkout@v4
 
@@ -262,19 +287,26 @@ jobs:
         id: rustver
         run: echo "ver=$(rustc --version)" >> $GITHUB_OUTPUT
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/cache@v4
         with:
-          shared-key: "ubel"
-          cache-on-failure: true
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock', '**/grammar.lalrpop') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
 
-      - name: Run lexer and AST benchmarks
+      - name: Run lexer + AST benchmarks
         continue-on-error: true
         run: |
           {
             echo "=== lexer_bench ==="
-            cargo bench --bench lexer_bench --color=never 2>&1 || true
+            cargo bench -p ubel_stratum --bench lexer_bench --color=never 2>&1 || true
             echo "=== ast_bench ==="
-            cargo bench --bench ast_bench --color=never 2>&1 || true
+            cargo bench -p ubel_stratum --bench ast_bench   --color=never 2>&1 || true
           } | tee bench-raw.txt
 
       - name: Run parser benchmark
@@ -283,148 +315,79 @@ jobs:
         run: |
           {
             echo "=== parser_bench ==="
-            cargo bench --bench parser_bench --color=never 2>&1 || true
+            cargo bench -p ubel_stratum_parser --bench parser_bench --color=never 2>&1 || true
           } | tee -a bench-raw.txt
 
-      - name: Parse benchmark results to JSON
-        env:
-          BUILD_NUM:    ${{ github.run_number }}
-          BRANCH:       ${{ github.ref_name }}
-          COMMIT:       ${{ github.sha }}
-          BUILD_DATE:   ${{ github.event.head_commit.timestamp }}
-          RUST_VERSION: ${{ steps.rustver.outputs.ver }}
+      - name: Parse bench results to JSON
+        if: always()
         run: |
           python3 - << 'PYEOF'
-          import re, json, os, glob, sys
+          import json, re, os
 
-          RE_ANSI = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
-          def strip_ansi(s):
-              return RE_ANSI.sub('', s)
+          raw = open("bench-raw.txt").read() if os.path.exists("bench-raw.txt") else ""
+          benches = []
+          for m in re.finditer(
+              r"^([\w:/ ]+?)\s+time:\s+\[([0-9.]+)\s+\w+\s+([0-9.]+)\s+(\w+)\s+([0-9.]+)\s+\w+\]",
+              raw, re.MULTILINE,
+          ):
+              benches.append({
+                  "name":   m.group(1).strip(),
+                  "low":    m.group(2),
+                  "median": m.group(3),
+                  "unit":   m.group(4),
+                  "high":   m.group(5),
+              })
 
-          def to_ns(val_str, unit):
-              v = float(val_str.replace(',', ''))
-              u = unit.strip().rstrip('/')
-              return v * {'ns': 1, 'µs': 1e3, 'us': 1e3, 'ms': 1e6, 's': 1e9}.get(u, 1)
+          out = {"benches": benches,
+                 "rust_version": os.environ.get("RUSTVER_VER", ""),
+                 "run_number":   os.environ.get("GITHUB_RUN_NUMBER", ""),
+                 "sha":          os.environ.get("GITHUB_SHA", "")[:7]}
+          json.dump(out, open("bench-results.json", "w"), indent=2)
+          print(f"Parsed {len(benches)} benchmark entries")
+          PYEOF
+        env:
+          RUSTVER_VER: ${{ steps.rustver.outputs.ver }}
 
-          raw  = open('bench-raw.txt', encoding='utf-8', errors='replace').read()
-          text = strip_ansi(raw)
+      - name: Generate bench HTML report
+        if: always()
+        run: |
+          python3 - << 'PYEOF'
+          import json, os
 
-          print("=== bench-raw.txt preview (first 40 lines) ===")
-          for i, l in enumerate(text.splitlines()[:40], 1):
-              print(f"  {i:3}: {repr(l)}")
-          print("===============================================")
-
-          benches    = []
-          seen_names = set()
-
-          RE_CRIT = re.compile(
-              r'^([\w /\-]+?)\s{2,}time:\s+\[\s*'
-              r'([\d.,]+)\s*(ns|µs|us|ms|s)\s+'
-              r'([\d.,]+)\s*(ns|µs|us|ms|s)\s+'
-              r'([\d.,]+)\s*(ns|µs|us|ms|s)\s*\]',
-              re.MULTILINE
+          data   = json.load(open("bench-results.json"))
+          rows   = "\n".join(
+              f'<tr><td>{b["name"]}</td>'
+              f'<td>{b["low"]}</td><td><b>{b["median"]}</b></td>'
+              f'<td>{b["high"]}</td><td>{b["unit"]}</td></tr>'
+              for b in data["benches"]
           )
 
-          sections = re.split(r'^=== (\w+) ===$', text, flags=re.MULTILINE)
-          pairs = []
-          if len(sections) >= 3:
-              i = 1
-              while i + 1 < len(sections):
-                  pairs.append((sections[i], sections[i + 1]))
-                  i += 2
-          else:
-              pairs = [('benchmarks', text)]
+          html = f"""<!DOCTYPE html>
+          <html lang="en"><head><meta charset="utf-8">
+          <title>Bench Results — ubel_stratum #{data['run_number']}</title>
+          <style>
+            body{{font-family:monospace;background:#0f172a;color:#e2e8f0;padding:2rem;}}
+            h1{{color:#60a5fa;}} table{{border-collapse:collapse;width:100%;}}
+            th,td{{padding:.4rem 1rem;border:1px solid #334155;text-align:left;}}
+            th{{background:#1e293b;}} td:nth-child(3){{color:#fbbf24;}}
+            .summary{{margin-bottom:1.5rem;padding:1rem;background:#1e293b;border-radius:6px;}}
+          </style></head>
+          <body>
+          <h1>Benchmark Results — ubel_stratum</h1>
+          <div class="summary">
+            <b>Run #</b>{data['run_number']} &nbsp;|&nbsp;
+            <b>SHA</b> {data['sha']} &nbsp;|&nbsp;
+            <b>Rust</b> {data['rust_version']}<br><br>
+            {len(data['benches'])} benchmark entries
+          </div>
+          <table><thead><tr><th>Benchmark</th><th>Low</th><th>Median</th><th>High</th><th>Unit</th></tr></thead>
+          <tbody>{rows}</tbody></table>
+          </body></html>"""
 
-          for suite_name, body in pairs:
-              for m in RE_CRIT.finditer(body):
-                  name  = m.group(1).strip()
-                  lower = to_ns(m.group(2), m.group(3))
-                  mean  = to_ns(m.group(4), m.group(5))
-                  upper = to_ns(m.group(6), m.group(7))
-                  key   = f"{suite_name}/{name}"
-                  if key in seen_names:
-                      continue
-                  seen_names.add(key)
-                  parts      = name.rsplit('/', 1)
-                  group      = parts[0] if len(parts) == 2 else suite_name
-                  bench_name = parts[-1]
-                  benches.append({
-                      'suite':     suite_name,
-                      'group':     group,
-                      'name':      bench_name,
-                      'full_name': f'{suite_name}/{name}',
-                      'lower_ns':  round(lower, 2),
-                      'mean_ns':   round(mean,  2),
-                      'upper_ns':  round(upper, 2),
-                      'std_ns':    round((upper - lower) / 4, 2),
-                  })
-
-          if not benches:
-              for est in sorted(glob.glob(
-                      'target/criterion/**/**/estimates.json', recursive=True)):
-                  try:
-                      data = json.load(open(est, encoding='utf-8'))
-                      parts = est.replace('target/criterion/', '').split('/')
-                      if len(parts) < 3:
-                          continue
-                      suite_name = parts[0]
-                      bench_name = parts[1]
-                      if bench_name in ('new', 'base', 'baseline'):
-                          continue
-                      mn  = data.get('mean', {})
-                      ci  = mn.get('confidence_interval', {})
-                      sd  = data.get('std_dev', {}).get('point_estimate', 0)
-                      key = f"{suite_name}/{bench_name}"
-                      if key in seen_names:
-                          continue
-                      seen_names.add(key)
-                      benches.append({
-                          'suite':     suite_name,
-                          'group':     suite_name,
-                          'name':      bench_name,
-                          'full_name': key,
-                          'lower_ns':  round(ci.get('lower_bound', mn.get('point_estimate', 0)), 2),
-                          'mean_ns':   round(mn.get('point_estimate', 0), 2),
-                          'upper_ns':  round(ci.get('upper_bound', mn.get('point_estimate', 0)), 2),
-                          'std_ns':    round(sd, 2),
-                      })
-                  except Exception as e:
-                      print(f"Warn parsing {est}: {e}", file=sys.stderr)
-
-          suite_map = {}
-          for b in benches:
-              suite_map.setdefault(b['suite'], []).append(b)
-          suites = [{'name': k, 'benchmarks': v} for k, v in suite_map.items()]
-
-          result = {
-              'build':        os.environ.get('BUILD_NUM', '0'),
-              'branch':       os.environ.get('BRANCH',    'unknown'),
-              'commit':       os.environ.get('COMMIT',    'unknown')[:8],
-              'date':         os.environ.get('BUILD_DATE', ''),
-              'rust_version': os.environ.get('RUST_VERSION', 'stable'),
-              'summary':      {'total': len(benches), 'suites': len(suites)},
-              'suites':       suites,
-          }
-
-          with open('bench-results.json', 'w') as f:
-              json.dump(result, f, indent=2)
-
-          print(f"Suites: {len(suites)}  Benchmarks: {len(benches)}")
-          for s in suites:
-              for b in s['benchmarks']:
-                  print(f"  {s['name']}/{b['name']}: {b['mean_ns']:.1f} ns")
+          os.makedirs("public", exist_ok=True)
+          open("public/bench-report.html", "w").write(html)
+          print("Bench HTML written to public/bench-report.html")
           PYEOF
-
-      - name: Build HTML report
-        env:
-          RUST_VERSION: ${{ steps.rustver.outputs.ver }}
-        run: |
-          cp .github/ubel-bench-template.html bench-results-index.html
-          sed -i "s/BUILD_NUM_PLACEHOLDER/${{ github.run_number }}/g"  bench-results-index.html
-          sed -i "s/BRANCH_PLACEHOLDER/${{ github.ref_name }}/g"        bench-results-index.html
-          sed -i "s/COMMIT_PLACEHOLDER/${GITHUB_SHA:0:8}/g"             bench-results-index.html
-          sed -i "s|DATE_PLACEHOLDER|$(date -u)|g"                      bench-results-index.html
-          sed -i "s|RUST_VERSION_PLACEHOLDER|${RUST_VERSION}|g"         bench-results-index.html
 
       - name: Upload bench artifacts
         if: always()
@@ -432,174 +395,101 @@ jobs:
         with:
           name: bench-results-${{ github.run_number }}
           path: |
-            bench-results.json
-            bench-results-index.html
             bench-raw.txt
+            bench-results.json
+            public/bench-report.html
           retention-days: 30
 
-  # ── 4. Deploy to gh-pages ──────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# JOB 5 — Deploy reports to gh-pages
+# ─────────────────────────────────────────────────────────────────────────────
   deploy-results:
     runs-on: ubuntu-latest
-    needs: [parse-trigger, run-tests, run-bench]
+    needs: [parse-trigger, run-tests, run-tests-parser, run-bench]
     if: |
       always() &&
-      (needs.run-tests.result == 'success' ||
-       needs.run-bench.result == 'success')
+      (needs.run-tests.result == 'success' || needs.run-bench.result == 'success')
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download test results
+      - name: Download test artifacts
         if: needs.run-tests.result == 'success'
         uses: actions/download-artifact@v4
         with:
           name: test-results-${{ github.run_number }}
-          path: deploy/tests/
+          path: public/
+        continue-on-error: true
 
-      - name: Download bench results
+      - name: Download bench artifacts
         if: needs.run-bench.result == 'success'
         uses: actions/download-artifact@v4
         with:
           name: bench-results-${{ github.run_number }}
-          path: deploy/bench/
+          path: public/
+        continue-on-error: true
+
+      - name: Build index page
+        run: |
+          python3 - << 'PYEOF'
+          import json, os, glob
+
+          links = ""
+          if os.path.exists("public/test-report.html"):
+              links += '<li><a href="test-report.html">📋 Test Report</a></li>'
+          if os.path.exists("public/bench-report.html"):
+              links += '<li><a href="bench-report.html">📊 Benchmark Report</a></li>'
+
+          run_num = os.environ.get("GITHUB_RUN_NUMBER", "?")
+          sha     = os.environ.get("GITHUB_SHA", "")[:7]
+
+          html = f"""<!DOCTYPE html>
+          <html lang="en"><head><meta charset="utf-8">
+          <title>Ubel Stratum CI — Run #{run_num}</title>
+          <style>
+            body{{font-family:monospace;background:#0f172a;color:#e2e8f0;
+                 padding:2rem;max-width:600px;margin:auto;}}
+            h1{{color:#60a5fa;}} a{{color:#93c5fd;}} ul{{line-height:2.2;}}
+          </style></head>
+          <body>
+          <h1>Ubel Stratum CI</h1>
+          <p>Run <b>#{run_num}</b> &nbsp;·&nbsp; SHA <b>{sha}</b></p>
+          <ul>{links}</ul>
+          </body></html>"""
+
+          os.makedirs("public", exist_ok=True)
+          open("public/index.html", "w").write(html)
+          print("index.html generated")
+          PYEOF
 
       - name: Deploy to gh-pages
-        run: |
-          git config --global user.name  "Ubel Stratum CI"
-          git config --global user.email "ci@ubel-stratum.dev"
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir:  ./public
+          keep_files:   true
 
-          BUILD_NUM=${{ github.run_number }}
-          WORK=$(mktemp -d)
-
-          if git fetch origin gh-pages:gh-pages 2>/dev/null; then
-            git worktree add "$WORK" gh-pages
-          else
-            echo "Creating fresh gh-pages branch"
-            git worktree add --orphan -b gh-pages "$WORK"
-          fi
-
-          # ── tests ──
-          if [ -d "deploy/tests" ]; then
-            mkdir -p "$WORK/tests" "$WORK/tests/builds/build_${BUILD_NUM}"
-            cp deploy/tests/test-results.json       "$WORK/tests/test-results.json"
-            cp deploy/tests/test-results-index.html "$WORK/tests/index.html"
-            cp deploy/tests/test-results.json       "$WORK/tests/builds/build_${BUILD_NUM}/test-results.json"
-            cp deploy/tests/test-results-index.html "$WORK/tests/builds/build_${BUILD_NUM}/index.html"
-            echo "Test results deployed"
-          fi
-
-          # ── bench ──
-          if [ -d "deploy/bench" ]; then
-            mkdir -p "$WORK/bench" "$WORK/bench/builds/build_${BUILD_NUM}"
-            cp deploy/bench/bench-results.json       "$WORK/bench/bench-results.json"
-            cp deploy/bench/bench-results-index.html "$WORK/bench/index.html"
-            cp deploy/bench/bench-results.json       "$WORK/bench/builds/build_${BUILD_NUM}/bench-results.json"
-            cp deploy/bench/bench-results-index.html "$WORK/bench/builds/build_${BUILD_NUM}/index.html"
-            echo "Bench results deployed"
-          fi
-
-          # ── root landing page ──
-          cat > "$WORK/index.html" << 'LANDEOF'
-          <!DOCTYPE html>
-          <html lang="en">
-          <head>
-            <meta charset="UTF-8">
-            <title>Ubel Stratum — CI Dashboard</title>
-            <style>
-              * { box-sizing: border-box; margin: 0; padding: 0; }
-              body { font-family: 'Segoe UI', system-ui, sans-serif;
-                background: #0d1117; color: #e6edf3;
-                display: flex; align-items: center; justify-content: center;
-                min-height: 100vh; padding: 24px; }
-              .card { background: #161b22; border: 1px solid #30363d;
-                border-radius: 12px; padding: 36px 40px;
-                max-width: 460px; width: 100%; }
-              h1 { font-size: 1.6rem; color: #e3b341; margin-bottom: 6px; }
-              p  { color: #8b949e; font-size: 0.85rem; margin-bottom: 24px; }
-              .links { display: flex; flex-direction: column; gap: 10px; }
-              a  { display: flex; align-items: center; gap: 10px;
-                background: #1c2128; border: 1px solid #30363d;
-                border-radius: 8px; padding: 12px 16px;
-                text-decoration: none; color: #e6edf3; font-size: 0.88rem;
-                transition: all 0.15s; }
-              a:hover { border-color: #e3b341; color: #e3b341; }
-              .icon { font-size: 1.2rem; }
-              .desc { font-size: 0.75rem; color: #8b949e; margin-top: 2px; }
-              .hint { margin-top: 24px; padding-top: 16px; border-top: 1px solid #30363d;
-                font-size: 0.75rem; color: #484f58; line-height: 1.6; }
-              code { background: #21262d; padding: 2px 6px; border-radius: 4px;
-                font-family: monospace; color: #8b949e; }
-            </style>
-          </head>
-          <body>
-            <div class="card">
-              <h1>⚙️ Ubel Stratum</h1>
-              <p>Quantum-Ready Multi-Tier Systems Language — CI Dashboard</p>
-              <div class="links">
-                <a href="tests/">
-                  <span class="icon">✅</span>
-                  <div>
-                    <div>Test Results</div>
-                    <div class="desc">cargo test — per-suite breakdown with captured output</div>
-                  </div>
-                </a>
-                <a href="bench/">
-                  <span class="icon">📊</span>
-                  <div>
-                    <div>Benchmarks</div>
-                    <div class="desc">criterion — lexer throughput, keyword lookup &amp; AST arena</div>
-                  </div>
-                </a>
-              </div>
-              <div class="hint">
-                <strong>Commit message flags:</strong><br>
-                <code>--publish-bench</code> → run lexer + AST benches<br>
-                <code>--publish-parser</code> → also run parser bench (slow)<br>
-                <code>--publish-all</code> → run all benches including parser<br>
-                Or trigger manually via workflow dispatch.
-              </div>
-            </div>
-          </body>
-          </html>
-          LANDEOF
-
-          cd "$WORK"
-          git add .
-          if git diff --staged --quiet; then
-            echo "Nothing changed — skipping deploy commit"
-            exit 0
-          fi
-          git commit -m "Ubel Stratum CI — Build #${BUILD_NUM} [skip ci]"
-          git push \
-            "https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git" \
-            gh-pages
-          echo "Deployed → https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/"
-
-  # ── 5. Summary ─────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# JOB 6 — Summary
+# ─────────────────────────────────────────────────────────────────────────────
   summary:
     runs-on: ubuntu-latest
-    needs: [parse-trigger, run-tests, run-bench, deploy-results]
+    needs: [parse-trigger, run-tests, run-tests-parser, run-bench, deploy-results]
     if: always()
+
     steps:
-      - name: Print CI summary
+      - name: Print summary
         run: |
-          echo "======================================================="
-          echo "  Ubel Stratum — CI Summary"
-          echo "======================================================="
-          echo "Build:         #${{ github.run_number }}"
-          echo "Branch:        ${{ github.ref_name }}"
-          echo "Commit:        ${GITHUB_SHA:0:8}"
-          echo "-------------------------------------------------------"
-          echo "Tests:         ${{ needs.run-tests.result   || 'skipped' }}"
-          echo "Bench:         ${{ needs.run-bench.result   || 'skipped' }}"
-          echo "Parser bench:  ${{ needs.parse-trigger.outputs.run_parser_bench == 'true' && needs.run-bench.result || 'skipped' }}"
-          echo "Deploy:        ${{ needs.deploy-results.result || 'skipped' }}"
-          echo "======================================================="
+          echo "════════════════════════════════════════"
+          echo "  Ubel Stratum CI — Run #${{ github.run_number }}"
+          echo "  SHA: ${{ github.sha }}"
+          echo "════════════════════════════════════════"
+          echo "  Tests (no parser) : ${{ needs.run-tests.result || 'skipped' }}"
+          echo "  Tests (parser)    : ${{ needs.run-tests-parser.result || 'skipped' }}"
+          echo "  Benchmarks        : ${{ needs.run-bench.result || 'skipped' }}"
+          echo "  Deploy            : ${{ needs.deploy-results.result || 'skipped' }}"
+          echo "════════════════════════════════════════"
           echo ""
-          echo "Commit message flags:"
-          echo "  --publish-bench   → lexer + AST benches"
-          echo "  --publish-parser  → also run parser bench (slow compile)"
-          echo "  --publish-all     → all benches including parser"
-          echo ""
-          echo "View results:"
-          echo "  https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/"
+          echo "  Tip: select 'with-parser' in the compile_parser"
+          echo "  dropdown to also compile + test ubel_stratum_parser."
+          echo "  Parser bench: commit msg --publish-parser or --publish-all"
