@@ -75,8 +75,8 @@
   // After:  ubel_stratum = { path = "../core"  }   (points at crates/core)
   patch_files::
     patch_replace_text(
-      "crates/parser/Cargo.toml"
-      "path = \"..\""
+      "crates/parser/Cargo.toml",
+      "path = \"..\"",
       "path = \"../core\""
     )
 
