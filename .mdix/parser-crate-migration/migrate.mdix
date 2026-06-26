@@ -1,20 +1,18 @@
-// .mdix/parser-crate-migration/migrate.mdix
+
 // =============================================================================
-// ONE-SHOT MIGRATION — extract parser into ubel_stratum_parser workspace crate
-// =============================================================================
+// Converts the repo from a mixed workspace (root-is-also-a-package) to a
+// clean virtual workspace with every crate under crates/.
 //
-// PRE-CONDITIONS: commit all new/updated files from the refactor PR first:
-//   ✓ ubel_stratum_parser/Cargo.toml
-//   ✓ ubel_stratum_parser/build.rs
-//   ✓ ubel_stratum_parser/src/lib.rs
-//   ✓ ubel_stratum_parser/src/main.rs     (new binary — replaces src/main.rs)
-//   ✓ ubel_stratum_parser/benches/parser_bench.rs
-//   ✓ Cargo.toml                           (workspace root, lalrpop removed)
-//   ✓ build.rs                             (empty fn main)
-//   ✓ src/lib.rs                           (parser module removed)
-//   ✓ .github/workflows/ubel-publish.yml   (updated)
+// Operations:
+//   DEL  build.rs                         (empty, root no longer a package)
+//   MOV  src/            → crates/core/src/
+//   MOV  benches/        → crates/core/benches/
+//   MOV  ubel_stratum_parser/ → crates/parser/
+//   UPD  Cargo.toml             (virtual workspace, members updated)
+//   NEW  crates/core/Cargo.toml (package manifest extracted from root)
+//   PCH  crates/parser/Cargo.toml  path=".." → path="../core"
 //
-// THEN run this template via parser-crate-migrate.yml (dry_run=true first!)
+// Run via workspace-restructure.yml — dry_run=true first!
 // =============================================================================
 
 @CONFIG(
@@ -34,6 +32,10 @@
     return { path = path }
   }
 
+  ~update<object>(path, content) {
+    return { path = path, content = content }
+  }
+
   ~patch_replace_text<object>(path, anchor, content) {
     return { path = path, op = "replace_text", anchor = anchor, content = content }
   }
@@ -42,34 +44,40 @@
 
 @DATA(
 
-  // ── Pass 1: Remove files that have been superseded by new crate versions ──
+  // ── Pass 1: Remove root artefacts that belong to the package layer ────────
   delete_files::
-    delete_file("src/parser/mod.rs")
-    delete_file("src/main.rs")
-    delete_file("benches/parser_bench.rs")
+    delete_file("build.rs")
 
-  // ── Pass 2: Move parser internals into ubel_stratum_parser/src/ ───────────
-  // move() creates destination parent directories automatically.
+  // ── Pass 2: Move source trees — shutil.move handles full directories ──────
+  // Parent dirs (crates/core/, crates/parser/) are auto-created by generate_structure.py
   move_files::
-    move("src/parser/grammar.lalrpop",   "ubel_stratum_parser/src/grammar.lalrpop")
-    move("src/parser/token_iter.rs",     "ubel_stratum_parser/src/token_iter.rs")
-    move("src/parser/helpers/mod.rs",    "ubel_stratum_parser/src/helpers/mod.rs")
-    move("src/parser/helpers/decl.rs",   "ubel_stratum_parser/src/helpers/decl.rs")
-    move("src/parser/helpers/expr.rs",   "ubel_stratum_parser/src/helpers/expr.rs")
-    move("src/parser/helpers/pat.rs",    "ubel_stratum_parser/src/helpers/pat.rs")
-    move("src/parser/helpers/stmt.rs",   "ubel_stratum_parser/src/helpers/stmt.rs")
-    move("src/parser/helpers/ty.rs",     "ubel_stratum_parser/src/helpers/ty.rs")
+    move("src",                  "crates/core/src")
+    move("benches",              "crates/core/benches")
+    move("ubel_stratum_parser",  "crates/parser")
 
-  // ── Pass 5: Surgical fix — one import path changes when crate moves ────────
-  // grammar.lalrpop line 32:
-  //   BEFORE: use crate::parser::helpers::{self, *};
-  //   AFTER:  use crate::helpers::{self, *};
-  // patch_replace_text mode 1 = exact literal substring → replaces first match.
+  // ── Pass 4: Write Cargo manifests ────────────────────────────────────────
+  update_files::
+
+    // Root Cargo.toml → pure virtual workspace, NO [package] section.
+    // Profiles stay here so all workspace members inherit them.
+    update("Cargo.toml",
+      "[workspace]\nmembers  = [\"crates/core\", \"crates/parser\"]\nresolver = \"2\"\n\n# Profiles are workspace-level; all crates inherit without re-declaring.\n[profile.release]\nopt-level     = 3\nlto           = true\ncodegen-units = 1\nstrip         = true\n\n[profile.bench]\ninherits      = \"release\"\nlto           = false\ncodegen-units = 4\n"
+    )
+
+    // crates/core/Cargo.toml — extracted from the old root [package].
+    // No profiles here; they're inherited from the workspace root above.
+    update("crates/core/Cargo.toml",
+      "[package]\nname        = \"ubel_stratum\"\nversion     = \"0.1.0\"\nedition     = \"2021\"\nauthors     = [\"Mid-D-Man\"]\nlicense     = \"MIT OR Apache-2.0\"\ndescription = \"Ubel Stratum - core library (lexer, AST, sema, interpreter)\"\nrepository  = \"https://github.com/Mid-D-Man/ubel_stratum\"\n\n[dependencies]\nthiserror   = \"1.0\"\nmiette      = { version = \"7.0\",  features = [\"fancy\"] }\nphf         = { version = \"0.11\", features = [\"macros\"] }\nlazy_static = \"1.4\"\nbumpalo     = { version = \"3\",    features = [\"collections\"] }\nlogos       = \"0.14\"\n\n[dev-dependencies]\ncriterion = { version = \"0.5\", features = [\"html_reports\"] }\nproptest  = \"1.4\"\n\n[lib]\nname = \"ubel_stratum\"\npath = \"src/lib.rs\"\n\n[[bench]]\nname    = \"lexer_bench\"\nharness = false\n\n[[bench]]\nname    = \"ast_bench\"\nharness = false\n"
+    )
+
+  // ── Pass 5: Surgical patch — fix path dep after directory move ────────────
+  // Before: ubel_stratum = { path = ".."       }   (pointed at repo root)
+  // After:  ubel_stratum = { path = "../core"  }   (points at crates/core)
   patch_files::
     patch_replace_text(
-      "ubel_stratum_parser/src/grammar.lalrpop",
-      "use crate::parser::helpers::{self, *};",
-      "use crate::helpers::{self, *};"
+      "crates/parser/Cargo.toml"
+      "path = \"..\""
+      "path = \"../core\""
     )
 
 )
