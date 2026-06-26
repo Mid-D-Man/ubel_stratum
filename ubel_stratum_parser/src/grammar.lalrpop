@@ -29,7 +29,7 @@ use crate::ast::types::TypeKind;
 use crate::error_management::ErrorManager;
 use crate::error_management::error_types::{ParseContext, ParseError};
 use crate::lexer::TokenType;
-use crate::parser::helpers::{self, *};
+use crate::helpers::{self, *};
 
 grammar<'ast>(arena: &'ast AstArena, errors: &mut ErrorManager);
 
