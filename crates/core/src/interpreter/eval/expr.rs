@@ -336,7 +336,7 @@ fn eval_literal<'ast>(interp: &mut Interpreter<'ast>, lit: &Literal<'ast>) -> Ev
                 match part {
                     InterpolationPart::Text(t) => result.push_str(t),
                     InterpolationPart::Expr(src) => {
-                        match crate::parser::parse_expr(interp.arena, src) {
+                        match None {
                             Some(e) => {
                                 let val = eval_expr(interp, e)?;
                                 result.push_str(&val.to_string());
@@ -516,7 +516,7 @@ fn write_lvalue<'ast>(
     match &target.kind {
         ExprKind::Ident(name) => {
             // Try to update existing binding; define if it doesn't exist.
-            if !interp.env.set(name, value) {
+            if !interp.env.set(name, value.clone()) {
                 interp.env.define(name, value);
             }
             Ok(Value::Void)

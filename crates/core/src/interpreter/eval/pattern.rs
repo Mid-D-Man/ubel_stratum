@@ -254,8 +254,8 @@ fn match_inner(
         PatternKind::Range { lo, hi, inclusive } => {
             match value {
                 Value::Int(n) => {
-                    let lo_val = literal_to_i64(lo)?;
-                    let hi_val = literal_to_i64(hi)?;
+                    let lo_val = match literal_to_i64(lo) { Some(v) => v, None => return false };
+                    let hi_val = match literal_to_i64(hi) { Some(v) => v, None => return false };
                     if *inclusive {
                         *n >= lo_val && *n <= hi_val
                     } else {
@@ -263,8 +263,8 @@ fn match_inner(
                     }
                 }
                 Value::Char(c) => {
-                    let lo_char = literal_to_char(lo)?;
-                    let hi_char = literal_to_char(hi)?;
+                    let lo_char = match literal_to_char(lo) { Some(v) => v, None => return false };
+                    let hi_char = match literal_to_char(hi) { Some(v) => v, None => return false };
                     if *inclusive {
                         *c >= lo_char && *c <= hi_char
                     } else {

@@ -243,6 +243,7 @@ pub enum InterpolationPart {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Hash)]
 pub struct Span {
     pub start: usize,
     pub end: usize,
