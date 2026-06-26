@@ -1,0 +1,32 @@
+[package]
+name        = "ubel_stratum"
+version     = "0.1.0"
+edition     = "2021"
+authors     = ["Mid-D-Man"]
+license     = "MIT OR Apache-2.0"
+description = "Ubel Stratum - core library (lexer, AST, sema, interpreter)"
+repository  = "https://github.com/Mid-D-Man/ubel_stratum"
+
+[dependencies]
+thiserror   = "1.0"
+miette      = { version = "7.0",  features = ["fancy"] }
+phf         = { version = "0.11", features = ["macros"] }
+lazy_static = "1.4"
+bumpalo     = { version = "3",    features = ["collections"] }
+logos       = "0.14"
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+proptest  = "1.4"
+
+[lib]
+name = "ubel_stratum"
+path = "src/lib.rs"
+
+[[bench]]
+name    = "lexer_bench"
+harness = false
+
+[[bench]]
+name    = "ast_bench"
+harness = false

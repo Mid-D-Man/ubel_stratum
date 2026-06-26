@@ -1,21 +1,25 @@
 @CONFIG(
   version    -> "1.0.0"
-  generated  -> "2026-06-26T12:01:44Z"
+  generated  -> "2026-06-26T12:06:57Z"
   debug_mode -> "off"
 )
 
 @DATA(
   template      = ".mdix/parser-crate-migration/migrate.mdix"
-  template_hash = "801860756114"
-  last_run      = "2026-06-26T12:01:44Z"
+  template_hash = "deadd7283cf1"
+  last_run      = "2026-06-26T12:06:57Z"
   new_this_run  = 0
   overridden    = 0
   skipped       = 0
-  deleted       = 0
+  deleted       = 1
   renamed       = 0
-  moved         = 0
-  updated       = 0
+  moved         = 3
+  updated       = 2
 
   created_files::
-    
+    "Cargo.toml"
+    "crates/core/Cargo.toml"
+    "crates/core/benches"
+    "crates/core/src"
+    "crates/parser"
 )
