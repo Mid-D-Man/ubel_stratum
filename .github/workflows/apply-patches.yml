@@ -1,0 +1,25 @@
+# .github/workflows/apply-patches.yml
+name: Apply Patches
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'true = preview only  |  false = apply and commit'
+        required: false
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+
+jobs:
+  patch:
+    uses: Mid-D-Man/mdix-scaffold/.github/workflows/generate-structure.yml@main
+    permissions:
+      contents: write
+    with:
+      template:       '.mdix/patches/patch.mdix'
+      dry_run:        ${{ inputs.dry_run || 'true' }}
+      file_strategy:  'overwrite'
+      override_stubs: 'true'
