@@ -1,24 +1,21 @@
 @CONFIG(
   version    -> "1.0.0"
-  author     -> "mdix-scaffold"
-  features   -> "advanced"
-  debug_mode -> "regular"
+  generated  -> "2026-06-26T12:01:44Z"
+  debug_mode -> "off"
 )
 
 @DATA(
-  meta::
-    fc("template",      "", ".mdix/parser-crate-migration/migrate.mdix")
-    fc("template_hash", "", "38fe8c9c173b")
-    fc("generated_at",  "", "2026-06-26T02:18:59Z")
+  template      = ".mdix/parser-crate-migration/migrate.mdix"
+  template_hash = "801860756114"
+  last_run      = "2026-06-26T12:01:44Z"
+  new_this_run  = 0
+  overridden    = 0
+  skipped       = 0
+  deleted       = 0
+  renamed       = 0
+  moved         = 0
+  updated       = 0
 
   created_files::
-    "(none)"
-    "ubel_stratum_parser/src/grammar.lalrpop"
-    "ubel_stratum_parser/src/helpers/decl.rs"
-    "ubel_stratum_parser/src/helpers/expr.rs"
-    "ubel_stratum_parser/src/helpers/mod.rs"
-    "ubel_stratum_parser/src/helpers/pat.rs"
-    "ubel_stratum_parser/src/helpers/stmt.rs"
-    "ubel_stratum_parser/src/helpers/ty.rs"
-    "ubel_stratum_parser/src/token_iter.rs"
+    
 )
