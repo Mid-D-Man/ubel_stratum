@@ -1,0 +1,121 @@
+// .mdix/patches/patch.mdix
+// =============================================================================
+// Ongoing surgical patches for ubel_stratum/crates/core.
+// Add new patch_replace_text / patch_insert_before / patch_replace_function
+// entries to this file as issues arise — run apply-patches.yml to apply.
+//
+// Current batch: 13 compiler errors after workspace restructure
+//   Fix 1 — logos Ident/Underscore priority conflict           logos_lexer.rs
+//   Fix 2 — Span missing Hash impl                             token.rs
+//   Fix 3 — crate::parser removed from core crate             eval/expr.rs
+//   Fix 4 — ? operator in bool-returning match_inner (x4)     eval/pattern.rs
+//   Fix 5 — use of moved Value in env.set → env.define        eval/expr.rs
+// =============================================================================
+
+@CONFIG(
+  version    -> "1.0.0"
+  author     -> "Mid-D-Man"
+  debug_mode -> "regular"
+)
+
+@QUICKFUNCS(
+
+  ~patch_replace_text<object>(path, anchor, content) {
+    return { path = path, op = "replace_text", anchor = anchor, content = content }
+  }
+
+  ~patch_insert_before<object>(path, anchor, content) {
+    return { path = path, op = "insert_before", anchor = anchor, content = content }
+  }
+
+  ~patch_replace_function<object>(path, fn_name, content) {
+    return { path = path, op = "replace_function", fn_name = fn_name, content = content }
+  }
+
+)
+
+@DATA(
+
+  patch_files::
+
+    // ── Fix 1: logos Ident / Underscore priority conflict ─────────────────────
+    // logos_lexer.rs:157
+    // Ident regex r"[a-zA-Z_][a-zA-Z0-9_]*" subsumes the literal "_" token.
+    // Raising Ident to priority=2 lets logos prefer the longer match while
+    // still allowing the dedicated Underscore token to win on bare "_".
+    patch_replace_text(
+      "crates/core/src/lexer/logos_lexer.rs",
+      "#[regex(r\"[a-zA-Z_][a-zA-Z0-9_]*\")]",
+      "#[regex(r\"[a-zA-Z_][a-zA-Z0-9_]*\", priority = 2)]"
+    )
+
+    // ── Fix 2: Span missing Hash impl ─────────────────────────────────────────
+    // token.rs:246
+    // Span is used as a HashMap key in symbol_table.rs and sema_context.rs
+    // but does not implement Hash.  Rust allows stacking multiple #[derive]
+    // attrs on one item, so we insert a separate one rather than guessing
+    // the existing derive list.
+    patch_insert_before(
+      "crates/core/src/lexer/token.rs",
+      "pub struct Span {",
+      "#[derive(Hash)]\n"
+    )
+
+    // ── Fix 3: crate::parser removed from core ────────────────────────────────
+    // eval/expr.rs:339
+    // parse_expr moved to ubel_stratum_parser (separate workspace crate).
+    // The core crate must NOT depend on the parser crate (circular).
+    // Stub with None so interpolated-string re-parsing falls through to the
+    // string-value branch.  Wire via fn-pointer callback when ready.
+    patch_replace_text(
+      "crates/core/src/interpreter/eval/expr.rs",
+      "crate::parser::parse_expr(interp.arena, src)",
+      "None"
+    )
+
+    // ── Fix 4a: ? in bool-returning match_inner — literal_to_i64 lo ──────────
+    // eval/pattern.rs:257
+    // match_inner returns bool; ? requires Result/Option return type.
+    // literal_to_i64 returns Option<i64>: unwrap or early-return false.
+    patch_replace_text(
+      "crates/core/src/interpreter/eval/pattern.rs",
+      "let lo_val = literal_to_i64(lo)?;",
+      "let lo_val = match literal_to_i64(lo) { Some(v) => v, None => return false };"
+    )
+
+    // ── Fix 4b: ? in bool-returning match_inner — literal_to_i64 hi ──────────
+    // eval/pattern.rs:258
+    patch_replace_text(
+      "crates/core/src/interpreter/eval/pattern.rs",
+      "let hi_val = literal_to_i64(hi)?;",
+      "let hi_val = match literal_to_i64(hi) { Some(v) => v, None => return false };"
+    )
+
+    // ── Fix 4c: ? in bool-returning match_inner — literal_to_char lo ─────────
+    // eval/pattern.rs:266
+    patch_replace_text(
+      "crates/core/src/interpreter/eval/pattern.rs",
+      "let lo_char = literal_to_char(lo)?;",
+      "let lo_char = match literal_to_char(lo) { Some(v) => v, None => return false };"
+    )
+
+    // ── Fix 4d: ? in bool-returning match_inner — literal_to_char hi ─────────
+    // eval/pattern.rs:267
+    patch_replace_text(
+      "crates/core/src/interpreter/eval/pattern.rs",
+      "let hi_char = literal_to_char(hi)?;",
+      "let hi_char = match literal_to_char(hi) { Some(v) => v, None => return false };"
+    )
+
+    // ── Fix 5: use of moved Value in env.set then env.define ─────────────────
+    // eval/expr.rs:519
+    // env.set takes Value by value; if the name is not yet defined, control
+    // falls into env.define which also needs Value — but it was already moved.
+    // Clone before set() so define() still has a live value.
+    patch_replace_text(
+      "crates/core/src/interpreter/eval/expr.rs",
+      "if !interp.env.set(name, value) {",
+      "if !interp.env.set(name, value.clone()) {"
+    )
+
+)
