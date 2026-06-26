@@ -576,9 +576,7 @@ at your option.
 heart of the language. Every program is a stack of strata, each with its own
 memory contract.
 
-**Ubel** has no deep etymology behind it. It sounded right. Sometimes that is enough —
-Rust is named after a fungus, Go was named in a 20-minute meeting. The name carries
-the language; the language carries the meaning.
+**Ubel** has no deep etymology behind it. It sounded right. 
 
 ---
 
