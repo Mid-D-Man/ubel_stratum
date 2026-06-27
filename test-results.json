@@ -1,0 +1,90 @@
+{
+  "summary": {
+    "status": "ok",
+    "passed": 19,
+    "failed": 0,
+    "ignored": 0,
+    "total": 19
+  },
+  "tests": [
+    {
+      "name": "lexer::tests::test_all_tier_keywords",
+      "result": "ok"
+    },
+    {
+      "name": "lexer::tests::test_compound_operators_no_overlap",
+      "result": "ok"
+    },
+    {
+      "name": "lexer::tests::test_binary_literal_value",
+      "result": "ok"
+    },
+    {
+      "name": "lexer::tests::test_empty_input",
+      "result": "ok"
+    },
+    {
+      "name": "lexer::tests::test_float_suffix_f_gives_float_lit",
+      "result": "ok"
+    },
+    {
+      "name": "lexer::tests::test_double_without_suffix",
+      "result": "ok"
+    },
+    {
+      "name": "lexer::tests::test_hex_literal_value",
+      "result": "ok"
+    },
+    {
+      "name": "lexer::tests::test_ident_not_keyword",
+      "result": "ok"
+    },
+    {
+      "name": "lexer::tests::test_integer_zero",
+      "result": "ok"
+    },
+    {
+      "name": "lexer::tests::test_newlines_stripped",
+      "result": "ok"
+    },
+    {
+      "name": "lexer::tests::test_multiline_string_interpolation",
+      "result": "ok"
+    },
+    {
+      "name": "lexer::tests::test_simple_fn_declaration_structure",
+      "result": "ok"
+    },
+    {
+      "name": "lexer::tests::test_question_dot_vs_question",
+      "result": "ok"
+    },
+    {
+      "name": "lexer::tests::test_single_keyword_fn",
+      "result": "ok"
+    },
+    {
+      "name": "lexer::tests::test_span_line_tracking",
+      "result": "ok"
+    },
+    {
+      "name": "lexer::tests::test_string_interpolation_parts_count",
+      "result": "ok"
+    },
+    {
+      "name": "lexer::tests::test_whitespace_only",
+      "result": "ok"
+    },
+    {
+      "name": "lexer::tests::test_underscore_ident",
+      "result": "ok"
+    },
+    {
+      "name": "lexer::tests::test_verbatim_string_no_escape",
+      "result": "ok"
+    }
+  ],
+  "rust_version": "rustc 1.96.0 (ac68faa20 2026-05-25)",
+  "run_number": "118",
+  "sha": "72b398d"
+}

@@ -1,0 +1,49 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.06s
+     Running unittests src/lib.rs (target/debug/deps/ubel_stratum-e6a65de0122efad4)
+
+running 19 tests
+test lexer::tests::test_all_tier_keywords ... ok
+test lexer::tests::test_compound_operators_no_overlap ... ok
+test lexer::tests::test_binary_literal_value ... ok
+test lexer::tests::test_empty_input ... ok
+test lexer::tests::test_float_suffix_f_gives_float_lit ... ok
+test lexer::tests::test_double_without_suffix ... ok
+test lexer::tests::test_hex_literal_value ... ok
+test lexer::tests::test_ident_not_keyword ... ok
+test lexer::tests::test_integer_zero ... ok
+test lexer::tests::test_newlines_stripped ... ok
+test lexer::tests::test_multiline_string_interpolation ... ok
+test lexer::tests::test_simple_fn_declaration_structure ... ok
+test lexer::tests::test_question_dot_vs_question ... ok
+test lexer::tests::test_single_keyword_fn ... ok
+test lexer::tests::test_span_line_tracking ... ok
+test lexer::tests::test_string_interpolation_parts_count ... ok
+test lexer::tests::test_whitespace_only ... ok
+test lexer::tests::test_underscore_ident ... ok
+test lexer::tests::test_verbatim_string_no_escape ... ok
+
+successes:
+
+successes:
+    lexer::tests::test_all_tier_keywords
+    lexer::tests::test_binary_literal_value
+    lexer::tests::test_compound_operators_no_overlap
+    lexer::tests::test_double_without_suffix
+    lexer::tests::test_empty_input
+    lexer::tests::test_float_suffix_f_gives_float_lit
+    lexer::tests::test_hex_literal_value
+    lexer::tests::test_ident_not_keyword
+    lexer::tests::test_integer_zero
+    lexer::tests::test_multiline_string_interpolation
+    lexer::tests::test_newlines_stripped
+    lexer::tests::test_question_dot_vs_question
+    lexer::tests::test_simple_fn_declaration_structure
+    lexer::tests::test_single_keyword_fn
+    lexer::tests::test_span_line_tracking
+    lexer::tests::test_string_interpolation_parts_count
+    lexer::tests::test_underscore_ident
+    lexer::tests::test_verbatim_string_no_escape
+    lexer::tests::test_whitespace_only
+
+test result: ok. 19 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
