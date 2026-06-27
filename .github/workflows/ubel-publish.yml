@@ -2,8 +2,6 @@
 name: Ubel Stratum CI
 
 on:
-  push:
-    branches: [master, main]
   workflow_dispatch:
     inputs:
       publish_type:
@@ -24,7 +22,6 @@ on:
           - without-parser
           - with-parser
 
-# ── Shared permissions ────────────────────────────────────────────────────────
 permissions:
   contents: write
   pages:    write
@@ -48,24 +45,15 @@ jobs:
         run: |
           T=false; B=false; P=false; UP=false
 
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            case "${{ github.event.inputs.publish_type }}" in
-              tests) T=true ;;
-              bench) B=true ;;
-              all)   T=true; B=true; P=true; UP=true ;;
-            esac
-            if [ "${{ github.event.inputs.compile_parser }}" = "with-parser" ]; then
-              UP=true
-              T=true
-            fi
-          else
+          case "${{ github.event.inputs.publish_type }}" in
+            tests) T=true ;;
+            bench) B=true ;;
+            all)   T=true; B=true; P=true; UP=true ;;
+          esac
+
+          if [ "${{ github.event.inputs.compile_parser }}" = "with-parser" ]; then
+            UP=true
             T=true
-            MSG="${{ github.event.head_commit.message }}"
-            echo "$MSG" | grep -qiE '\-\-publish-(bench|all)' && B=true || true
-            echo "$MSG" | grep -qiE '\-\-publish-parser'      && P=true || true
-            if echo "$MSG" | grep -qiE '\-\-publish-all'; then
-              P=true; UP=true
-            fi
           fi
 
           echo "run_tests=$T"        >> $GITHUB_OUTPUT
@@ -146,8 +134,8 @@ jobs:
 
           out = {"summary": summary, "tests": tests,
                  "rust_version": os.environ.get("RUSTVER_VER", ""),
-                 "run_number": os.environ.get("GITHUB_RUN_NUMBER", ""),
-                 "sha": os.environ.get("GITHUB_SHA", "")[:7]}
+                 "run_number":   os.environ.get("GITHUB_RUN_NUMBER", ""),
+                 "sha":          os.environ.get("GITHUB_SHA", "")[:7]}
           json.dump(out, open("test-results.json", "w"), indent=2)
           print(f"Parsed {len(tests)} tests — {summary['passed']} passed, {summary['failed']} failed")
           PYEOF
@@ -160,8 +148,8 @@ jobs:
           python3 - << 'PYEOF'
           import json, os
 
-          data = json.load(open("test-results.json"))
-          s    = data["summary"]
+          data  = json.load(open("test-results.json"))
+          s     = data["summary"]
           color = "#22c55e" if s["status"] == "ok" else "#ef4444"
 
           rows = "\n".join(
@@ -219,7 +207,7 @@ jobs:
           exit 1
 
 # ─────────────────────────────────────────────────────────────────────────────
-# JOB 3 — Tests WITH parser (slow lalrpop compile — up to 8 h on cache miss)
+# JOB 3 — Tests WITH parser (slow lalrpop compile)
 # ─────────────────────────────────────────────────────────────────────────────
   run-tests-parser:
     runs-on: ubuntu-latest
@@ -247,7 +235,7 @@ jobs:
             ${{ runner.os }}-cargo-parser-
             ${{ runner.os }}-cargo-
 
-      - name: Build parser test binaries (lalrpop compile here)
+      - name: Build parser test binaries
         run: cargo test --no-run -p ubel_stratum_parser --lib --tests 2>&1
 
       - name: Run parser tests
@@ -268,7 +256,7 @@ jobs:
           retention-days: 30
 
 # ─────────────────────────────────────────────────────────────────────────────
-# JOB 4 — Benchmarks (timeout bumped — parser bench can be slow)
+# JOB 4 — Benchmarks
 # ─────────────────────────────────────────────────────────────────────────────
   run-bench:
     runs-on: ubuntu-latest
@@ -354,8 +342,8 @@ jobs:
           python3 - << 'PYEOF'
           import json, os
 
-          data   = json.load(open("bench-results.json"))
-          rows   = "\n".join(
+          data = json.load(open("bench-results.json"))
+          rows = "\n".join(
               f'<tr><td>{b["name"]}</td>'
               f'<td>{b["low"]}</td><td><b>{b["median"]}</b></td>'
               f'<td>{b["high"]}</td><td>{b["unit"]}</td></tr>'
@@ -432,7 +420,7 @@ jobs:
       - name: Build index page
         run: |
           python3 - << 'PYEOF'
-          import json, os, glob
+          import os
 
           links = ""
           if os.path.exists("public/test-report.html"):
@@ -490,6 +478,6 @@ jobs:
           echo "  Deploy            : ${{ needs.deploy-results.result || 'skipped' }}"
           echo "════════════════════════════════════════"
           echo ""
-          echo "  Tip: select 'with-parser' in the compile_parser"
-          echo "  dropdown to also compile + test ubel_stratum_parser."
-          echo "  Parser bench: commit msg --publish-parser or --publish-all"
+          echo "  Tip: use the publish_type dropdown to select"
+          echo "  tests / bench / all.  Add compile_parser=with-parser"
+          echo "  to also build ubel_stratum_parser (slow on cache miss)."
