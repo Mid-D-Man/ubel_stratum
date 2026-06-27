@@ -1,12 +1,8 @@
 // .mdix/patches/patch.mdix
 // =============================================================================
-// Ongoing surgical patches for ubel_stratum/crates/core.
-// Current batch: 13 compiler errors after workspace restructure
-//   Fix 1 — logos Ident/Underscore priority conflict
-//   Fix 2 — Span missing Hash impl
-//   Fix 3 — crate::parser removed from core crate
-//   Fix 4 — ? in bool-returning match_inner (x4)
-//   Fix 5 — use of moved Value in env.set → env.define
+// Patch batch 2 — post-batch-1 remaining issues
+//   Fix 1 — logos priority 2 → 3 (file currently has 2 from last run)
+//   Fix 2 — remove unused `use crate::lexer::Span` in diagnostics.rs
 // =============================================================================
 
 @CONFIG(
@@ -21,75 +17,28 @@
     return { path = path, op = "replace_text", anchor = anchor, content = content }
   }
 
-  ~patch_insert_before<object>(path, anchor, content) {
-    return { path = path, op = "insert_before", anchor = anchor, content = content }
-  }
-
-  ~patch_replace_function<object>(path, fn_name, content) {
-    return { path = path, op = "replace_function", fn_name = fn_name, content = content }
-  }
-
 )
 
 @DATA(
 
   patch_files::
 
-    // ── Fix 1: logos Ident / Underscore priority conflict ─────────────────────
+    // ── Fix 1: logos still rejects priority = 2, needs priority = 3 ──────────
+    // logos_lexer.rs:157
+    // The file currently has the result of the last patch (priority = 2).
+    // Anchor is the literal string as it now exists on disk.
     patch_replace_text(
       "crates/core/src/lexer/logos_lexer.rs",
-      "#[regex(r\"[a-zA-Z_][a-zA-Z0-9_]*\")]",
-      "#[regex(r\"[a-zA-Z_][a-zA-Z0-9_]*\", priority = 2)]"
+      "#[regex(r\"[a-zA-Z_][a-zA-Z0-9_]*\", priority = 2)]",
+      "#[regex(r\"[a-zA-Z_][a-zA-Z0-9_]*\", priority = 3)]"
     )
 
-    // ── Fix 2: Span missing Hash derive ───────────────────────────────────────
-    patch_insert_before(
-      "crates/core/src/lexer/token.rs",
-      "pub struct Span {",
-      "#[derive(Hash)]\n"
-    )
-
-    // ── Fix 3: crate::parser removed from core ────────────────────────────────
-    // Stubs with None — wire via fn-pointer callback when ready.
+    // ── Fix 2: unused import — `use crate::lexer::Span` in diagnostics.rs ────
+    // Including the newline in the anchor removes the whole line cleanly.
     patch_replace_text(
-      "crates/core/src/interpreter/eval/expr.rs",
-      "crate::parser::parse_expr(interp.arena, src)",
-      "None"
-    )
-
-    // ── Fix 4a: ? in bool-returning match_inner — literal_to_i64 lo ──────────
-    patch_replace_text(
-      "crates/core/src/interpreter/eval/pattern.rs",
-      "let lo_val = literal_to_i64(lo)?;",
-      "let lo_val = match literal_to_i64(lo) { Some(v) => v, None => return false };"
-    )
-
-    // ── Fix 4b: ? in bool-returning match_inner — literal_to_i64 hi ──────────
-    patch_replace_text(
-      "crates/core/src/interpreter/eval/pattern.rs",
-      "let hi_val = literal_to_i64(hi)?;",
-      "let hi_val = match literal_to_i64(hi) { Some(v) => v, None => return false };"
-    )
-
-    // ── Fix 4c: ? in bool-returning match_inner — literal_to_char lo ─────────
-    patch_replace_text(
-      "crates/core/src/interpreter/eval/pattern.rs",
-      "let lo_char = literal_to_char(lo)?;",
-      "let lo_char = match literal_to_char(lo) { Some(v) => v, None => return false };"
-    )
-
-    // ── Fix 4d: ? in bool-returning match_inner — literal_to_char hi ─────────
-    patch_replace_text(
-      "crates/core/src/interpreter/eval/pattern.rs",
-      "let hi_char = literal_to_char(hi)?;",
-      "let hi_char = match literal_to_char(hi) { Some(v) => v, None => return false };"
-    )
-
-    // ── Fix 5: use of moved Value in env.set then env.define ─────────────────
-    patch_replace_text(
-      "crates/core/src/interpreter/eval/expr.rs",
-      "if !interp.env.set(name, value) {",
-      "if !interp.env.set(name, value.clone()) {"
+      "crates/core/src/error_management/diagnostics.rs",
+      "use crate::lexer::Span;\n",
+      ""
     )
 
 )
