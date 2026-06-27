@@ -1,6 +1,4 @@
 # .github/workflows/ubel-publish.yml
-# Ubel Stratum CI — manual only, no auto triggers.
-# Pattern from mid-engine: $GITHUB_STEP_SUMMARY for native GitHub UI summary.
 name: Ubel Stratum CI
 
 on:
@@ -32,9 +30,6 @@ env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
 
-# ─────────────────────────────────────────────────────────────────────────────
-# JOB 1 — Decide what to run
-# ─────────────────────────────────────────────────────────────────────────────
 jobs:
   parse-trigger:
     name: Decide
@@ -44,46 +39,35 @@ jobs:
       run_bench:        ${{ steps.decide.outputs.run_bench }}
       run_parser_bench: ${{ steps.decide.outputs.run_parser_bench }}
       use_parser:       ${{ steps.decide.outputs.use_parser }}
-
     steps:
       - name: Decide
         id: decide
         run: |
           T=false; B=false; P=false; UP=false
-
           case "${{ github.event.inputs.publish_type }}" in
             tests) T=true ;;
             bench) B=true ;;
             all)   T=true; B=true; P=true; UP=true ;;
           esac
-
           if [ "${{ github.event.inputs.compile_parser }}" = "with-parser" ]; then
             UP=true; T=true
           fi
-
           echo "run_tests=$T"        >> $GITHUB_OUTPUT
           echo "run_bench=$B"        >> $GITHUB_OUTPUT
           echo "run_parser_bench=$P" >> $GITHUB_OUTPUT
           echo "use_parser=$UP"      >> $GITHUB_OUTPUT
-          echo "Decision — Tests=$T  Bench=$B  ParserBench=$P  UseParser=$UP"
 
-# ─────────────────────────────────────────────────────────────────────────────
-# JOB 2 — Lint (clippy + rustfmt)
-# ─────────────────────────────────────────────────────────────────────────────
   lint:
     name: Lint
     runs-on: ubuntu-latest
     needs: parse-trigger
     if: needs.parse-trigger.outputs.run_tests == 'true'
     timeout-minutes: 30
-
     steps:
       - uses: actions/checkout@v4
-
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-
       - uses: actions/cache@v4
         with:
           path: |
@@ -92,10 +76,8 @@ jobs:
             target
           key: ${{ runner.os }}-ubel-lint-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-ubel-lint-
-
-      - name: rustfmt check
+      - name: rustfmt
         run: cargo fmt -p ubel_stratum -- --check
-
       - name: clippy
         run: |
           cargo clippy -p ubel_stratum --all-targets -- \
@@ -103,42 +85,26 @@ jobs:
             -A clippy::too_many_arguments \
             -A clippy::type_complexity \
             2>&1 | tee lint-output.txt
-
       - name: Summarise lint
         if: always()
         run: |
-          echo "## Ubel Stratum Lint — Run #${{ github.run_number }}" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Lint — Run #${{ github.run_number }}" >> $GITHUB_STEP_SUMMARY
           echo "**Reason:** ${{ inputs.reason }}" >> $GITHUB_STEP_SUMMARY
           echo "Branch: \`${{ github.ref_name }}\`  SHA: \`${GITHUB_SHA:0:8}\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
-          grep -E "^(error|warning\[)" lint-output.txt | tail -30 >> $GITHUB_STEP_SUMMARY || echo "(none)" >> $GITHUB_STEP_SUMMARY
+          grep -E "^(error|warning\[)" lint-output.txt | tail -30 >> $GITHUB_STEP_SUMMARY || echo "(clean)" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
 
-      - name: Upload lint log
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: lint-${{ github.run_number }}
-          path: lint-output.txt
-          retention-days: 14
-
-# ─────────────────────────────────────────────────────────────────────────────
-# JOB 3 — Tests (no parser — fast)
-# ─────────────────────────────────────────────────────────────────────────────
   run-tests:
-    name: Tests (core — no parser)
+    name: Tests (core)
     runs-on: ubuntu-latest
     needs: parse-trigger
     if: needs.parse-trigger.outputs.run_tests == 'true'
     timeout-minutes: 60
-
     steps:
       - uses: actions/checkout@v4
-
       - uses: dtolnay/rust-toolchain@stable
-
       - uses: actions/cache@v4
         with:
           path: |
@@ -147,27 +113,22 @@ jobs:
             target
           key: ${{ runner.os }}-ubel-core-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-ubel-core-
-
-      - name: cargo test (core — debug)
-        run: |
-          cargo test -p ubel_stratum --lib --tests --color=never 2>&1 | tee test-core.txt
-
-      - name: Summarise tests
+      - name: cargo test
+        run: cargo test -p ubel_stratum --lib --tests --color=never 2>&1 | tee test-core.txt
+      - name: Summarise
         if: always()
         run: |
           RUST_VER=$(rustc --version)
-          echo "## Ubel Stratum Core Tests — Run #${{ github.run_number }}" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Core Tests — Run #${{ github.run_number }}" >> $GITHUB_STEP_SUMMARY
           echo "**Reason:** ${{ inputs.reason }}" >> $GITHUB_STEP_SUMMARY
           echo "Branch: \`${{ github.ref_name }}\`  SHA: \`${GITHUB_SHA:0:8}\`  Rust: \`${RUST_VER}\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
-          grep -E "^test .+ \.\.\. (ok|FAILED|ignored)" test-core.txt | tail -60 >> $GITHUB_STEP_SUMMARY || true
+          grep -E "^test .+ \.\.\. (ok|FAILED|ignored)" test-core.txt | tail -80 >> $GITHUB_STEP_SUMMARY || true
           echo "" >> $GITHUB_STEP_SUMMARY
-          grep -E "^test result" test-core.txt >> $GITHUB_STEP_SUMMARY || true
+          grep "^test result" test-core.txt >> $GITHUB_STEP_SUMMARY || true
           echo '```' >> $GITHUB_STEP_SUMMARY
-
-      - name: Upload test log
+      - name: Upload log
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -175,21 +136,15 @@ jobs:
           path: test-core.txt
           retention-days: 30
 
-# ─────────────────────────────────────────────────────────────────────────────
-# JOB 4 — Tests WITH parser (lalrpop — slow)
-# ─────────────────────────────────────────────────────────────────────────────
   run-tests-parser:
     name: Tests (parser — lalrpop)
     runs-on: ubuntu-latest
     needs: parse-trigger
     if: needs.parse-trigger.outputs.use_parser == 'true'
     timeout-minutes: 480
-
     steps:
       - uses: actions/checkout@v4
-
       - uses: dtolnay/rust-toolchain@stable
-
       - uses: actions/cache@v4
         with:
           path: |
@@ -200,27 +155,22 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-ubel-parser-
             ${{ runner.os }}-ubel-core-
-
-      - name: cargo test (parser — debug)
-        run: |
-          cargo test -p ubel_stratum_parser --lib --tests --color=never 2>&1 | tee test-parser.txt
-
-      - name: Summarise parser tests
+      - name: cargo test (parser)
+        run: cargo test -p ubel_stratum_parser --lib --tests --color=never 2>&1 | tee test-parser.txt
+      - name: Summarise
         if: always()
         run: |
           RUST_VER=$(rustc --version)
-          echo "## Ubel Stratum Parser Tests — Run #${{ github.run_number }}" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Parser Tests — Run #${{ github.run_number }}" >> $GITHUB_STEP_SUMMARY
           echo "**Reason:** ${{ inputs.reason }}" >> $GITHUB_STEP_SUMMARY
           echo "Branch: \`${{ github.ref_name }}\`  SHA: \`${GITHUB_SHA:0:8}\`  Rust: \`${RUST_VER}\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
-          grep -E "^test .+ \.\.\. (ok|FAILED|ignored)" test-parser.txt | tail -60 >> $GITHUB_STEP_SUMMARY || true
+          grep -E "^test .+ \.\.\. (ok|FAILED|ignored)" test-parser.txt | tail -80 >> $GITHUB_STEP_SUMMARY || true
           echo "" >> $GITHUB_STEP_SUMMARY
-          grep -E "^test result" test-parser.txt >> $GITHUB_STEP_SUMMARY || true
+          grep "^test result" test-parser.txt >> $GITHUB_STEP_SUMMARY || true
           echo '```' >> $GITHUB_STEP_SUMMARY
-
-      - name: Upload parser test log
+      - name: Upload log
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -228,21 +178,15 @@ jobs:
           path: test-parser.txt
           retention-days: 30
 
-# ─────────────────────────────────────────────────────────────────────────────
-# JOB 5 — Benchmarks
-# ─────────────────────────────────────────────────────────────────────────────
   run-bench:
     name: Benchmarks
     runs-on: ubuntu-latest
     needs: parse-trigger
     if: needs.parse-trigger.outputs.run_bench == 'true'
     timeout-minutes: 480
-
     steps:
       - uses: actions/checkout@v4
-
       - uses: dtolnay/rust-toolchain@stable
-
       - uses: actions/cache@v4
         with:
           path: |
@@ -251,50 +195,35 @@ jobs:
             target
           key: ${{ runner.os }}-ubel-bench-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-ubel-bench-
-
-      - name: Lexer benchmark
-        run: |
-          cargo bench -p ubel_stratum --bench lexer_bench -- --output-format bencher 2>&1 \
-            | tee bench-lexer.txt
-
-      - name: AST benchmark
-        run: |
-          cargo bench -p ubel_stratum --bench ast_bench -- --output-format bencher 2>&1 \
-            | tee bench-ast.txt
-
-      - name: Parser benchmark
+      - name: Lexer bench
+        run: cargo bench -p ubel_stratum --bench lexer_bench -- --output-format bencher 2>&1 | tee bench-lexer.txt
+      - name: AST bench
+        run: cargo bench -p ubel_stratum --bench ast_bench -- --output-format bencher 2>&1 | tee bench-ast.txt
+      - name: Parser bench
         if: needs.parse-trigger.outputs.run_parser_bench == 'true'
-        run: |
-          cargo bench -p ubel_stratum_parser --bench parser_bench -- --output-format bencher 2>&1 \
-            | tee bench-parser.txt
-
-      - name: Publish benchmark summary
+        run: cargo bench -p ubel_stratum_parser --bench parser_bench -- --output-format bencher 2>&1 | tee bench-parser.txt
+      - name: Summarise
         if: always()
         run: |
           RUST_VER=$(rustc --version)
-          echo "## Ubel Stratum Benchmarks — Run #${{ github.run_number }}" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "## Benchmarks — Run #${{ github.run_number }}" >> $GITHUB_STEP_SUMMARY
           echo "**Reason:** ${{ inputs.reason }}" >> $GITHUB_STEP_SUMMARY
           echo "Branch: \`${{ github.ref_name }}\`  SHA: \`${GITHUB_SHA:0:8}\`  Rust: \`${RUST_VER}\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-
           echo "### Lexer" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
           grep "^test " bench-lexer.txt | head -40 >> $GITHUB_STEP_SUMMARY || echo "(no results)" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
-
           echo "### AST" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
           grep "^test " bench-ast.txt | head -40 >> $GITHUB_STEP_SUMMARY || echo "(no results)" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
-
           if [ -f bench-parser.txt ]; then
             echo "### Parser" >> $GITHUB_STEP_SUMMARY
             echo '```' >> $GITHUB_STEP_SUMMARY
             grep "^test " bench-parser.txt | head -40 >> $GITHUB_STEP_SUMMARY || echo "(no results)" >> $GITHUB_STEP_SUMMARY
             echo '```' >> $GITHUB_STEP_SUMMARY
           fi
-
       - name: Upload bench logs
         if: always()
         uses: actions/upload-artifact@v4
@@ -304,11 +233,10 @@ jobs:
             bench-lexer.txt
             bench-ast.txt
           retention-days: 60
-
       - name: Upload criterion HTML
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: criterion-html-${{ github.run_number }}
+          name: criterion-${{ github.run_number }}
           path: target/criterion
           retention-days: 60
