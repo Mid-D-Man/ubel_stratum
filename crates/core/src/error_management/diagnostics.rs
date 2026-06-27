@@ -4,7 +4,6 @@
 #![allow(dead_code)]
 
 use crate::error_management::error_types::LexicalError;
-use crate::lexer::Span;
 
 pub struct DiagnosticFormatter;
 

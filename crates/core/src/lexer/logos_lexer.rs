@@ -154,7 +154,7 @@ enum LogosToken {
     CharLit(char),
 
     // Ident comes AFTER the bare `_` token so `_` alone is Underscore.
-    #[regex(r"[a-zA-Z_][a-zA-Z0-9_]*", priority = 2)]
+    #[regex(r"[a-zA-Z_][a-zA-Z0-9_]*", priority = 3)]
     Ident,
 
     // ── Hand-written parser triggers ──────────────────────────────
