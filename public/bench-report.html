@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<title>Bench Results — ubel_stratum #119</title>
+<style>
+  body{font-family:monospace;background:#0f172a;color:#e2e8f0;padding:2rem;}
+  h1{color:#60a5fa;} table{border-collapse:collapse;width:100%;}
+  th,td{padding:.4rem 1rem;border:1px solid #334155;text-align:left;}
+  th{background:#1e293b;} td:nth-child(3){color:#fbbf24;}
+  .summary{margin-bottom:1.5rem;padding:1rem;background:#1e293b;border-radius:6px;}
+</style></head>
+<body>
+<h1>Benchmark Results — ubel_stratum</h1>
+<div class="summary">
+  <b>Run #</b>119 &nbsp;|&nbsp;
+  <b>SHA</b> 72b398d &nbsp;|&nbsp;
+  <b>Rust</b> rustc 1.96.0 (ac68faa20 2026-05-25)<br><br>
+  26 benchmark entries
+</div>
+<table><thead><tr><th>Benchmark</th><th>Low</th><th>Median</th><th>High</th><th>Unit</th></tr></thead>
+<tbody><tr><td>lexer/small</td><td>1.0562</td><td><b>1.0567</b></td><td>1.0574</td><td>µs</td></tr>
+<tr><td>lexer/medium</td><td>51.490</td><td><b>51.780</b></td><td>52.081</td><td>µs</td></tr>
+<tr><td>lexer/large</td><td>194.33</td><td><b>194.77</b></td><td>195.36</td><td>µs</td></tr>
+<tr><td>keyword_lookup/mixed_8_lookups</td><td>175.39</td><td><b>175.61</b></td><td>175.89</td><td>ns</td></tr>
+<tr><td>ast/alloc_leaf/int_literal</td><td>26.104</td><td><b>26.275</b></td><td>26.576</td><td>ns</td></tr>
+<tr><td>ast/alloc_leaf/string_intern_short</td><td>26.258</td><td><b>26.291</b></td><td>26.319</td><td>ns</td></tr>
+<tr><td>ast/alloc_leaf/string_intern_long</td><td>26.390</td><td><b>26.404</b></td><td>26.419</td><td>ns</td></tr>
+<tr><td>ast/alloc_leaf/type_node</td><td>25.277</td><td><b>25.303</b></td><td>25.341</td><td>ns</td></tr>
+<tr><td>ast/vec_to_slice/4</td><td>51.771</td><td><b>51.858</b></td><td>51.960</td><td>ns</td></tr>
+<tr><td>ast/vec_to_slice/16</td><td>228.77</td><td><b>228.91</b></td><td>229.06</td><td>ns</td></tr>
+<tr><td>ast/vec_to_slice/64</td><td>747.27</td><td><b>748.29</b></td><td>750.00</td><td>ns</td></tr>
+<tr><td>ast/vec_to_slice/256</td><td>2.7226</td><td><b>2.7232</b></td><td>2.7239</td><td>µs</td></tr>
+<tr><td>ast/binop_tree/depth_3</td><td>108.77</td><td><b>108.86</b></td><td>108.94</td><td>ns</td></tr>
+<tr><td>ast/binop_tree/chain_128</td><td>2.1327</td><td><b>2.1340</b></td><td>2.1357</td><td>µs</td></tr>
+<tr><td>ast/if_expr/simple_if_else</td><td>81.930</td><td><b>81.967</b></td><td>82.007</td><td>ns</td></tr>
+<tr><td>ast/if_expr/if_3_elif_else</td><td>237.19</td><td><b>237.30</b></td><td>237.42</td><td>ns</td></tr>
+<tr><td>ast/match_expr/4_arms</td><td>159.53</td><td><b>159.70</b></td><td>159.93</td><td>ns</td></tr>
+<tr><td>ast/match_expr/8_arms</td><td>273.17</td><td><b>273.43</b></td><td>273.86</td><td>ns</td></tr>
+<tr><td>ast/match_expr/16_arms</td><td>480.10</td><td><b>480.29</b></td><td>480.49</td><td>ns</td></tr>
+<tr><td>ast/function_decl/simple_2_params</td><td>112.76</td><td><b>112.97</b></td><td>113.19</td><td>ns</td></tr>
+<tr><td>ast/function_decl/async_handler_5_params</td><td>209.41</td><td><b>209.49</b></td><td>209.57</td><td>ns</td></tr>
+<tr><td>ast/struct_decl/4_fields</td><td>370.42</td><td><b>372.02</b></td><td>375.16</td><td>ns</td></tr>
+<tr><td>ast/struct_decl/8_fields</td><td>618.35</td><td><b>618.90</b></td><td>619.44</td><td>ns</td></tr>
+<tr><td>ast/struct_decl/16_fields</td><td>1.0688</td><td><b>1.0713</b></td><td>1.0745</td><td>µs</td></tr>
+<tr><td>ast/arena_reuse/fresh_arena_per_file</td><td>8.8746</td><td><b>8.8774</b></td><td>8.8804</td><td>µs</td></tr>
+<tr><td>ast/full_program/small_program</td><td>339.12</td><td><b>339.50</b></td><td>339.94</td><td>ns</td></tr></tbody></table>
+</body></html>

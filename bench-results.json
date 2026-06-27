@@ -1,0 +1,189 @@
+{
+  "benches": [
+    {
+      "name": "lexer/small",
+      "low": "1.0562",
+      "median": "1.0567",
+      "unit": "\u00b5s",
+      "high": "1.0574"
+    },
+    {
+      "name": "lexer/medium",
+      "low": "51.490",
+      "median": "51.780",
+      "unit": "\u00b5s",
+      "high": "52.081"
+    },
+    {
+      "name": "lexer/large",
+      "low": "194.33",
+      "median": "194.77",
+      "unit": "\u00b5s",
+      "high": "195.36"
+    },
+    {
+      "name": "keyword_lookup/mixed_8_lookups",
+      "low": "175.39",
+      "median": "175.61",
+      "unit": "ns",
+      "high": "175.89"
+    },
+    {
+      "name": "ast/alloc_leaf/int_literal",
+      "low": "26.104",
+      "median": "26.275",
+      "unit": "ns",
+      "high": "26.576"
+    },
+    {
+      "name": "ast/alloc_leaf/string_intern_short",
+      "low": "26.258",
+      "median": "26.291",
+      "unit": "ns",
+      "high": "26.319"
+    },
+    {
+      "name": "ast/alloc_leaf/string_intern_long",
+      "low": "26.390",
+      "median": "26.404",
+      "unit": "ns",
+      "high": "26.419"
+    },
+    {
+      "name": "ast/alloc_leaf/type_node",
+      "low": "25.277",
+      "median": "25.303",
+      "unit": "ns",
+      "high": "25.341"
+    },
+    {
+      "name": "ast/vec_to_slice/4",
+      "low": "51.771",
+      "median": "51.858",
+      "unit": "ns",
+      "high": "51.960"
+    },
+    {
+      "name": "ast/vec_to_slice/16",
+      "low": "228.77",
+      "median": "228.91",
+      "unit": "ns",
+      "high": "229.06"
+    },
+    {
+      "name": "ast/vec_to_slice/64",
+      "low": "747.27",
+      "median": "748.29",
+      "unit": "ns",
+      "high": "750.00"
+    },
+    {
+      "name": "ast/vec_to_slice/256",
+      "low": "2.7226",
+      "median": "2.7232",
+      "unit": "\u00b5s",
+      "high": "2.7239"
+    },
+    {
+      "name": "ast/binop_tree/depth_3",
+      "low": "108.77",
+      "median": "108.86",
+      "unit": "ns",
+      "high": "108.94"
+    },
+    {
+      "name": "ast/binop_tree/chain_128",
+      "low": "2.1327",
+      "median": "2.1340",
+      "unit": "\u00b5s",
+      "high": "2.1357"
+    },
+    {
+      "name": "ast/if_expr/simple_if_else",
+      "low": "81.930",
+      "median": "81.967",
+      "unit": "ns",
+      "high": "82.007"
+    },
+    {
+      "name": "ast/if_expr/if_3_elif_else",
+      "low": "237.19",
+      "median": "237.30",
+      "unit": "ns",
+      "high": "237.42"
+    },
+    {
+      "name": "ast/match_expr/4_arms",
+      "low": "159.53",
+      "median": "159.70",
+      "unit": "ns",
+      "high": "159.93"
+    },
+    {
+      "name": "ast/match_expr/8_arms",
+      "low": "273.17",
+      "median": "273.43",
+      "unit": "ns",
+      "high": "273.86"
+    },
+    {
+      "name": "ast/match_expr/16_arms",
+      "low": "480.10",
+      "median": "480.29",
+      "unit": "ns",
+      "high": "480.49"
+    },
+    {
+      "name": "ast/function_decl/simple_2_params",
+      "low": "112.76",
+      "median": "112.97",
+      "unit": "ns",
+      "high": "113.19"
+    },
+    {
+      "name": "ast/function_decl/async_handler_5_params",
+      "low": "209.41",
+      "median": "209.49",
+      "unit": "ns",
+      "high": "209.57"
+    },
+    {
+      "name": "ast/struct_decl/4_fields",
+      "low": "370.42",
+      "median": "372.02",
+      "unit": "ns",
+      "high": "375.16"
+    },
+    {
+      "name": "ast/struct_decl/8_fields",
+      "low": "618.35",
+      "median": "618.90",
+      "unit": "ns",
+      "high": "619.44"
+    },
+    {
+      "name": "ast/struct_decl/16_fields",
+      "low": "1.0688",
+      "median": "1.0713",
+      "unit": "\u00b5s",
+      "high": "1.0745"
+    },
+    {
+      "name": "ast/arena_reuse/fresh_arena_per_file",
+      "low": "8.8746",
+      "median": "8.8774",
+      "unit": "\u00b5s",
+      "high": "8.8804"
+    },
+    {
+      "name": "ast/full_program/small_program",
+      "low": "339.12",
+      "median": "339.50",
+      "unit": "ns",
+      "high": "339.94"
+    }
+  ],
+  "rust_version": "rustc 1.96.0 (ac68faa20 2026-05-25)",
+  "run_number": "119",
+  "sha": "72b398d"
+}
