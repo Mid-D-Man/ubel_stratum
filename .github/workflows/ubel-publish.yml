@@ -65,9 +65,12 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+
+      # Install the stable toolchain and ensure rustfmt + clippy are available
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+
       - uses: actions/cache@v4
         with:
           path: |
@@ -76,15 +79,26 @@ jobs:
             target
           key: ${{ runner.os }}-ubel-lint-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-ubel-lint-
-      - name: rustfmt
-        run: cargo fmt -p ubel_stratum -- --check
-      - name: clippy
+
+      - name: rustfmt (check whole workspace)
         run: |
-          cargo clippy -p ubel_stratum --all-targets -- \
+          # Check formatting across the whole workspace. If it fails, show diff and exit non-zero.
+          if ! cargo fmt --all -- --check; then
+            echo ">>> rustfmt detected formatting issues. Run locally: cargo fmt --all && git add -A && git commit -m 'fmt: apply rustfmt' && git push";
+            echo ">>> Showing git diff (if any):"
+            git --no-pager --no-color diff || true
+            exit 1
+          fi
+
+      - name: clippy (workspace)
+        run: |
+          # Run clippy across the workspace. Adjust allow/deny flags as needed.
+          cargo clippy --workspace --all-targets -- \
             -D warnings \
             -A clippy::too_many_arguments \
             -A clippy::type_complexity \
             2>&1 | tee lint-output.txt
+
       - name: Summarise lint
         if: always()
         run: |
