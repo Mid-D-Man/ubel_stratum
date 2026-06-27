@@ -7,6 +7,9 @@ pub mod expr;
 pub mod stmt;
 pub mod pattern;
 
+#[cfg(test)]
+mod tests;
+
 use std::collections::HashMap;
 
 use crate::ast::arena::AstArena;

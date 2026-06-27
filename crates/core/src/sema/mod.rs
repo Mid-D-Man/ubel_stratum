@@ -16,6 +16,9 @@ pub mod name_resolution;
 pub mod type_infer;
 pub mod tier_check;
 
+#[cfg(test)]
+mod tests;
+
 pub use symbol_table::{DefId, DefKind, Def, SymbolTable, ResolutionMap, Scope, ScopeStack};
 pub use sema_context::SemaContext;
 pub use type_table::{TypeId, TypeTable, SemaType, ArenaId};
