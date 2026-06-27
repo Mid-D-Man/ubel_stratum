@@ -9,7 +9,6 @@
 #![allow(dead_code)]
 
 
-use crate::ast::common::Span;
 
 
 /// One segment of an interpolated string `$"..."`.

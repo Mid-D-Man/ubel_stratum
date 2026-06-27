@@ -78,7 +78,7 @@ enum LogosToken {
 
     // ── Wildcard / infer: must appear BEFORE the Ident regex so
     //    a bare `_` is tokenised as Underscore, not Ident("_").
-    #[token("_")] Underscore,
+    #[token("_", priority = 4)] Underscore,
 
     // ── Operators — ORDER MATTERS: longer tokens first ────────────
     #[token("<<=")] LeftShiftEqual,

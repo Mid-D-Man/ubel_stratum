@@ -67,7 +67,7 @@ fn test_all_tier_keywords() {
     let input = "@tier(high) @tier(mid) @tier(low)";
     let tokens = tokenize(input).unwrap();
     assert_eq!(tokens[0].kind, TokenType::At);
-    assert!(matches!(tokens[1].kind, TokenType::Ident(ref s) if s == "tier"));
+    assert!(matches!(tokens[1].kind, TokenType::Tier));
 }
 
 #[test]

@@ -14,7 +14,7 @@ use crate::ast::expressions::{
 use crate::ast::literals::{InterpolationPart, Literal};
 use crate::ast::types::{Type, TypeKind};
 use crate::interpreter::eval::{stmt, pattern, FunctionBody, FunctionDef, Interpreter};
-use crate::interpreter::value::{EnumPayload, EvalResult, Signal, Value};
+use crate::interpreter::value::{EvalResult, Signal, Value};
 
 // ── Main entry ────────────────────────────────────────────────────
 
@@ -576,7 +576,7 @@ fn get_field(obj: Value, field: &str) -> EvalResult {
                     "no field '{}' on {}", field, obj.type_name()
                 )))
         }
-        Value::Enum { ref type_name, ref variant, ref payload } => {
+        Value::Enum { ref type_name, ref variant, payload: _ } => {
             // Allow accessing discriminant metadata fields.
             match field {
                 "type_name" => Ok(Value::str_from(type_name.as_str())),
@@ -894,7 +894,7 @@ fn eval_linq<'ast>(
                     let v = eval_expr(interp, value)?;
                     interp.env.define(name, v);
                 }
-                LinqClause::OrderBy { expr, descending } => {
+                LinqClause::OrderBy { expr, descending: _ } => {
                     let key = eval_expr(interp, expr)?;
                     let projected = eval_expr(interp, linq.select)?;
                     let entry = (key, projected);

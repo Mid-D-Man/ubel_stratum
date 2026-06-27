@@ -3,7 +3,7 @@
 
 #![allow(dead_code)]
 
-use crate::ast::common::{Span, GenericParam, LifetimeParam};
+use crate::ast::common::Span;
 
 /// A type expression with its source location.
 #[derive(Debug, Clone, Copy)]
