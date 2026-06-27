@@ -1,13 +1,9 @@
 // .mdix/patches/patch.mdix
 // =============================================================================
-// Patch batch 3
-//   Fix 1 — Underscore token needs priority = 4 to beat Ident priority = 3
-//   Fix 2 — test_all_tier_keywords: tier IS a logos keyword, fix the assertion
-//   Fix 3 — unused import Span in ast/literals.rs
-//   Fix 4 — unused GenericParam + LifetimeParam in ast/types.rs
-//   Fix 5 — unused EnumPayload import in eval/expr.rs
-//   Fix 6 — unused variable `payload` in eval/expr.rs
-//   Fix 7 — unused variable `descending` in eval/expr.rs
+// Patch batch 4 — wire test modules into sema and interpreter
+//   Fix 1 — add #[cfg(test)] mod tests; to sema/mod.rs
+//   Fix 2 — add #[cfg(test)] mod tests; to interpreter/eval/mod.rs
+// The test files themselves are committed as new files alongside this patch.
 // =============================================================================
 
 @CONFIG(
@@ -28,61 +24,19 @@
 
   patch_files::
 
-    // ── Fix 1: Underscore needs higher priority than Ident ────────────────────
-    // logos_lexer.rs:81
-    // Ident is priority=3. Bare `_` must tokenise as Underscore, not Ident("_").
-    // Give Underscore priority=4 so it beats Ident for the single-char `_` case.
+    // ── Fix 1: add test module declaration to sema/mod.rs ─────────────────────
+    // Anchors on the last pub mod in the module block — guaranteed unique.
     patch_replace_text(
-      "crates/core/src/lexer/logos_lexer.rs",
-      "#[token(\"_\")] Underscore,",
-      "#[token(\"_\", priority = 4)] Underscore,"
+      "crates/core/src/sema/mod.rs",
+      "pub mod tier_check;",
+      "pub mod tier_check;\n\n#[cfg(test)]\nmod tests;"
     )
 
-    // ── Fix 2: tier IS a logos keyword — fix the test assertion ───────────────
-    // tests.rs:70
-    // `#[token("tier")] Tier` in logos_lexer.rs means `tier` is always
-    // TokenType::Tier, never Ident. The test comment was wrong about the design.
-    // Fix: assert Tier instead of Ident.
+    // ── Fix 2: add test module declaration to interpreter/eval/mod.rs ─────────
     patch_replace_text(
-      "crates/core/src/lexer/tests.rs",
-      "matches!(tokens[1].kind, TokenType::Ident(ref s) if s == \"tier\")",
-      "matches!(tokens[1].kind, TokenType::Tier)"
-    )
-
-    // ── Fix 3: unused import `Span` in ast/literals.rs ───────────────────────
-    patch_replace_text(
-      "crates/core/src/ast/literals.rs",
-      "use crate::ast::common::Span;\n",
-      ""
-    )
-
-    // ── Fix 4: unused imports GenericParam + LifetimeParam in ast/types.rs ───
-    // Span IS used; only the other two are not.
-    patch_replace_text(
-      "crates/core/src/ast/types.rs",
-      "use crate::ast::common::{Span, GenericParam, LifetimeParam};",
-      "use crate::ast::common::Span;"
-    )
-
-    // ── Fix 5: unused import EnumPayload in eval/expr.rs ─────────────────────
-    patch_replace_text(
-      "crates/core/src/interpreter/eval/expr.rs",
-      "{EnumPayload, EvalResult, Signal, Value}",
-      "{EvalResult, Signal, Value}"
-    )
-
-    // ── Fix 6: unused variable `payload` in eval/expr.rs:579 ─────────────────
-    patch_replace_text(
-      "crates/core/src/interpreter/eval/expr.rs",
-      ", ref payload }",
-      ", payload: _ }"
-    )
-
-    // ── Fix 7: unused variable `descending` in eval/expr.rs:897 ─────────────
-    patch_replace_text(
-      "crates/core/src/interpreter/eval/expr.rs",
-      "descending }",
-      "descending: _ }"
+      "crates/core/src/interpreter/eval/mod.rs",
+      "pub mod pattern;",
+      "pub mod pattern;\n\n#[cfg(test)]\nmod tests;"
     )
 
 )
