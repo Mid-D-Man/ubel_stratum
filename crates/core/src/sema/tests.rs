@@ -1,5 +1,10 @@
 // crates/core/src/sema/tests.rs
-//! Sema unit tests — build AST nodes directly from the arena; no parser needed.
+//! Sema unit tests — AST built directly from the arena, no parser needed.
+//!
+//! NOTE: sema enforces return-type annotation when a value is returned.
+//! Tests that want to verify expressions work use StmtKind::Expr (expression
+//! statements) rather than StmtKind::Return(Some(...)) to avoid triggering
+//! the return-type check on functions with no declared return type.
 
 use crate::ast::arena::AstArena;
 use crate::ast::common::{Span, TierAnnotation, Visibility};
@@ -10,7 +15,7 @@ use crate::ast::root::{Program, Item};
 use crate::ast::statements::{Block, Stmt, StmtKind, BindingTarget};
 use crate::sema;
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
+// ── Helpers ───────────────────────────────────────────────────────────────────
 
 const Z: Span = Span { start: 0, end: 0, line: 0, column: 0 };
 
@@ -30,24 +35,24 @@ fn make_fn<'a>(arena: &'a AstArena, name: &str, body: Block<'a>) -> FunctionDecl
         params:          &[],
         return_type:     None,
         body,
-        span: Z,
+        span:            Z,
     }
 }
 
-fn prog_with_items<'a>(arena: &'a AstArena, items: &[Item<'a>]) -> Program<'a> {
-    Program {
-        package: None,
-        imports: &[],
-        items:   arena.alloc_slice_copy(items),
-        span:    Z,
-    }
+fn prog_with<'a>(arena: &'a AstArena, items: &[Item<'a>]) -> Program<'a> {
+    Program { package: None, imports: &[], items: arena.alloc_slice_copy(items), span: Z }
 }
 
-fn ok(arena: &AstArena, prog: &Program<'_>) {
+fn assert_ok(arena: &AstArena, prog: &Program<'_>) {
     assert!(
         sema::analyse(prog, arena, String::new()).is_ok(),
-        "sema should succeed but failed"
+        "sema should succeed but returned an error"
     );
+}
+
+fn expr_stmt<'a>(arena: &'a AstArena, kind: ExprKind<'a>) -> Stmt<'a> {
+    let e = arena.alloc(Expr { kind, span: Z });
+    Stmt { kind: StmtKind::Expr(e), span: Z }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -55,77 +60,102 @@ fn ok(arena: &AstArena, prog: &Program<'_>) {
 #[test]
 fn test_sema_empty_program_ok() {
     let arena = AstArena::new();
-    ok(&arena, &empty_prog(&arena));
+    assert_ok(&arena, &empty_prog(&arena));
 }
 
 #[test]
 fn test_sema_fn_empty_body_ok() {
     let arena = AstArena::new();
     let f = make_fn(&arena, "helper", Block::empty(Z));
-    ok(&arena, &prog_with_items(&arena, &[Item::Function(f)]));
+    assert_ok(&arena, &prog_with(&arena, &[Item::Function(f)]));
 }
 
 #[test]
-fn test_sema_fn_return_int_ok() {
+fn test_sema_fn_explicit_return_unit_ok() {
+    // fn foo() { return }  — no value, matches void return type
     let arena = AstArena::new();
-    let lit = arena.alloc(Expr { kind: ExprKind::Lit(Literal::Int(42)), span: Z });
-    let stmts = arena.alloc_slice_copy(&[Stmt { kind: StmtKind::Return(Some(lit)), span: Z }]);
-    let f = make_fn(&arena, "answer", Block { stmts, span: Z });
-    ok(&arena, &prog_with_items(&arena, &[Item::Function(f)]));
+    let stmts = arena.alloc_slice_copy(&[Stmt { kind: StmtKind::Return(None), span: Z }]);
+    let f     = make_fn(&arena, "foo", Block { stmts, span: Z });
+    assert_ok(&arena, &prog_with(&arena, &[Item::Function(f)]));
 }
 
 #[test]
-fn test_sema_fn_return_bool_ok() {
+fn test_sema_fn_expr_int_ok() {
+    // fn foo() { 42 }  — int literal as an expression statement (no return)
     let arena = AstArena::new();
-    let lit = arena.alloc(Expr { kind: ExprKind::Lit(Literal::Bool(true)), span: Z });
-    let stmts = arena.alloc_slice_copy(&[Stmt { kind: StmtKind::Return(Some(lit)), span: Z }]);
-    let f = make_fn(&arena, "flag", Block { stmts, span: Z });
-    ok(&arena, &prog_with_items(&arena, &[Item::Function(f)]));
+    let stmts = arena.alloc_slice_copy(&[expr_stmt(&arena, ExprKind::Lit(Literal::Int(42)))]);
+    let f     = make_fn(&arena, "foo", Block { stmts, span: Z });
+    assert_ok(&arena, &prog_with(&arena, &[Item::Function(f)]));
 }
 
 #[test]
-fn test_sema_fn_return_str_ok() {
+fn test_sema_fn_expr_bool_ok() {
     let arena = AstArena::new();
-    let s   = arena.alloc_str("hello");
-    let lit = arena.alloc(Expr { kind: ExprKind::Lit(Literal::Str(s)), span: Z });
-    let stmts = arena.alloc_slice_copy(&[Stmt { kind: StmtKind::Return(Some(lit)), span: Z }]);
-    let f = make_fn(&arena, "greet", Block { stmts, span: Z });
-    ok(&arena, &prog_with_items(&arena, &[Item::Function(f)]));
+    let stmts = arena.alloc_slice_copy(&[expr_stmt(&arena, ExprKind::Lit(Literal::Bool(true)))]);
+    let f     = make_fn(&arena, "foo", Block { stmts, span: Z });
+    assert_ok(&arena, &prog_with(&arena, &[Item::Function(f)]));
 }
 
 #[test]
-fn test_sema_fn_return_null_ok() {
+fn test_sema_fn_expr_float_ok() {
     let arena = AstArena::new();
-    let lit = arena.alloc(Expr { kind: ExprKind::Lit(Literal::Null), span: Z });
-    let stmts = arena.alloc_slice_copy(&[Stmt { kind: StmtKind::Return(Some(lit)), span: Z }]);
-    let f = make_fn(&arena, "nothing", Block { stmts, span: Z });
-    ok(&arena, &prog_with_items(&arena, &[Item::Function(f)]));
+    let stmts = arena.alloc_slice_copy(&[expr_stmt(&arena, ExprKind::Lit(Literal::Double(3.14)))]);
+    let f     = make_fn(&arena, "foo", Block { stmts, span: Z });
+    assert_ok(&arena, &prog_with(&arena, &[Item::Function(f)]));
 }
 
 #[test]
-fn test_sema_fn_return_float_ok() {
+fn test_sema_fn_expr_str_ok() {
     let arena = AstArena::new();
-    let lit = arena.alloc(Expr { kind: ExprKind::Lit(Literal::Double(3.14)), span: Z });
-    let stmts = arena.alloc_slice_copy(&[Stmt { kind: StmtKind::Return(Some(lit)), span: Z }]);
-    let f = make_fn(&arena, "pi", Block { stmts, span: Z });
-    ok(&arena, &prog_with_items(&arena, &[Item::Function(f)]));
+    let s     = arena.alloc_str("hello");
+    let stmts = arena.alloc_slice_copy(&[expr_stmt(&arena, ExprKind::Lit(Literal::Str(s)))]);
+    let f     = make_fn(&arena, "foo", Block { stmts, span: Z });
+    assert_ok(&arena, &prog_with(&arena, &[Item::Function(f)]));
+}
+
+#[test]
+fn test_sema_fn_expr_null_ok() {
+    let arena = AstArena::new();
+    let stmts = arena.alloc_slice_copy(&[expr_stmt(&arena, ExprKind::Lit(Literal::Null))]);
+    let f     = make_fn(&arena, "foo", Block { stmts, span: Z });
+    assert_ok(&arena, &prog_with(&arena, &[Item::Function(f)]));
 }
 
 #[test]
 fn test_sema_fn_let_binding_ok() {
     let arena = AstArena::new();
-    let val = arena.alloc(Expr { kind: ExprKind::Lit(Literal::Int(10)), span: Z });
+    let val   = arena.alloc(Expr { kind: ExprKind::Lit(Literal::Int(10)), span: Z });
     let stmts = arena.alloc_slice_copy(&[Stmt {
         kind: StmtKind::Let {
-            mutable:  false,
-            binding:  BindingTarget::Ident(arena.alloc_str("x")),
-            ty:       None,
-            value:    val,
+            mutable: false,
+            binding: BindingTarget::Ident(arena.alloc_str("x")),
+            ty:      None,
+            value:   val,
         },
         span: Z,
     }]);
     let f = make_fn(&arena, "with_let", Block { stmts, span: Z });
-    ok(&arena, &prog_with_items(&arena, &[Item::Function(f)]));
+    assert_ok(&arena, &prog_with(&arena, &[Item::Function(f)]));
+}
+
+#[test]
+fn test_sema_fn_let_then_read_ok() {
+    // fn foo() { let x = 1; x }  — bind then use the name as an expr statement
+    let arena = AstArena::new();
+    let val   = arena.alloc(Expr { kind: ExprKind::Lit(Literal::Int(1)), span: Z });
+    let let_s = Stmt {
+        kind: StmtKind::Let {
+            mutable: false,
+            binding: BindingTarget::Ident(arena.alloc_str("x")),
+            ty:      None,
+            value:   val,
+        },
+        span: Z,
+    };
+    let read_s = expr_stmt(&arena, ExprKind::Ident(arena.alloc_str("x")));
+    let stmts  = arena.alloc_slice_copy(&[let_s, read_s]);
+    let f      = make_fn(&arena, "foo", Block { stmts, span: Z });
+    assert_ok(&arena, &prog_with(&arena, &[Item::Function(f)]));
 }
 
 #[test]
@@ -133,19 +163,20 @@ fn test_sema_two_fns_ok() {
     let arena = AstArena::new();
     let a = make_fn(&arena, "foo", Block::empty(Z));
     let b = make_fn(&arena, "bar", Block::empty(Z));
-    ok(&arena, &prog_with_items(&arena, &[Item::Function(a), Item::Function(b)]));
+    assert_ok(&arena, &prog_with(&arena, &[Item::Function(a), Item::Function(b)]));
 }
 
 #[test]
-fn test_sema_fn_ref_sibling_fn_ok() {
-    let arena = AstArena::new();
+fn test_sema_fn_ref_sibling_as_expr_ok() {
     // fn helper() {}
-    // fn caller() { return helper }  — references sibling by name
+    // fn caller()  { helper }  — reference sibling as an expression statement
+    let arena  = AstArena::new();
     let helper = make_fn(&arena, "helper", Block::empty(Z));
-    let ident  = arena.alloc(Expr { kind: ExprKind::Ident(arena.alloc_str("helper")), span: Z });
-    let stmts  = arena.alloc_slice_copy(&[Stmt { kind: StmtKind::Return(Some(ident)), span: Z }]);
+    let stmts  = arena.alloc_slice_copy(&[
+        expr_stmt(&arena, ExprKind::Ident(arena.alloc_str("helper")))
+    ]);
     let caller = make_fn(&arena, "caller", Block { stmts, span: Z });
-    ok(&arena, &prog_with_items(&arena, &[
+    assert_ok(&arena, &prog_with(&arena, &[
         Item::Function(helper),
         Item::Function(caller),
     ]));
@@ -162,7 +193,7 @@ fn test_sema_empty_struct_ok() {
         members:        &[],
         span:           Z,
     };
-    ok(&arena, &prog_with_items(&arena, &[Item::Struct(s)]));
+    assert_ok(&arena, &prog_with(&arena, &[Item::Struct(s)]));
 }
 
 #[test]
@@ -177,5 +208,15 @@ fn test_sema_struct_and_fn_ok() {
         span:           Z,
     };
     let f = make_fn(&arena, "new_vec3", Block::empty(Z));
-    ok(&arena, &prog_with_items(&arena, &[Item::Struct(s), Item::Function(f)]));
+    assert_ok(&arena, &prog_with(&arena, &[Item::Struct(s), Item::Function(f)]));
 }
+
+#[test]
+fn test_sema_many_fns_ok() {
+    let arena = AstArena::new();
+    let fns: Vec<Item> = ["alpha", "beta", "gamma", "delta", "epsilon"]
+        .iter()
+        .map(|n| Item::Function(make_fn(&arena, n, Block::empty(Z))))
+        .collect();
+    assert_ok(&arena, &prog_with(&arena, &fns));
+        }
