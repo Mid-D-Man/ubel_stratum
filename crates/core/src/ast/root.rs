@@ -9,7 +9,7 @@ use crate::ast::declarations::{
     ImplBlock, StructDecl, TraitDecl, TypeAlias,
 };
 
-/// The root node returned by the parser for one `.strat` source file.
+/// The root node returned by the parser for one `.ubl` source file.
 #[derive(Debug, Clone, Copy)]
 pub struct Program<'ast> {
     pub package: Option<PackageDecl<'ast>>,

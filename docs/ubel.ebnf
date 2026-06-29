@@ -1,5 +1,5 @@
 (* Ubel Stratum Programming Language - EBNF Grammar v1.1.0 *)
-(* File Extension: .strat *)
+(* File Extension: .ubl *)
 (* Quantum-Ready Multi-Tier Systems Language *)
 (*                                                              *)
 (* DEFAULT TIER: HIGH (GC)                                      *)
@@ -62,7 +62,10 @@ TierValue     ::= "high" | "mid" | "low"
 Attributes    ::= Attribute+
 Attribute     ::= "@" Ident ("(" AttributeArgList ")")?
 AttributeArgList ::= AttributeArg ("," AttributeArg)*
-AttributeArg  ::= Ident | Literal | Ident "=" Literal
+AttributeArg  ::= Ident
+                | Literal
+                | Ident "=" Literal
+                | Ident "(" AttributeArgList ")"   (* nested: @cfg(not(debug)), @cfg(any(...)) *)
 
 (* ── Parameters ── *)
 ParamList     ::= Param ("," Param)*
@@ -73,9 +76,14 @@ Param         ::= "mut"? Ident TypeAnnotation? ("=" Expr)?
                 | "&" "mut" "self"
 
 (* ── Structs ── *)
-StructDecl    ::= "pub"? "edge"? "struct" Ident GenericParams? "{" StructBody "}"
+StructDecl    ::= "pub"? "edge"? "struct" Ident LifetimeParams? GenericParams? "{" StructBody "}"
 
-StructBody    ::= StructMember*
+(* Struct members may be separated by optional "," ";" or just newline. *)
+StructBody    ::= StructMember (Separator? StructMember)* Separator?
+(* Separator is optional in all list contexts throughout the language.  *)
+(* A comma, semicolon, or plain newline/whitespace all delimit list items.  *)
+Separator     ::= "," | ";"
+
 StructMember  ::= FieldDecl
                 | MethodDecl
                 | PropertyDecl
