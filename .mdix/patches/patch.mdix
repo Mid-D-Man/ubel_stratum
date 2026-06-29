@@ -1,9 +1,12 @@
-// .mdix/patches/patch.mdix
+// .mdix/patches/ebnf-fixes.mdix
 // =============================================================================
-// Patch batch 4 — wire test modules into sema and interpreter
-//   Fix 1 — add #[cfg(test)] mod tests; to sema/mod.rs
-//   Fix 2 — add #[cfg(test)] mod tests; to interpreter/eval/mod.rs
-// The test files themselves are committed as new files alongside this patch.
+// Patch batch 5 — EBNF corrections
+//   Fix 1 — file extension .strat → .ubl
+//   Fix 2 — add nested AttributeArg for @cfg(not(x)) / any(x) / all(x)
+//   Fix 3 — StructDecl gets LifetimeParams?
+//   Fix 4 — StructBody gets optional Separator between members
+//   Fix 5 — add Separator rule and general optionality note
+//   Fix 6 — root.rs comment .strat → .ubl
 // =============================================================================
 
 @CONFIG(
@@ -13,30 +16,53 @@
 )
 
 @QUICKFUNCS(
-
   ~patch_replace_text<object>(path, anchor, content) {
     return { path = path, op = "replace_text", anchor = anchor, content = content }
   }
-
 )
 
 @DATA(
-
   patch_files::
 
-    // ── Fix 1: add test module declaration to sema/mod.rs ─────────────────────
-    // Anchors on the last pub mod in the module block — guaranteed unique.
+    // ── Fix 1: file extension ──────────────────────────────────────────────────
     patch_replace_text(
-      "crates/core/src/sema/mod.rs",
-      "pub mod tier_check;",
-      "pub mod tier_check;\n\n#[cfg(test)]\nmod tests;"
+      "docs/ubel.ebnf",
+      "(* File Extension: .strat *)",
+      "(* File Extension: .ubl *)"
     )
 
-    // ── Fix 2: add test module declaration to interpreter/eval/mod.rs ─────────
+    // ── Fix 2: nested AttributeArg ────────────────────────────────────────────
     patch_replace_text(
-      "crates/core/src/interpreter/eval/mod.rs",
-      "pub mod pattern;",
-      "pub mod pattern;\n\n#[cfg(test)]\nmod tests;"
+      "docs/ubel.ebnf",
+      "AttributeArg  ::= Ident | Literal | Ident \"=\" Literal",
+      "AttributeArg  ::= Ident\n                | Literal\n                | Ident \"=\" Literal\n                | Ident \"(\" AttributeArgList \")\"   (* nested: @cfg(not(debug)), @cfg(any(...)) *)"
     )
 
+    // ── Fix 3: StructDecl gets LifetimeParams? ────────────────────────────────
+    patch_replace_text(
+      "docs/ubel.ebnf",
+      "StructDecl    ::= \"pub\"? \"edge\"? \"struct\" Ident GenericParams? \"{\" StructBody \"}\"",
+      "StructDecl    ::= \"pub\"? \"edge\"? \"struct\" Ident LifetimeParams? GenericParams? \"{\" StructBody \"}\""
+    )
+
+    // ── Fix 4: StructBody gets optional separator ─────────────────────────────
+    patch_replace_text(
+      "docs/ubel.ebnf",
+      "StructBody    ::= StructMember*",
+      "(* Struct members may be separated by optional \",\" \";\" or just newline. *)\nStructBody    ::= StructMember (Separator? StructMember)* Separator?"
+    )
+
+    // ── Fix 5: add Separator rule + global optionality note ───────────────────
+    patch_replace_text(
+      "docs/ubel.ebnf",
+      "StructMember  ::= FieldDecl",
+      "(* Separator is optional in all list contexts throughout the language.  *)\n(* A comma, semicolon, or plain newline/whitespace all delimit list items.  *)\nSeparator     ::= \",\" | \";\"\n\nStructMember  ::= FieldDecl"
+    )
+
+    // ── Fix 6: root.rs comment ────────────────────────────────────────────────
+    patch_replace_text(
+      "crates/core/src/ast/root.rs",
+      "/// The root node returned by the parser for one `.strat` source file.",
+      "/// The root node returned by the parser for one `.ubl` source file."
+    )
 )
