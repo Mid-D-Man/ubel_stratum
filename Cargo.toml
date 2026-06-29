@@ -1,5 +1,6 @@
 [workspace]
 members  = ["crates/core", "crates/parser"]
+    "crates/rd_parser",
 resolver = "2"
 
 # Profiles are workspace-level; all crates inherit without re-declaring.
