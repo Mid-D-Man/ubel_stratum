@@ -50,7 +50,7 @@
   version    -> "1.0.0"
   author     -> "Mid-D-Man"
   features   -> "quickfuncs,data"
-  debug_mode -> "off"
+  debug_mode -> "regular"
 )
 
 @QUICKFUNCS(
