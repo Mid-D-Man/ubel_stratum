@@ -1,68 +1,267 @@
-// .mdix/patches/ebnf-fixes.mdix
 // =============================================================================
-// Patch batch 5 — EBNF corrections
-//   Fix 1 — file extension .strat → .ubl
-//   Fix 2 — add nested AttributeArg for @cfg(not(x)) / any(x) / all(x)
-//   Fix 3 — StructDecl gets LifetimeParams?
-//   Fix 4 — StructBody gets optional Separator between members
-//   Fix 5 — add Separator rule and general optionality note
-//   Fix 6 — root.rs comment .strat → .ubl
+// PROJECT SCAFFOLD TEMPLATE  ·  DixScript v1.0.0
+// =============================================================================
+//
+// QUICKFUNCS REFERENCE
+// ────────────────────
+//   ~f(name, ext)                      stub file (built-in content default)
+//   ~fc(name, ext, content)            file with explicit content
+//   ~fremote(name, ext, url)           file fetched from URL at generation time
+//   ~gitkeep()                         .gitkeep placeholder
+//   ~hidden(segment)                   dot-prefix segment on disk
+//   ~delete_file(path)                 delete before create pass
+//   ~rename(src, dst)                  rename after deletes, before creates
+//   ~move(src, dst)                    cross-filesystem move
+//   ~update(path, content)             always-overwrite entire file
+//
+// SURGICAL PATCH OPERATIONS  (patch_files:: array, run after update pass)
+// ────────────────────────────────────────────────────────────────────────
+//   Anchor matching: whitespace-normalised.  Multiple matches: warn + use first
+//   (or specify match_index to target the Nth occurrence, 0-based).
+//
+// ── Insert ──────────────────────────────────────────────────────────────────
+//   ~patch_insert_after(path, anchor, content)
+//   ~patch_insert_after_n(path, anchor, content, match_index)
+//   ~patch_insert_before(path, anchor, content)
+//   ~patch_insert_before_n(path, anchor, content, match_index)
+//
+// ── Replace ─────────────────────────────────────────────────────────────────
+//   ~patch_replace_text(path, anchor, content)
+//   ~patch_replace_text_n(path, anchor, content, match_index)
+//   ~patch_replace_lines(path, from_line, to_line, content)
+//   ~patch_replace_range(path, from_char, to_char, content)
+//   ~patch_replace_fn(path, fn_name, content)
+//   ~patch_replace_block(path, start_anchor, end_anchor, content)
+//   ~patch_replace_block_keep(path, start_anchor, end_anchor, content)
+//   ~patch_replace_regex(path, pattern, content)
+//   ~patch_replace_regex_f(path, pattern, content, flags)
+//   ~patch_replace_regex_n(path, pattern, content, match_index)
+//   ~patch_replace_regex_fn(path, pattern, content, flags, match_index)
+//
+// ── Delete ──────────────────────────────────────────────────────────────────
+//   ~patch_delete_text(path, anchor)
+//   ~patch_delete_text_n(path, anchor, match_index)
+//   ~patch_delete_lines(path, from_line, to_line)
+//   ~patch_delete_fn(path, fn_name)
+//
 // =============================================================================
 
 @CONFIG(
   version    -> "1.0.0"
   author     -> "Mid-D-Man"
-  debug_mode -> "regular"
+  features   -> "quickfuncs,data"
+  debug_mode -> "off"
 )
 
 @QUICKFUNCS(
+
+  ~f<object>(name, ext) {
+    return { name = name, ext = ext, content = "" }
+  }
+
+  ~fc<object>(name, ext, content) {
+    return { name = name, ext = ext, content = content }
+  }
+
+  ~fremote<object>(name, ext, url) {
+    return { name = name, ext = ext, content = "remote::" + url }
+  }
+
+  ~gitkeep<object>() {
+    return { name = ".gitkeep", ext = "", content = "" }
+  }
+
+  ~hidden<object>(segment) {
+    return { segment = segment }
+  }
+
+  ~delete_file<object>(path) {
+    return { path = path }
+  }
+
+  ~rename<object>(src, dst) {
+    return { from_path = src, to_path = dst }
+  }
+
+  ~move<object>(src, dst) {
+    return { from_path = src, to_path = dst }
+  }
+
+  ~update<object>(path, content) {
+    return { path = path, content = content }
+  }
+
+  // ── Insert ──────────────────────────────────────────────────────────────
+
+  ~patch_insert_after<object>(path, anchor, content) {
+    return { path = path, op = "insert_after", anchor = anchor, content = content }
+  }
+
+  ~patch_insert_after_n<object>(path, anchor, content, match_index) {
+    return {
+      path        = path
+      op          = "insert_after"
+      anchor      = anchor
+      content     = content
+      match_index = match_index
+    }
+  }
+
+  ~patch_insert_before<object>(path, anchor, content) {
+    return { path = path, op = "insert_before", anchor = anchor, content = content }
+  }
+
+  ~patch_insert_before_n<object>(path, anchor, content, match_index) {
+    return {
+      path        = path
+      op          = "insert_before"
+      anchor      = anchor
+      content     = content
+      match_index = match_index
+    }
+  }
+
+  // ── Replace ─────────────────────────────────────────────────────────────
+
   ~patch_replace_text<object>(path, anchor, content) {
     return { path = path, op = "replace_text", anchor = anchor, content = content }
   }
+
+  ~patch_replace_text_n<object>(path, anchor, content, match_index) {
+    return {
+      path        = path
+      op          = "replace_text"
+      anchor      = anchor
+      content     = content
+      match_index = match_index
+    }
+  }
+
+  ~patch_replace_lines<object>(path, from_line, to_line, content) {
+    return {
+      path      = path
+      op        = "replace_lines"
+      from_line = from_line
+      to_line   = to_line
+      content   = content
+    }
+  }
+
+  ~patch_replace_range<object>(path, from_char, to_char, content) {
+    return {
+      path      = path
+      op        = "replace_range"
+      from_char = from_char
+      to_char   = to_char
+      content   = content
+    }
+  }
+
+  ~patch_replace_fn<object>(path, fn_name, content) {
+    return { path = path, op = "replace_function", fn_name = fn_name, content = content }
+  }
+
+  ~patch_replace_block<object>(path, start_anchor, end_anchor, content) {
+    return {
+      path         = path
+      op           = "replace_block"
+      start_anchor = start_anchor
+      end_anchor   = end_anchor
+      content      = content
+    }
+  }
+
+  ~patch_replace_block_keep<object>(path, start_anchor, end_anchor, content) {
+    return {
+      path         = path
+      op           = "replace_block"
+      start_anchor = start_anchor
+      end_anchor   = end_anchor
+      content      = content
+      keep_anchors = "true"
+    }
+  }
+
+  ~patch_replace_regex<object>(path, pattern, content) {
+    return { path = path, op = "replace_regex", pattern = pattern, content = content }
+  }
+
+  ~patch_replace_regex_f<object>(path, pattern, content, flags) {
+    return {
+      path    = path
+      op      = "replace_regex"
+      pattern = pattern
+      content = content
+      flags   = flags
+    }
+  }
+
+  ~patch_replace_regex_n<object>(path, pattern, content, match_index) {
+    return {
+      path        = path
+      op          = "replace_regex"
+      pattern     = pattern
+      content     = content
+      match_index = match_index
+    }
+  }
+
+  ~patch_replace_regex_fn<object>(path, pattern, content, flags, match_index) {
+    return {
+      path        = path
+      op          = "replace_regex"
+      pattern     = pattern
+      content     = content
+      flags       = flags
+      match_index = match_index
+    }
+  }
+
+  // ── Delete ──────────────────────────────────────────────────────────────
+
+  ~patch_delete_text<object>(path, anchor) {
+    return { path = path, op = "delete_text", anchor = anchor }
+  }
+
+  ~patch_delete_text_n<object>(path, anchor, match_index) {
+    return { path = path, op = "delete_text", anchor = anchor, match_index = match_index }
+  }
+
+  ~patch_delete_lines<object>(path, from_line, to_line) {
+    return { path = path, op = "delete_lines", from_line = from_line, to_line = to_line }
+  }
+
+  ~patch_delete_fn<object>(path, fn_name) {
+    return { path = path, op = "delete_function", fn_name = fn_name }
+  }
+
 )
 
 @DATA(
+  project_name = "rd_parser"
+  description  = "Recursive descent parser module #rust #parser"
+  author       = "Mid-D-Man"
+
   patch_files::
+    // Example: Inject the new crate into the workspace Cargo.toml
+    patch_insert_after("Cargo.toml", "members = [", "    \"crates/rd_parser\",\n")
 
-    // ── Fix 1: file extension ──────────────────────────────────────────────────
-    patch_replace_text(
-      "docs/ubel.ebnf",
-      "(* File Extension: .strat *)",
-      "(* File Extension: .ubl *)"
-    )
+  crates.rd_parser::
+    fc("Cargo", "toml", "[package]\nname = \"[[project_name]]\"\nversion = \"0.1.0\"\nedition = \"2021\"\nauthors = [\"[[author]]\"]\ndescription = \"[[description]]\"\n\n[dependencies]\n")
 
-    // ── Fix 2: nested AttributeArg ────────────────────────────────────────────
-    patch_replace_text(
-      "docs/ubel.ebnf",
-      "AttributeArg  ::= Ident | Literal | Ident \"=\" Literal",
-      "AttributeArg  ::= Ident\n                | Literal\n                | Ident \"=\" Literal\n                | Ident \"(\" AttributeArgList \")\"   (* nested: @cfg(not(debug)), @cfg(any(...)) *)"
-    )
+  crates.rd_parser.src::
+    fc("lib",    "rs", "pub mod cursor;\npub mod error;\npub mod parser;\npub mod parsers;\n\n// public API: parse() / parse_expr_str()\n")
+    fc("cursor", "rs", "// Cursor<'tok>: peek/advance/expect/sync\n")
+    fc("error",  "rs", "// error constructor helpers -> core ParseError\n")
+    fc("parser", "rs", "// Parser<'ast,'tok> struct + shared helpers\n")
 
-    // ── Fix 3: StructDecl gets LifetimeParams? ────────────────────────────────
-    patch_replace_text(
-      "docs/ubel.ebnf",
-      "StructDecl    ::= \"pub\"? \"edge\"? \"struct\" Ident GenericParams? \"{\" StructBody \"}\"",
-      "StructDecl    ::= \"pub\"? \"edge\"? \"struct\" Ident LifetimeParams? GenericParams? \"{\" StructBody \"}\""
-    )
-
-    // ── Fix 4: StructBody gets optional separator ─────────────────────────────
-    patch_replace_text(
-      "docs/ubel.ebnf",
-      "StructBody    ::= StructMember*",
-      "(* Struct members may be separated by optional \",\" \";\" or just newline. *)\nStructBody    ::= StructMember (Separator? StructMember)* Separator?"
-    )
-
-    // ── Fix 5: add Separator rule + global optionality note ───────────────────
-    patch_replace_text(
-      "docs/ubel.ebnf",
-      "StructMember  ::= FieldDecl",
-      "(* Separator is optional in all list contexts throughout the language.  *)\n(* A comma, semicolon, or plain newline/whitespace all delimit list items.  *)\nSeparator     ::= \",\" | \";\"\n\nStructMember  ::= FieldDecl"
-    )
-
-    // ── Fix 6: root.rs comment ────────────────────────────────────────────────
-    patch_replace_text(
-      "crates/core/src/ast/root.rs",
-      "/// The root node returned by the parser for one `.strat` source file.",
-      "/// The root node returned by the parser for one `.ubl` source file."
-    )
+  crates.rd_parser.src.parsers::
+    fc("mod",           "rs", "pub mod parse_attr;\npub mod parse_type;\npub mod parse_pattern;\npub mod parse_expr;\npub mod parse_stmt;\npub mod parse_decl;\npub mod parse_program;\n")
+    fc("parse_attr",    "rs", "// @tier, @cfg, @core, @tag, custom attrs\n")
+    fc("parse_type",    "rs", "// type expressions, lifetimes, generics\n")
+    fc("parse_pattern", "rs", "// destructure patterns, match arms\n")
+    fc("parse_expr",    "rs", "// Pratt expression parser (hot path)\n")
+    fc("parse_stmt",    "rs", "// statements + blocks\n")
+    fc("parse_decl",    "rs", "// fn / struct / enum / trait / impl / extend\n")
+    fc("parse_program", "rs", "// package, imports, top-level item list\n")
 )
