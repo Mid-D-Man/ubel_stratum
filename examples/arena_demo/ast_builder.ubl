@@ -1,0 +1,210 @@
+// examples/arena_demo/ast_builder.ubl
+//
+// Demonstrates how Ubel Stratum's own compiler could be written in Ubel —
+// the "bootstrap" goal. The MID-tier arena patterns here mirror exactly what
+// the current Rust implementation does with bumpalo.
+//
+// Tier map:
+//   MID tier  → lexing + parsing → arena-allocated AST nodes
+//   LOW tier  → the Arena type itself (malloc/mmap under the hood)
+//   HIGH tier → diagnostics, IDE, driver, ECS systems
+
+from std.mem summon [Arena]
+
+// ── Plain value types (no arena pointer, copy freely) ─────────────────────────
+
+struct Span {
+    pub start: uint
+    pub end:   uint
+    pub line:  uint
+    pub col:   uint
+}
+
+extend Span {
+    pub fn merge(self, other: Span) Span {
+        return Span {
+            start = self.start
+            end   = other.end
+            line  = self.line
+            col   = self.col
+        }
+    }
+}
+
+// ── Arena-resident AST node types ─────────────────────────────────────────────
+//
+// `edge struct Name [lifetime L]` means:
+//   - This struct lives in the arena named by lifetime L
+//   - Any field typed `&L T` is an arena pointer, NOT a GC reference
+//   - The compiler refuses to let &L pointers escape the `with arena { }` block
+//
+// Rust equivalent:  pub struct ExprNode<'ast> { ... }
+//                   arena.alloc(ExprNode { ... })  →  &'ast ExprNode<'ast>
+
+edge struct ExprNode [lifetime parse] {
+    pub kind: ExprKind
+    pub span: Span
+}
+
+// Enum payload — variants hold arena references where needed.
+// Note: enum variants use "." for access (no "::" in Ubel)
+enum ExprKind {
+    IntLit   { value: int }
+    FloatLit { value: float }
+    // Interned source text — points into source buffer (same arena lifetime)
+    Ident    { name: &parse string }
+    BinOp {
+        op:  BinOpKind
+        lhs: &parse ExprNode
+        rhs: &parse ExprNode
+    }
+    Call {
+        callee: &parse ExprNode
+        // Arena-allocated slice of arena pointers
+        args:   &parse []&parse ExprNode
+    }
+    Block {
+        stmts: &parse []&parse StmtNode
+    }
+}
+
+enum BinOpKind { Add Sub Mul Div Eq Ne Lt Le Gt Ge }
+
+edge struct StmtNode [lifetime parse] {
+    pub kind: StmtKind
+    pub span: Span
+}
+
+enum StmtKind {
+    Expr   { expr: &parse ExprNode }
+    Let    { name: &parse string, ty: &parse string?, init: &parse ExprNode? }
+    Return { value: &parse ExprNode? }
+}
+
+// ── Arena allocation helpers ──────────────────────────────────────────────────
+//
+// These are the `parser.alloc(...)` helpers from the Rust implementation.
+// Each one takes the arena explicitly (or it would be a field on the Parser struct).
+
+@tier(mid)
+fn make_int(value: int, span: Span, arena: Arena) &parse ExprNode {
+    return arena.alloc(ExprNode {
+        kind = ExprKind.IntLit { value = value }
+        span = span
+    })
+}
+
+@tier(mid)
+fn make_ident(name: &parse string, span: Span, arena: Arena) &parse ExprNode {
+    return arena.alloc(ExprNode {
+        kind = ExprKind.Ident { name = name }
+        span = span
+    })
+}
+
+@tier(mid)
+fn make_bin_op(
+    op:    BinOpKind
+    lhs:   &parse ExprNode
+    rhs:   &parse ExprNode
+    span:  Span
+    arena: Arena
+) &parse ExprNode {
+    return arena.alloc(ExprNode {
+        kind = ExprKind.BinOp { op = op, lhs = lhs, rhs = rhs }
+        span = span
+    })
+}
+
+@tier(mid)
+fn make_call(
+    callee: &parse ExprNode
+    args:   []&parse ExprNode
+    span:   Span
+    arena:  Arena
+) &parse ExprNode {
+    // arena.alloc_slice copies the stack slice into bump storage
+    let arena_args = arena.alloc_slice(args)
+    return arena.alloc(ExprNode {
+        kind = ExprKind.Call { callee = callee, args = arena_args }
+        span = span
+    })
+}
+
+// ── The parse pass — MID tier ─────────────────────────────────────────────────
+//
+// `with arena(size) { }` allocates a bump arena.
+// Everything created inside lives in that arena.
+// The CALLBACK is how results safely exit — the compiler checks the return
+// type contains no &parse references.
+//
+// This is the same contract as the Rust impl's callback/iterator/view pattern.
+
+@tier(mid)
+fn parse_expr_tree(source: string, callback: fn(&parse ExprNode) string) string {
+    with arena(128 KB) {
+        // ── Build AST for: `result = foo(1 + 2)` ──────────────────────────
+
+        let z = Span { start = 0, end = 0, line = 1, col = 1 }
+        let s1 = Span { start = 7, end = 8, line = 1, col = 8 }
+        let s2 = Span { start = 10, end = 11, line = 1, col = 11 }
+        let s_add = Span { start = 7, end = 11, line = 1, col = 8 }
+        let s_call = Span { start = 3, end = 12, line = 1, col = 4 }
+        let s_name = Span { start = 0, end = 6, line = 1, col = 1 }
+
+        // Intern the callee name — alloc_str copies into the arena
+        let callee_name = arena.alloc_str("foo")
+        let callee = make_ident(callee_name, s_name, arena)
+
+        // Build `1 + 2`
+        let lhs = make_int(1, s1, arena)
+        let rhs = make_int(2, s2, arena)
+        let sum = make_bin_op(BinOpKind.Add, lhs, rhs, s_add, arena)
+
+        // Build `foo(1 + 2)` — args is a stack slice, gets interned below
+        let root = make_call(callee, [sum], s_call, arena)
+
+        // Callback receives a borrow into the arena.
+        // Return type is `string` (GC-managed) — no &parse leaks.
+        return callback(root)
+
+        // Arena freed here — single pointer bump-back. Zero allocator calls.
+    }
+}
+
+// ── HIGH-tier driver — sees none of the arena machinery ──────────────────────
+
+pub fn compile_expression(source: string) string {
+    // The callback closure sees `&parse ExprNode` but returns `string`.
+    // The compiler's tier enforcer verifies no arena pointer escapes.
+    return parse_expr_tree(source, fn(root: &parse ExprNode) string {
+        return pretty_print(root)
+    })
+}
+
+// Recursive printer — called from HIGH tier through the callback
+@tier(high)
+fn pretty_print(node: &parse ExprNode) string {
+    match node.kind {
+        ExprKind.IntLit   { value }             => return value.to_string()
+        ExprKind.Ident    { name }              => return name
+        ExprKind.BinOp    { op, lhs, rhs }      => {
+            let l = pretty_print(lhs)
+            let r = pretty_print(rhs)
+            let op_str = match op {
+                BinOpKind.Add => "+"
+                BinOpKind.Sub => "-"
+                BinOpKind.Mul => "*"
+                BinOpKind.Div => "/"
+                _             => "?"
+            }
+            return $"({l} {op_str} {r})"
+        }
+        ExprKind.Call { callee, args }          => {
+            let callee_str = pretty_print(callee)
+            let arg_strs = from a in args select pretty_print(a)
+            return $"{callee_str}({arg_strs.join(", ")})"
+        }
+        _ => return "<unsupported>"
+    }
+}
