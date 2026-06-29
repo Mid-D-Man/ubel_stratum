@@ -242,10 +242,6 @@
   description  = "Recursive descent parser module #rust #parser"
   author       = "Mid-D-Man"
 
-  patch_files::
-    // Example: Inject the new crate into the workspace Cargo.toml
-    patch_insert_after("Cargo.toml", "members = [", "    \"crates/rd_parser\",\n")
-
   crates.rd_parser::
     fc("Cargo", "toml", "[package]\nname = \"[[project_name]]\"\nversion = \"0.1.0\"\nedition = \"2021\"\nauthors = [\"[[author]]\"]\ndescription = \"[[description]]\"\n\n[dependencies]\n")
 
