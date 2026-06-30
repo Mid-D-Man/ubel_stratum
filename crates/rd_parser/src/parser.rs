@@ -17,6 +17,7 @@ use ubel_stratum::{
 };
 
 use crate::cursor::Cursor;
+use crate::estimates::ParseEstimates;
 
 // ── Memoisation ───────────────────────────────────────────────────────────────
 
@@ -41,23 +42,28 @@ fn memo_key(pos: usize, rule: MemoRule) -> u64 {
 // ── Parser struct ─────────────────────────────────────────────────────────────
 
 pub struct Parser<'ast, 'tok> {
-    pub(crate) cursor:  Cursor<'tok>,
-    pub(crate) arena:   &'ast AstArena,
-    pub(crate) errors:  ErrorManager,
-    pub(crate) context: ParseContext,
-    pub(crate) tier:    TierAnnotation,
-    pub(crate) memo:    FxHashMap<u64, MemoEntry>,
+    pub(crate) cursor:     Cursor<'tok>,
+    pub(crate) arena:      &'ast AstArena,
+    pub(crate) errors:     ErrorManager,
+    pub(crate) context:    ParseContext,
+    pub(crate) tier:       TierAnnotation,
+    pub(crate) memo:       FxHashMap<u64, MemoEntry>,
+    /// Dynamic estimates derived from total token count.
+    /// Use these instead of the static `cap::*` constants wherever possible.
+    pub(crate) estimates:  ParseEstimates,
 }
 
 impl<'ast, 'tok> Parser<'ast, 'tok> {
     pub fn new(arena: &'ast AstArena, tokens: &'tok [Token], source: String) -> Self {
+        let estimates = ParseEstimates::from_token_count(tokens.len());
         Parser {
-            cursor:  Cursor::new(tokens),
+            cursor:    Cursor::new(tokens),
             arena,
-            errors:  ErrorManager::new(source),
-            context: ParseContext::TopLevel,
-            tier:    TierAnnotation::High,
-            memo:    FxHashMap::default(),
+            errors:    ErrorManager::new(source),
+            context:   ParseContext::TopLevel,
+            tier:      TierAnnotation::High,
+            memo:      FxHashMap::default(),
+            estimates,
         }
     }
 
@@ -75,8 +81,6 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
 
 impl<'ast, 'tok> Parser<'ast, 'tok> {
 
-    // ── Error ─────────────────────────────────────────────────────────────────
-
     #[inline(always)]
     pub(crate) fn emit(&mut self, err: ParseError) {
         self.errors.add_parse_error(err);
@@ -88,8 +92,6 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
         self.emit(crate::error::unexpected(tok, what, self.context.clone()));
     }
 
-    // ── Context ───────────────────────────────────────────────────────────────
-
     #[inline(always)]
     pub(crate) fn enter(&mut self, ctx: ParseContext) -> ParseContext {
         std::mem::replace(&mut self.context, ctx)
@@ -100,8 +102,6 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
         self.context = ctx;
     }
 
-    // ── Tier ──────────────────────────────────────────────────────────────────
-
     #[inline(always)]
     pub(crate) fn enter_tier(&mut self, tier: TierAnnotation) -> TierAnnotation {
         std::mem::replace(&mut self.tier, tier)
@@ -111,8 +111,6 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
     pub(crate) fn leave_tier(&mut self, tier: TierAnnotation) {
         self.tier = tier;
     }
-
-    // ── Arena ─────────────────────────────────────────────────────────────────
 
     #[inline(always)]
     pub(crate) fn intern(&self, s: &str) -> &'ast str {
@@ -129,20 +127,16 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
         self.arena.alloc_slice_copy(v)
     }
 
-    /// Bump-backed Vec — no pre-allocation. Use `bump_vec_cap` when size is known.
     #[inline(always)]
     pub(crate) fn bump_vec<T>(&self) -> BumpVec<'ast, T> {
         self.arena.vec()
     }
 
-    /// Bump-backed Vec with pre-allocated capacity. Always prefer this.
-    /// The `'ast` lifetime means allocations survive past this call.
+    /// Pre-allocated bump Vec. Use `self.estimates.*` for `cap`.
     #[inline(always)]
     pub(crate) fn bump_vec_cap<T>(&self, cap: usize) -> BumpVec<'ast, T> {
         self.arena.vec_with_capacity(cap)
     }
-
-    // ── Token helpers ─────────────────────────────────────────────────────────
 
     #[inline(always)]
     pub(crate) fn peek(&self) -> &TokenType {
@@ -159,7 +153,6 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
         self.cursor.advance().span
     }
 
-    /// Try to consume an identifier; return `(interned_name, span)` or `None`.
     #[inline(always)]
     pub(crate) fn eat_ident(&mut self) -> Option<(&'ast str, Span)> {
         if let TokenType::Ident(name) = self.cursor.peek() {
@@ -172,7 +165,6 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
         }
     }
 
-    /// Consume an identifier or emit an error and return `None`.
     #[inline]
     pub(crate) fn expect_ident(&mut self) -> Option<(&'ast str, Span)> {
         if let Some(p) = self.eat_ident() { Some(p) } else {
@@ -181,21 +173,17 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
         }
     }
 
-    /// Eat an optional separator: `,` or `;`.
-    /// Commas and semicolons are both valid separators in Ubel list contexts.
-    /// Returns `true` if one was consumed.
+    /// Eat an optional comma or semicolon separator.
+    /// Commas and semicolons are interchangeable optional separators in Ubel.
     #[inline(always)]
     pub(crate) fn eat_sep(&mut self) -> bool {
         self.cursor.eat(&TokenType::Comma) || self.cursor.eat(&TokenType::Semicolon)
     }
 
-    /// Check if the current token is a separator without consuming it.
     #[inline(always)]
     pub(crate) fn is_sep(&self) -> bool {
         matches!(self.peek(), TokenType::Comma | TokenType::Semicolon)
     }
-
-    // ── Memoisation ───────────────────────────────────────────────────────────
 
     #[inline(always)]
     pub(crate) fn memo_get(&self, pos: usize, rule: MemoRule) -> Option<&MemoEntry> {
@@ -207,21 +195,17 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
         self.memo.insert(memo_key(pos, rule), entry);
     }
 
-    // ── Sync sets ─────────────────────────────────────────────────────────────
-
     pub(crate) const DECL_SYNC: &'static [TokenType] = &[
-        TokenType::Fn,     TokenType::Struct,  TokenType::Enum,
-        TokenType::Trait,  TokenType::Impl,    TokenType::Extend,
-        TokenType::Const,  TokenType::TypeKw,  TokenType::Pub,
-        TokenType::At,     TokenType::Edge,    TokenType::Eof,
+        TokenType::Fn,    TokenType::Struct, TokenType::Enum,
+        TokenType::Trait, TokenType::Impl,   TokenType::Extend,
+        TokenType::Const, TokenType::TypeKw, TokenType::Pub,
+        TokenType::At,    TokenType::Edge,   TokenType::Eof,
     ];
 
     pub(crate) const STMT_SYNC: &'static [TokenType] = &[
         TokenType::Semicolon, TokenType::RightBrace,
         TokenType::Fn,        TokenType::Eof,
     ];
-
-    // ── Recovery ──────────────────────────────────────────────────────────────
 
     #[cold]
     pub(crate) fn recover_to_decl(&mut self) {
@@ -233,9 +217,24 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
         self.cursor.skip_until_any(Self::STMT_SYNC);
         self.cursor.eat(&TokenType::Semicolon);
     }
+
+    /// Returns true if the current token can start an expression.
+    pub(crate) fn can_start_expr(&self) -> bool {
+        matches!(self.cursor.peek(),
+            TokenType::Ident(_)  | TokenType::IntLit(_)   | TokenType::FloatLit(_) |
+            TokenType::StringLit(_) | TokenType::True     | TokenType::False        |
+            TokenType::Null      | TokenType::SelfKw      | TokenType::Minus        |
+            TokenType::Bang      | TokenType::Not         | TokenType::Tilde        |
+            TokenType::Await     | TokenType::LeftParen   | TokenType::LeftBracket  |
+            TokenType::LeftBrace | TokenType::If          | TokenType::Match        |
+            TokenType::From      | TokenType::Unsafe      | TokenType::Async        |
+            TokenType::Fn       | TokenType::InterpolatedString(_) |
+            TokenType::VerbatimString(_) | TokenType::CharLit(_)
+        )
+    }
 }
 
-// ── Capacity constants ────────────────────────────────────────────────────────
+// ── Static capacity module (kept for backward compat in parse_attr.rs) ───────
 
 pub(crate) mod cap {
     pub const FN_PARAMS:      usize = 4;
@@ -252,4 +251,4 @@ pub(crate) mod cap {
     pub const ENUM_VARIANTS:  usize = 8;
     pub const LINQ_CLAUSES:   usize = 4;
     pub const PATH_SEGS:      usize = 3;
-    }
+}
