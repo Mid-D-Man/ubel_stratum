@@ -841,7 +841,12 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
 
         Some(TypeAlias { attributes: attrs, name, generic_params, ty, span })
     }
-
+/// Free function version — callable from parse_stmt.rs and parse_expr.rs.
+pub(crate) fn parse_type_annotation_opt<'ast, 'tok>(
+    p: &mut Parser<'ast, 'tok>,
+) -> Option<&'ast ubel_stratum::ast::types::Type<'ast>> {
+    if p.cursor.eat(&TokenType::Colon) { p.parse_type_expr() } else { None }
+}
     // ── Package + import (used by parse_program.rs) ───────────────────────────
 
     pub(crate) fn parse_package(&mut self) -> Option<PackageDecl<'ast>> {
