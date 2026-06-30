@@ -5,31 +5,31 @@ use std::fmt;
 
 #[derive(Debug, Clone)]
 pub enum ParseError {
-    /// Got a token we didn't expect at all
+    /// Got a token we didn't expect at all.
     UnexpectedToken {
         found:    TokenType,
-        expected: Vec<String>,   // human-readable, e.g. ["'fn'", "identifier"]
+        expected: Vec<String>,
         span:     Span,
-        context:  ParseContext,  // where in the grammar we were
+        context:  ParseContext,
     },
 
-    /// Hit EOF mid-parse
+    /// Hit EOF mid-parse.
     UnexpectedEof {
         expected: Vec<String>,
         span:     Span,
         context:  ParseContext,
     },
 
-    /// Opened a delimiter but never closed it
+    /// Opened a delimiter but never closed it.
     UnclosedDelimiter {
-        delimiter:  char,          // '(', '{', '['
+        delimiter:  char,
         opened_at:  Span,
-        closed_by:  Option<char>,  // what we found instead
+        closed_by:  Option<char>,
         span:       Span,
     },
 
-    /// A syntactically valid token that's illegal here
-    /// e.g. `await` in a @tier(low) function
+    /// A syntactically valid token that's illegal in this position.
+    /// e.g. `await` in a @tier(low) function, or `async` outside HIGH tier.
     IllegalInContext {
         what:       String,
         reason:     String,
@@ -37,57 +37,84 @@ pub enum ParseError {
         suggestion: Option<String>,
     },
 
-    /// lalrpop's raw error wrapped + enriched
-    /// We catch these at the boundary and convert to the variants above
-    /// This is the escape hatch for anything we haven't mapped yet
+    /// Catch-all for anything not yet mapped to a structured variant.
     Raw {
         message: String,
         span:    Span,
     },
 }
 
-/// Lets error messages say "while parsing function declaration" etc.
+/// Tells the user "while parsing ___" in diagnostics.
+/// Add a variant here whenever you add a new grammar sub-parser.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ParseContext {
+    // ── Top level ──────────────────────────────────────────────────
     TopLevel,
+    ImportDecl,
+
+    // ── Declarations ──────────────────────────────────────────────
     FunctionDecl,
+    FunctionParam,
+    ReturnType,
     StructDecl,
     EnumDecl,
     TraitDecl,
     ImplBlock,
     ExtendDecl,
-    FunctionParam,
-    ReturnType,
-    TypeExpr,
+    ConstDecl,
+    TypeAliasDecl,
+
+    // ── Attributes ────────────────────────────────────────────────
+    /// Parsing an `@name(args)` attribute — e.g. `@tier`, `@cfg`, `@core`.
+    AttributeDecl,
+    /// Parsing the argument list of a `@cfg(...)` attribute.
+    CfgAttribute,
+    /// Parsing a `@tier(high|mid|low)` annotation specifically.
+    TierAnnotation,
+
+    // ── Expressions ───────────────────────────────────────────────
     Expr,
+    /// Parsing a `from e in X where Y select Z` LINQ query expression.
+    LinqQuery,
+
+    // ── Statements ────────────────────────────────────────────────
     Statement,
     Block,
     MatchArm,
+    /// Parsing a `with arena(N) { }` memory block.
+    ArenaBlock,
+
+    // ── Types & patterns ──────────────────────────────────────────
+    TypeExpr,
     Pattern,
-    ImportDecl,
-    TierAnnotation,
 }
 
 impl ParseContext {
     pub fn as_str(&self) -> &'static str {
         match self {
             ParseContext::TopLevel        => "top-level declaration",
+            ParseContext::ImportDecl      => "import declaration",
             ParseContext::FunctionDecl    => "function declaration",
+            ParseContext::FunctionParam   => "function parameter",
+            ParseContext::ReturnType      => "return type",
             ParseContext::StructDecl      => "struct declaration",
             ParseContext::EnumDecl        => "enum declaration",
             ParseContext::TraitDecl       => "trait declaration",
             ParseContext::ImplBlock       => "impl block",
             ParseContext::ExtendDecl      => "extend declaration",
-            ParseContext::FunctionParam   => "function parameter",
-            ParseContext::ReturnType      => "return type",
-            ParseContext::TypeExpr        => "type expression",
+            ParseContext::ConstDecl       => "const declaration",
+            ParseContext::TypeAliasDecl   => "type alias declaration",
+            ParseContext::AttributeDecl   => "attribute",
+            ParseContext::CfgAttribute    => "@cfg attribute",
+            ParseContext::TierAnnotation  => "tier annotation",
             ParseContext::Expr            => "expression",
+            ParseContext::LinqQuery       => "LINQ query expression",
             ParseContext::Statement       => "statement",
             ParseContext::Block           => "block",
             ParseContext::MatchArm        => "match arm",
+            ParseContext::ArenaBlock      => "arena block",
+            ParseContext::TypeExpr        => "type expression",
             ParseContext::Pattern         => "pattern",
-            ParseContext::ImportDecl      => "import declaration",
-            ParseContext::TierAnnotation  => "tier annotation",
         }
     }
 }
@@ -108,28 +135,25 @@ impl ParseError {
             ParseError::UnexpectedToken { found, expected, context, .. } => {
                 let exp = expected.join(", ");
                 format!(
-                    "Unexpected token `{:?}` while parsing {}, expected: {}",
-                    found,
-                    context.as_str(),
-                    exp
+                    "unexpected `{:?}` while parsing {}, expected: {}",
+                    found, context.as_str(), exp
                 )
             }
             ParseError::UnexpectedEof { expected, context, .. } => {
                 let exp = expected.join(", ");
                 format!(
-                    "Unexpected end of file while parsing {}, expected: {}",
-                    context.as_str(),
-                    exp
+                    "unexpected end of file while parsing {}, expected: {}",
+                    context.as_str(), exp
                 )
             }
             ParseError::UnclosedDelimiter { delimiter, closed_by, .. } => {
                 match closed_by {
                     Some(c) => format!(
-                        "Unclosed `{}` — found `{}` instead of closing delimiter",
+                        "unclosed `{}` — found `{}` instead of closing delimiter",
                         delimiter, c
                     ),
                     None => format!(
-                        "Unclosed `{}` — reached end of file without closing",
+                        "unclosed `{}` — reached end of file without closing",
                         delimiter
                     ),
                 }
@@ -145,19 +169,16 @@ impl ParseError {
         match self {
             ParseError::UnexpectedToken { found, expected, .. } => {
                 if expected.len() == 1 {
-                    Some(format!("Try replacing `{:?}` with {}", found, expected[0]))
+                    Some(format!("try replacing `{:?}` with {}", found, expected[0]))
                 } else {
                     None
                 }
             }
             ParseError::UnclosedDelimiter { delimiter, .. } => {
                 let closing = match delimiter {
-                    '(' => ')',
-                    '{' => '}',
-                    '[' => ']',
-                    _   => *delimiter,
+                    '(' => ')', '{' => '}', '[' => ']', c => *c,
                 };
-                Some(format!("Add a closing `{}`", closing))
+                Some(format!("add a closing `{}`", closing))
             }
             ParseError::IllegalInContext { suggestion, .. } => suggestion.clone(),
             _ => None,
