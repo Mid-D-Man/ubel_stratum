@@ -9,9 +9,14 @@ repository  = "https://github.com/Mid-D-Man/ubel_stratum"
 
 [dependencies]
 ubel_stratum = { path = "../core" }
+# Non-crypto hash — 2-3x faster than SipHash for memo cache + internal maps
+rustc-hash   = "1.1"
+# memchr for fast byte scanning in any string re-parsing sub-parsers
+memchr       = "2"
+# once_cell for Lazy statics (already transitively present; make it explicit)
+once_cell    = "1"
+# phf for static string → kind dispatch tables (attribute names, cfg keys)
+phf          = { version = "0.11", features = ["macros"] }
 
 [dev-dependencies]
-# Use the same test fixtures as the LALRPOP parser
 ubel_stratum = { path = "../core" }
-
-# No build.rs, no lalrpop, no generated code.
