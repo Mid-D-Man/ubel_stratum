@@ -28,13 +28,10 @@ impl AstArena {
     /// Pre-allocate at least `capacity` bytes to avoid early re-allocations.
     /// A good starting value for a typical source file is 256 KB.
     pub fn with_capacity(capacity: usize) -> Self {
-        AstArena {
-            bump: Bump::with_capacity(capacity),
-        }
+        AstArena { bump: Bump::with_capacity(capacity) }
     }
 
-    /// Allocate a single value.  Returns a shared reference whose lifetime
-    /// is tied to `&self` (i.e. the arena).
+    /// Allocate a single value into the arena.
     #[inline]
     pub fn alloc<'ast, T>(&'ast self, val: T) -> &'ast T {
         self.bump.alloc(val)
@@ -47,7 +44,6 @@ impl AstArena {
     }
 
     /// Allocate a slice from an existing slice of `Copy` values.
-    /// Prefer `arena.vec()` / `.into_bump_slice()` for non-Copy items.
     #[inline]
     pub fn alloc_slice_copy<'ast, T: Copy>(&'ast self, vals: &[T]) -> &'ast [T] {
         self.bump.alloc_slice_copy(vals)
@@ -59,19 +55,19 @@ impl AstArena {
         self.bump.alloc_slice_clone(vals)
     }
 
-    /// Create a `Vec` whose backing storage lives in this arena.
-    /// Call `.into_bump_slice()` on the result to get `&'ast [T]`.
-    ///
-    /// This is the **primary way** to build lists during parsing:
-    /// ```
-    /// let mut params = arena.vec::<Param>();
-    /// params.push(p1);
-    /// params.push(p2);
-    /// let params: &[Param] = params.into_bump_slice();
-    /// ```
+    /// Create a `BumpVec` backed by this arena.
+    /// Call `.into_bump_slice()` to get `&'ast [T]` when done building.
     #[inline]
     pub fn vec<'ast, T>(&'ast self) -> BumpVec<'ast, T> {
         BumpVec::new_in(&self.bump)
+    }
+
+    /// Create a `BumpVec` with pre-allocated capacity.
+    /// Always prefer this over `vec()` when the approximate size is known.
+    /// Avoids mid-list reallocations — see PARSER_RULES.md §3.5.
+    #[inline]
+    pub fn vec_with_capacity<'ast, T>(&'ast self, cap: usize) -> BumpVec<'ast, T> {
+        BumpVec::with_capacity_in(cap, &self.bump)
     }
 
     /// Convenience: move a standard `Vec<T: Copy>` into an arena slice.
@@ -80,14 +76,12 @@ impl AstArena {
         self.bump.alloc_slice_copy(v.as_slice())
     }
 
-    /// Total bytes allocated (useful for benchmarks / diagnostics).
+    /// Total bytes allocated — useful for benchmarks / diagnostics.
     pub fn allocated_bytes(&self) -> usize {
         self.bump.allocated_bytes()
     }
 }
 
 impl Default for AstArena {
-    fn default() -> Self {
-        Self::new()
-    }
-      }
+    fn default() -> Self { Self::new() }
+}
