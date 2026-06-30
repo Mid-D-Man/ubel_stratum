@@ -1,6 +1,5 @@
 // src/ast/declarations.rs
-//! All declaration-level AST nodes:
-//! functions, structs, enums, traits, impls, extensions, constants, aliases.
+//! All declaration-level AST nodes.
 
 #![allow(dead_code)]
 
@@ -13,7 +12,6 @@ use crate::ast::types::Type;
 
 // ── Function parameters ───────────────────────────────────────────
 
-/// A parameter in a function or method signature.
 #[derive(Debug, Clone, Copy)]
 pub struct Param<'ast> {
     pub kind: ParamKind<'ast>,
@@ -22,72 +20,71 @@ pub struct Param<'ast> {
 
 #[derive(Debug, Clone, Copy)]
 pub enum ParamKind<'ast> {
-    /// `[mut] name [: Type] [= default]`
     Named {
         mutable: bool,
-        name: &'ast str,
-        ty: Option<&'ast Type<'ast>>,
+        name:    &'ast str,
+        ty:      Option<&'ast Type<'ast>>,
         default: Option<&'ast Expr<'ast>>,
     },
-    SelfVal,    // self
-    SelfMut,    // mut self
-    SelfRef,    // &self
-    SelfRefMut, // &mut self
+    SelfVal,
+    SelfMut,
+    SelfRef,
+    SelfRefMut,
 }
 
 // ── Return type ───────────────────────────────────────────────────
 
-/// The annotated return type of a function.
-///
-/// For async functions the `ty` field will be `TypeKind::Task(...)`.
-/// The `is_fallible` flag corresponds to the `!` suffix.
 #[derive(Debug, Clone, Copy)]
 pub struct ReturnType<'ast> {
-    pub ty: &'ast Type<'ast>,
-    /// `true` when the return type carries `!` (operation may fail).
+    pub ty:          &'ast Type<'ast>,
     pub is_fallible: bool,
 }
 
 // ── Function declaration ──────────────────────────────────────────
 
-/// A top-level or impl-block function.
-///
-/// `tier` defaults to `TierAnnotation::High` when no `@tier(...)` annotation
-/// is present — HIGH is the language default.
 #[derive(Debug, Clone, Copy)]
 pub struct FunctionDecl<'ast> {
-    /// Defaults to `TierAnnotation::High` when no `@tier(...)` is present.
-    pub tier: TierAnnotation,
-    pub attributes: &'ast [Attribute<'ast>],
-    pub visibility: Visibility,
-    pub is_async: bool,
-    pub name: &'ast str,
+    /// Attributes before the `fn` keyword: `@tier`, `@cfg`, `@system`, etc.
+    pub attributes:      &'ast [Attribute<'ast>],
+    /// Resolved from `@tier(...)` attribute; defaults to `High`.
+    pub tier:            TierAnnotation,
+    pub visibility:      Visibility,
+    pub is_async:        bool,
+    pub name:            &'ast str,
     pub lifetime_params: &'ast [LifetimeParam<'ast>],
-    pub generic_params: &'ast [GenericParam<'ast>],
-    pub params: &'ast [Param<'ast>],
-    pub return_type: Option<ReturnType<'ast>>,
-    pub body: Block<'ast>,
-    pub span: Span,
+    pub generic_params:  &'ast [GenericParam<'ast>],
+    pub params:          &'ast [Param<'ast>],
+    pub return_type:     Option<ReturnType<'ast>>,
+    pub body:            Block<'ast>,
+    pub span:            Span,
 }
 
 // ── Struct declaration ────────────────────────────────────────────
 
 /// A `struct` or `edge struct` declaration.
 ///
-/// `edge struct` marks a type that lives in LOW tier and uses
-/// manual / pointer-based memory layout.
+/// The `attributes` field carries ECS annotations (`@core`, `@tag`) and any
+/// other user-defined or compiler-built-in attributes appearing before the
+/// `struct` keyword.
+///
+/// `lifetime_params` supports `edge struct Foo [lifetime parse] { ... }` —
+/// necessary for arena-resident types that hold references into the same arena.
 #[derive(Debug, Clone, Copy)]
 pub struct StructDecl<'ast> {
-    pub visibility: Visibility,
-    /// `true` for `edge struct` — manual (LOW-tier) heap layout.
-    pub is_edge: bool,
-    pub name: &'ast str,
-    pub generic_params: &'ast [GenericParam<'ast>],
-    pub members: &'ast [StructMember<'ast>],
-    pub span: Span,
+    /// `@core`, `@tag`, `@cfg(...)`, `@doc(...)`, or user-defined attributes.
+    pub attributes:      &'ast [Attribute<'ast>],
+    pub visibility:      Visibility,
+    /// `true` for `edge struct` — manual / arena-resident heap layout.
+    pub is_edge:         bool,
+    pub name:            &'ast str,
+    /// Lifetime parameters: `edge struct Buf [lifetime arena] { ... }`.
+    /// Empty for structs that don't hold arena references.
+    pub lifetime_params: &'ast [LifetimeParam<'ast>],
+    pub generic_params:  &'ast [GenericParam<'ast>],
+    pub members:         &'ast [StructMember<'ast>],
+    pub span:            Span,
 }
 
-/// One member of a struct body.
 #[derive(Debug, Clone, Copy)]
 pub enum StructMember<'ast> {
     Field(FieldDecl<'ast>),
@@ -95,194 +92,142 @@ pub enum StructMember<'ast> {
     Property(PropertyDecl<'ast>),
 }
 
-/// A named field inside a struct: `pub name: Type`
 #[derive(Debug, Clone, Copy)]
 pub struct FieldDecl<'ast> {
     pub visibility: Visibility,
-    pub name: &'ast str,
-    pub ty: &'ast Type<'ast>,
-    pub span: Span,
+    pub name:       &'ast str,
+    pub ty:         &'ast Type<'ast>,
+    pub span:       Span,
 }
 
-/// A method declaration — appears inside structs, trait default impls,
-/// impl blocks, and extend declarations.
 #[derive(Debug, Clone, Copy)]
 pub struct MethodDecl<'ast> {
-    /// Inherits the enclosing struct/impl tier unless overridden.
-    pub tier: TierAnnotation,
-    pub attributes: &'ast [Attribute<'ast>],
-    pub visibility: Visibility,
-    pub is_async: bool,
-    pub name: &'ast str,
+    /// Attributes on this method (`@cfg`, `@inline`, `@cold`, etc.).
+    pub attributes:     &'ast [Attribute<'ast>],
+    /// Inherits the enclosing struct/impl tier unless overridden by `@tier`.
+    pub tier:           TierAnnotation,
+    pub visibility:     Visibility,
+    pub is_async:       bool,
+    pub name:           &'ast str,
     pub generic_params: &'ast [GenericParam<'ast>],
-    pub params: &'ast [Param<'ast>],
-    pub return_type: Option<ReturnType<'ast>>,
-    pub body: Block<'ast>,
-    pub span: Span,
+    pub params:         &'ast [Param<'ast>],
+    pub return_type:    Option<ReturnType<'ast>>,
+    pub body:           Block<'ast>,
+    pub span:           Span,
 }
 
-/// A computed property with a `get` accessor and optional `set` accessor.
-///
-/// ```strat
-/// pub score: int {
-///     get { return self.raw_score * self.multiplier }
-///     set { self.raw_score = value / self.multiplier }
-/// }
-/// ```
 #[derive(Debug, Clone, Copy)]
 pub struct PropertyDecl<'ast> {
     pub visibility: Visibility,
-    pub name: &'ast str,
-    pub ty: &'ast Type<'ast>,
-    pub getter: Block<'ast>,
-    /// `None` = read-only property.
-    pub setter: Option<Block<'ast>>,
-    pub span: Span,
+    pub name:       &'ast str,
+    pub ty:         &'ast Type<'ast>,
+    pub getter:     Block<'ast>,
+    pub setter:     Option<Block<'ast>>,
+    pub span:       Span,
 }
 
 // ── Enum declaration ──────────────────────────────────────────────
 
-/// An `enum` declaration.
-///
-/// Ubel enums support:
-///   - simple variants:            `Active`
-///   - discriminant variants:      `Active = 1`
-///   - tuple variants:             `Ok(T)`
-///   - struct variants:            `Err { code: int, message: string }`
 #[derive(Debug, Clone, Copy)]
 pub struct EnumDecl<'ast> {
-    pub visibility: Visibility,
-    pub name: &'ast str,
+    /// `@cfg(...)`, `@doc(...)`, or other pre-enum attributes.
+    pub attributes:     &'ast [Attribute<'ast>],
+    pub visibility:     Visibility,
+    pub name:           &'ast str,
     pub generic_params: &'ast [GenericParam<'ast>],
-    pub variants: &'ast [EnumVariant<'ast>],
-    pub span: Span,
+    pub variants:       &'ast [EnumVariant<'ast>],
+    pub span:           Span,
 }
 
-/// A single variant inside an enum body.
 #[derive(Debug, Clone, Copy)]
 pub struct EnumVariant<'ast> {
-    pub name: &'ast str,
+    pub name:    &'ast str,
     pub payload: EnumVariantPayload<'ast>,
-    pub span: Span,
+    pub span:    Span,
 }
 
-/// The data carried by an enum variant.
 #[derive(Debug, Clone, Copy)]
 pub enum EnumVariantPayload<'ast> {
-    /// `Active` — no data attached.
     None,
-    /// `Active = 1` — explicit integer discriminant, no additional data.
     Discriminant(&'ast Expr<'ast>),
-    /// `Ok(T)` — positional (tuple-style) fields.
     Tuple(&'ast [&'ast Type<'ast>]),
-    /// `Err { code: int, message: string }` — named fields.
     Struct(&'ast [FieldDecl<'ast>]),
 }
 
 // ── Trait declaration ─────────────────────────────────────────────
 
-/// A `trait` declaration.
-///
-/// Traits may contain:
-///   - required method signatures (no body)
-///   - default method implementations (with body)
-///   - associated type declarations
 #[derive(Debug, Clone, Copy)]
 pub struct TraitDecl<'ast> {
-    pub visibility: Visibility,
-    pub name: &'ast str,
+    /// `@cfg(...)`, `@doc(...)`, or other pre-trait attributes.
+    pub attributes:     &'ast [Attribute<'ast>],
+    pub visibility:     Visibility,
+    pub name:           &'ast str,
     pub generic_params: &'ast [GenericParam<'ast>],
-    pub items: &'ast [TraitItem<'ast>],
-    pub span: Span,
+    pub items:          &'ast [TraitItem<'ast>],
+    pub span:           Span,
 }
 
-/// An item inside a trait body.
 #[derive(Debug, Clone, Copy)]
 pub enum TraitItem<'ast> {
-    /// A required method — implementors must provide a body.
     MethodSig(MethodSig<'ast>),
-    /// A method with a default implementation — implementors may override.
     DefaultMethod(MethodDecl<'ast>),
-    /// An associated type: `type Output`
-    AssociatedType {
-        name: &'ast str,
-        span: Span,
-    },
+    AssociatedType { name: &'ast str, span: Span },
 }
 
-/// A method signature without a body — the required-method form inside traits.
 #[derive(Debug, Clone, Copy)]
 pub struct MethodSig<'ast> {
-    pub name: &'ast str,
+    pub name:           &'ast str,
     pub generic_params: &'ast [GenericParam<'ast>],
-    pub params: &'ast [Param<'ast>],
-    pub return_type: Option<ReturnType<'ast>>,
-    pub span: Span,
+    pub params:         &'ast [Param<'ast>],
+    pub return_type:    Option<ReturnType<'ast>>,
+    pub span:           Span,
 }
 
 // ── Impl block ────────────────────────────────────────────────────
 
-/// An `impl` block — either inherent (`impl Foo`) or trait (`impl Bar for Foo`).
-///
-/// ```strat
-/// impl Drawable for Circle {
-///     pub fn draw(self) { ... }
-/// }
-/// ```
 #[derive(Debug, Clone, Copy)]
 pub struct ImplBlock<'ast> {
-    /// `None`      = inherent impl: `impl Foo { ... }`
-    /// `Some(path)` = trait impl:   `impl Trait for Foo { ... }`
-    pub trait_path: Option<&'ast [&'ast str]>,
+    /// `@cfg(...)`, `@doc(...)` before the `impl` keyword.
+    pub attributes:  &'ast [Attribute<'ast>],
+    /// Tier applied to all methods in this block unless individually overridden.
+    /// `None` = methods default to `High` unless they carry `@tier` themselves.
+    pub tier:        Option<TierAnnotation>,
+    /// `None` = inherent impl; `Some` = trait impl (`impl Trait for Type`).
+    pub trait_path:  Option<&'ast [&'ast str]>,
     pub target_type: &'ast Type<'ast>,
-    pub methods: &'ast [MethodDecl<'ast>],
-    pub span: Span,
+    pub methods:     &'ast [MethodDecl<'ast>],
+    pub span:        Span,
 }
 
 // ── Extend declaration ────────────────────────────────────────────
 
-/// An `extend` declaration — adds methods to an existing type without
-/// modifying the type's original definition.
-///
-/// ```strat
-/// extend int {
-///     pub fn is_even(self) bool { return self % 2 == 0 }
-/// }
-/// ```
-///
-/// Extension methods follow the same tier rules as regular methods.
-/// You cannot add fields via `extend`.
 #[derive(Debug, Clone, Copy)]
 pub struct ExtendDecl<'ast> {
+    /// `@cfg(...)` and other pre-extend attributes.
+    pub attributes:  &'ast [Attribute<'ast>],
     pub target_type: &'ast Type<'ast>,
-    pub methods: &'ast [MethodDecl<'ast>],
-    pub span: Span,
+    pub methods:     &'ast [MethodDecl<'ast>],
+    pub span:        Span,
 }
 
 // ── Const and type alias ──────────────────────────────────────────
 
-/// A top-level constant: `const PI: double = 3.14159`
-///
-/// Constants are evaluated at compile time and are immutable.
-/// The type annotation is optional — the compiler infers from the value
-/// expression when omitted.
 #[derive(Debug, Clone, Copy)]
 pub struct ConstDecl<'ast> {
-    pub name: &'ast str,
-    /// `None` = let the compiler infer the type.
-    pub ty: Option<&'ast Type<'ast>>,
-    pub value: &'ast Expr<'ast>,
-    pub span: Span,
+    /// `@cfg(platform = "windows")` and similar compile-time guards.
+    pub attributes: &'ast [Attribute<'ast>],
+    pub name:       &'ast str,
+    pub ty:         Option<&'ast Type<'ast>>,
+    pub value:      &'ast Expr<'ast>,
+    pub span:       Span,
 }
 
-/// A type alias: `type Result<T> = Fallible<T, Error>`
-///
-/// Generic aliases are supported.  Ubel uses type aliases for
-/// common patterns like `type Handler = fn(Request) Task<Response>!`.
 #[derive(Debug, Clone, Copy)]
 pub struct TypeAlias<'ast> {
-    pub name: &'ast str,
+    /// `@doc(...)` and other pre-type-alias attributes.
+    pub attributes:     &'ast [Attribute<'ast>],
+    pub name:           &'ast str,
     pub generic_params: &'ast [GenericParam<'ast>],
-    pub ty: &'ast Type<'ast>,
-    pub span: Span,
-    }
+    pub ty:             &'ast Type<'ast>,
+    pub span:           Span,
+        }
