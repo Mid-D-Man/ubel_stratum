@@ -1,0 +1,934 @@
+// crates/rd_parser/src/parsers/parse_decl.rs
+//
+// Declaration parser: fn, struct, enum, trait, impl, extend, const, type alias.
+//
+// EBNF summary (see docs/ubel.ebnf for full spec):
+//   Item        ::= FunctionDecl | StructDecl | EnumDecl | TraitDecl |
+//                   ImplBlock | ExtendDecl | ConstDecl | TypeAlias
+//   FunctionDecl::= TierAttr? Attributes? "pub"? "async"? "fn" Ident
+//                   LifetimeParams? GenericParams? "(" ParamList? ")" ReturnSpec? Block
+//   StructDecl  ::= "pub"? "edge"? "struct" Ident LifetimeParams? GenericParams? "{" StructBody "}"
+//   ... (see EBNF for full rules)
+
+use ubel_stratum::{
+    ast::{
+        common::{Attribute, GenericParam, TierAnnotation, Visibility},
+        declarations::{
+            ConstDecl, EnumDecl, EnumVariant, EnumVariantPayload, ExtendDecl,
+            FieldDecl, FunctionDecl, ImplBlock, MethodDecl, MethodSig,
+            Param, ParamKind, PropertyDecl, ReturnType, StructDecl,
+            StructMember, TraitDecl, TraitItem, TypeAlias,
+        },
+        root::{Item, Import, ImportItems, ImportKind, PackageDecl},
+        statements::Block,
+        types::TypeKind,
+    },
+    error_management::error_types::ParseContext,
+    lexer::{Span, TokenType},
+};
+
+use crate::parser::{cap, Parser};
+use crate::parsers::parse_attr::extract_tier_from_attrs;
+
+impl<'ast, 'tok> Parser<'ast, 'tok> {
+
+    // ── Visibility ────────────────────────────────────────────────────────────
+
+    #[inline(always)]
+    pub(crate) fn parse_visibility(&mut self) -> Visibility {
+        if self.cursor.eat(&TokenType::Pub) { Visibility::Public }
+        else { Visibility::Private }
+    }
+
+    // ── Top-level item dispatcher ─────────────────────────────────────────────
+
+    /// Parse one top-level item. Attributes are parsed first, then the keyword.
+    pub(crate) fn parse_item(&mut self) -> Option<Item<'ast>> {
+        // Collect any @ attributes preceding the declaration
+        let (attrs, _) = if self.cursor.is_at(&TokenType::At) {
+            self.parse_attribute_list()
+        } else {
+            (&[][..], None)
+        };
+
+        let tier = extract_tier_from_attrs(attrs);
+        let vis  = self.parse_visibility();
+
+        let prev = self.enter(ParseContext::TopLevel);
+        let result = match self.cursor.peek().clone() {
+            TokenType::Async | TokenType::Fn =>
+                self.parse_fn_decl(attrs, tier, vis).map(Item::Function),
+            TokenType::Edge | TokenType::Struct =>
+                self.parse_struct_decl(attrs, vis).map(Item::Struct),
+            TokenType::Enum  =>
+                self.parse_enum_decl(attrs, vis).map(Item::Enum),
+            TokenType::Trait =>
+                self.parse_trait_decl(attrs, vis).map(Item::Trait),
+            TokenType::Impl  =>
+                self.parse_impl_block(attrs).map(Item::Impl),
+            TokenType::Extend =>
+                self.parse_extend_decl(attrs).map(Item::Extend),
+            TokenType::Const =>
+                self.parse_const_decl(attrs).map(Item::Const),
+            TokenType::TypeKw =>
+                self.parse_type_alias(attrs).map(Item::TypeAlias),
+            _ => {
+                self.expected(&[
+                    "'fn'", "'struct'", "'enum'", "'trait'",
+                    "'impl'", "'extend'", "'const'", "'type'",
+                ]);
+                self.recover_to_decl();
+                None
+            }
+        };
+        self.leave(prev);
+        result
+    }
+
+    // ── Function declaration ──────────────────────────────────────────────────
+
+    pub(crate) fn parse_fn_decl(
+        &mut self,
+        attrs: &'ast [Attribute<'ast>],
+        tier:  TierAnnotation,
+        vis:   Visibility,
+    ) -> Option<FunctionDecl<'ast>> {
+        let prev = self.enter(ParseContext::FunctionDecl);
+        let lo   = self.span();
+
+        let is_async = self.cursor.eat(&TokenType::Async);
+        if let Err(e) = self.cursor.expect(&TokenType::Fn) {
+            self.emit(crate::error::from_cursor(e, ParseContext::FunctionDecl));
+            self.leave(prev);
+            return None;
+        }
+
+        let (name, _) = self.expect_ident()?;
+
+        // [lifetime L, ...] then <T: Bound, ...>
+        let lifetime_params = self.parse_lifetime_params();
+        let generic_params  = self.parse_generic_params();
+
+        // Parameter list
+        let open_span = self.span();
+        if let Err(e) = self.cursor.expect(&TokenType::LeftParen) {
+            self.emit(crate::error::from_cursor(e, ParseContext::FunctionParam));
+            self.leave(prev);
+            return None;
+        }
+        let params = self.parse_param_list();
+        if !self.cursor.eat(&TokenType::RightParen) {
+            let at = self.span();
+            self.emit(crate::error::unclosed('(', open_span, None, at));
+        }
+
+        // Return type (optional)
+        let return_type = self.parse_return_spec();
+
+        // Body
+        let body = self.parse_block()?;
+
+        let span = lo.merge(&body.span);
+
+        // Warn if async is used outside HIGH tier
+        if is_async && tier != TierAnnotation::High {
+            self.emit(crate::error::illegal_here(
+                "async fn",
+                "async functions are only permitted in @tier(high) context",
+                lo,
+                Some("remove @tier(mid) / @tier(low), or remove 'async'"),
+            ));
+        }
+
+        let prev_tier = self.enter_tier(tier);
+        self.leave_tier(prev_tier);
+        self.leave(prev);
+
+        Some(FunctionDecl {
+            attributes: attrs,
+            tier,
+            visibility: vis,
+            is_async,
+            name,
+            lifetime_params,
+            generic_params,
+            params,
+            return_type,
+            body,
+            span,
+        })
+    }
+
+    // ── Parameter list ────────────────────────────────────────────────────────
+
+    fn parse_param_list(&mut self) -> &'ast [Param<'ast>] {
+        let mut params: Vec<Param<'ast>> = Vec::with_capacity(cap::FN_PARAMS);
+
+        while !self.cursor.is_at(&TokenType::RightParen) && !self.cursor.is_eof() {
+            let prev = self.enter(ParseContext::FunctionParam);
+            if let Some(p) = self.parse_param() {
+                params.push(p);
+            } else {
+                // Skip to next param or close
+                while !self.cursor.is_at(&TokenType::Comma)
+                    && !self.cursor.is_at(&TokenType::RightParen)
+                    && !self.cursor.is_eof()
+                {
+                    self.cursor.advance();
+                }
+            }
+            self.leave(prev);
+            self.eat_sep(); // optional comma or semicolon
+        }
+
+        self.arena.alloc_slice_clone(&params)
+    }
+
+    fn parse_param(&mut self) -> Option<Param<'ast>> {
+        let lo = self.span();
+        match self.cursor.peek().clone() {
+            // `self`, `mut self`, `&self`, `&mut self`
+            TokenType::SelfKw => {
+                self.cursor.advance();
+                Some(Param { kind: ParamKind::SelfVal, span: lo })
+            }
+            TokenType::Amp => {
+                self.cursor.advance();
+                let mutable = self.cursor.eat(&TokenType::Mut);
+                if let Err(e) = self.cursor.expect(&TokenType::SelfKw) {
+                    self.emit(crate::error::from_cursor(e, ParseContext::FunctionParam));
+                    return None;
+                }
+                let kind = if mutable { ParamKind::SelfRefMut } else { ParamKind::SelfRef };
+                Some(Param { kind, span: lo })
+            }
+            TokenType::Mut => {
+                self.cursor.advance();
+                if self.cursor.eat(&TokenType::SelfKw) {
+                    Some(Param { kind: ParamKind::SelfMut, span: lo })
+                } else {
+                    // `mut name: Type`
+                    let (name, _) = self.expect_ident()?;
+                    let ty = self.parse_type_annotation();
+                    let default = if self.cursor.eat(&TokenType::Equal) {
+                        self.parse_expr_or_none()
+                    } else { None };
+                    Some(Param {
+                        kind: ParamKind::Named { mutable: true, name, ty, default },
+                        span: lo,
+                    })
+                }
+            }
+            TokenType::Ident(_) => {
+                let (name, _) = self.eat_ident().unwrap();
+                let ty = self.parse_type_annotation();
+                let default = if self.cursor.eat(&TokenType::Equal) {
+                    self.parse_expr_or_none()
+                } else { None };
+                Some(Param {
+                    kind: ParamKind::Named { mutable: false, name, ty, default },
+                    span: lo,
+                })
+            }
+            _ => {
+                self.expected(&["parameter name", "'self'", "'&self'", "'mut'"]);
+                None
+            }
+        }
+    }
+
+    // ── Return type spec ──────────────────────────────────────────────────────
+
+    fn parse_return_spec(&mut self) -> Option<ReturnType<'ast>> {
+        let prev = self.enter(ParseContext::ReturnType);
+        let result = if self.is_type_start() {
+            let ty = self.parse_type_expr()?;
+            let is_fallible = self.cursor.eat(&TokenType::Bang);
+            Some(ReturnType { ty, is_fallible })
+        } else { None };
+        self.leave(prev);
+        result
+    }
+
+    // ── Type annotation helper ────────────────────────────────────────────────
+
+    pub(crate) fn parse_type_annotation(
+        &mut self,
+    ) -> Option<&'ast ubel_stratum::ast::types::Type<'ast>> {
+        if self.cursor.eat(&TokenType::Colon) {
+            self.parse_type_expr()
+        } else {
+            None
+        }
+    }
+
+    // ── Struct declaration ────────────────────────────────────────────────────
+
+    pub(crate) fn parse_struct_decl(
+        &mut self,
+        attrs: &'ast [Attribute<'ast>],
+        vis:   Visibility,
+    ) -> Option<StructDecl<'ast>> {
+        let prev = self.enter(ParseContext::StructDecl);
+        let lo   = self.span();
+
+        let is_edge = self.cursor.eat(&TokenType::Edge);
+        if let Err(e) = self.cursor.expect(&TokenType::Struct) {
+            self.emit(crate::error::from_cursor(e, ParseContext::StructDecl));
+            self.leave(prev);
+            return None;
+        }
+
+        let (name, _) = self.expect_ident()?;
+
+        // Lifetimes before generics: `[lifetime parse]`
+        let lifetime_params = self.parse_lifetime_params();
+        let generic_params  = self.parse_generic_params();
+
+        // Struct body
+        let open_span = self.span();
+        if let Err(e) = self.cursor.expect(&TokenType::LeftBrace) {
+            self.emit(crate::error::from_cursor(e, ParseContext::StructDecl));
+            self.leave(prev);
+            return None;
+        }
+
+        let members = self.parse_struct_body();
+
+        let close_span = self.span();
+        if !self.cursor.eat(&TokenType::RightBrace) {
+            self.emit(crate::error::unclosed('{', open_span, None, close_span));
+        }
+
+        let span = lo.merge(&close_span);
+        self.leave(prev);
+
+        Some(StructDecl {
+            attributes: attrs,
+            visibility: vis,
+            is_edge,
+            name,
+            lifetime_params,
+            generic_params,
+            members,
+            span,
+        })
+    }
+
+    fn parse_struct_body(&mut self) -> &'ast [StructMember<'ast>] {
+        let mut members: Vec<StructMember<'ast>> = Vec::with_capacity(cap::STRUCT_FIELDS);
+
+        while !self.cursor.is_at(&TokenType::RightBrace) && !self.cursor.is_eof() {
+            if let Some(m) = self.parse_struct_member() {
+                members.push(m);
+            } else {
+                self.recover_to_struct_member();
+            }
+            self.eat_sep(); // optional separator between members
+        }
+
+        self.arena.alloc_slice_clone(&members)
+    }
+
+    fn parse_struct_member(&mut self) -> Option<StructMember<'ast>> {
+        // Attributes (only valid on methods)
+        let (attrs, _) = if self.cursor.is_at(&TokenType::At) {
+            self.parse_attribute_list()
+        } else {
+            (&[][..], None)
+        };
+
+        let tier = extract_tier_from_attrs(attrs);
+        let vis  = self.parse_visibility();
+
+        match self.cursor.peek().clone() {
+            TokenType::Async | TokenType::Fn => {
+                self.parse_method_decl_inner(attrs, tier, vis)
+                    .map(StructMember::Method)
+            }
+            TokenType::Ident(_) => {
+                if !attrs.is_empty() {
+                    self.emit(crate::error::illegal_here(
+                        "attribute",
+                        "attributes are not valid on struct fields; only on methods",
+                        attrs[0].span,
+                        Some("move the attribute to a method declaration"),
+                    ));
+                }
+                self.parse_field_or_property(vis)
+            }
+            _ => {
+                self.expected(&["field name", "'fn'", "'async fn'"]);
+                None
+            }
+        }
+    }
+
+    fn parse_field_or_property(&mut self, vis: Visibility) -> Option<StructMember<'ast>> {
+        let lo = self.span();
+        let (name, _) = self.expect_ident()?;
+
+        // Type annotation: `name: Type`
+        let ty = self.parse_type_annotation()?;
+
+        // Is this a property? `name: Type { get { } set { } }`
+        if self.cursor.is_at(&TokenType::LeftBrace) {
+            let prop = self.parse_property_body(vis, name, ty, lo)?;
+            return Some(StructMember::Property(prop));
+        }
+
+        let span = lo.merge(&ty.span);
+        Some(StructMember::Field(FieldDecl { visibility: vis, name, ty, span }))
+    }
+
+    fn parse_property_body(
+        &mut self,
+        vis:  Visibility,
+        name: &'ast str,
+        ty:   &'ast ubel_stratum::ast::types::Type<'ast>,
+        lo:   Span,
+    ) -> Option<PropertyDecl<'ast>> {
+        let open_span = self.span();
+        self.cursor.advance(); // consume `{`
+
+        // `get { ... }`
+        let (kw, _) = self.eat_ident()?;
+        if kw != "get" {
+            self.emit(crate::error::raw("expected 'get' accessor", self.span()));
+            return None;
+        }
+        let getter = self.parse_block()?;
+
+        // Optional `set { ... }`
+        let setter = if let TokenType::Ident(ref s) = self.cursor.peek().clone() {
+            if s == "set" {
+                self.cursor.advance();
+                Some(self.parse_block()?)
+            } else { None }
+        } else { None };
+
+        let close_span = self.span();
+        if !self.cursor.eat(&TokenType::RightBrace) {
+            self.emit(crate::error::unclosed('{', open_span, None, close_span));
+        }
+
+        Some(PropertyDecl {
+            visibility: vis,
+            name,
+            ty,
+            getter,
+            setter,
+            span: lo.merge(&close_span),
+        })
+    }
+
+    #[cold]
+    fn recover_to_struct_member(&mut self) {
+        while !self.cursor.is_eof() {
+            match self.cursor.peek() {
+                TokenType::RightBrace | TokenType::Eof => break,
+                TokenType::Pub | TokenType::Fn | TokenType::Async | TokenType::At => break,
+                TokenType::Ident(_) => break,
+                _ => { self.cursor.advance(); }
+            }
+        }
+    }
+
+    // ── Method (shared between struct, impl, extend, trait) ───────────────────
+
+    pub(crate) fn parse_method_decl_inner(
+        &mut self,
+        attrs: &'ast [Attribute<'ast>],
+        tier:  TierAnnotation,
+        vis:   Visibility,
+    ) -> Option<MethodDecl<'ast>> {
+        let lo       = self.span();
+        let is_async = self.cursor.eat(&TokenType::Async);
+        if let Err(e) = self.cursor.expect(&TokenType::Fn) {
+            self.emit(crate::error::from_cursor(e, ParseContext::FunctionDecl));
+            return None;
+        }
+        let (name, _) = self.expect_ident()?;
+        let generic_params = self.parse_generic_params();
+
+        let open_span = self.span();
+        if let Err(e) = self.cursor.expect(&TokenType::LeftParen) {
+            self.emit(crate::error::from_cursor(e, ParseContext::FunctionParam));
+            return None;
+        }
+        let params = self.parse_param_list();
+        if !self.cursor.eat(&TokenType::RightParen) {
+            self.emit(crate::error::unclosed('(', open_span, None, self.span()));
+        }
+
+        let return_type = self.parse_return_spec();
+        let body        = self.parse_block()?;
+        let span        = lo.merge(&body.span);
+
+        Some(MethodDecl { attributes: attrs, tier, visibility: vis, is_async,
+                          name, generic_params, params, return_type, body, span })
+    }
+
+    // ── Enum declaration ──────────────────────────────────────────────────────
+
+    pub(crate) fn parse_enum_decl(
+        &mut self,
+        attrs: &'ast [Attribute<'ast>],
+        vis:   Visibility,
+    ) -> Option<EnumDecl<'ast>> {
+        let prev = self.enter(ParseContext::EnumDecl);
+        let lo   = self.span();
+
+        self.cursor.advance(); // consume `enum`
+        let (name, _) = self.expect_ident()?;
+        let generic_params = self.parse_generic_params();
+
+        let open_span = self.span();
+        if let Err(e) = self.cursor.expect(&TokenType::LeftBrace) {
+            self.emit(crate::error::from_cursor(e, ParseContext::EnumDecl));
+            self.leave(prev);
+            return None;
+        }
+
+        let mut variants: Vec<EnumVariant<'ast>> = Vec::with_capacity(cap::ENUM_VARIANTS);
+        while !self.cursor.is_at(&TokenType::RightBrace) && !self.cursor.is_eof() {
+            if let Some(v) = self.parse_enum_variant() {
+                variants.push(v);
+            }
+            self.eat_sep();
+        }
+
+        let close_span = self.span();
+        if !self.cursor.eat(&TokenType::RightBrace) {
+            self.emit(crate::error::unclosed('{', open_span, None, close_span));
+        }
+
+        let span = lo.merge(&close_span);
+        self.leave(prev);
+
+        Some(EnumDecl {
+            attributes: attrs,
+            visibility: vis,
+            name,
+            generic_params,
+            variants: self.arena.alloc_slice_clone(&variants),
+            span,
+        })
+    }
+
+    fn parse_enum_variant(&mut self) -> Option<EnumVariant<'ast>> {
+        let lo = self.span();
+        let (name, _) = self.expect_ident()?;
+
+        let payload = match self.cursor.peek().clone() {
+            // Tuple variant: `Ok(T, U)`
+            TokenType::LeftParen => {
+                self.cursor.advance();
+                let mut types = Vec::with_capacity(2);
+                while !self.cursor.is_at(&TokenType::RightParen) && !self.cursor.is_eof() {
+                    if let Some(t) = self.parse_type_expr() { types.push(t); }
+                    self.eat_sep();
+                }
+                self.cursor.eat(&TokenType::RightParen);
+                let tys: Vec<&'ast ubel_stratum::ast::types::Type<'ast>> = types;
+                let slice = self.arena.alloc_slice_clone(&tys);
+                EnumVariantPayload::Tuple(slice)
+            }
+            // Struct variant: `Err { code: int }`
+            TokenType::LeftBrace => {
+                self.cursor.advance();
+                let mut fields: Vec<FieldDecl<'ast>> = Vec::with_capacity(4);
+                while !self.cursor.is_at(&TokenType::RightBrace) && !self.cursor.is_eof() {
+                    if let Some(f) = self.parse_enum_field() { fields.push(f); }
+                    self.eat_sep();
+                }
+                self.cursor.eat(&TokenType::RightBrace);
+                EnumVariantPayload::Struct(self.arena.alloc_slice_clone(&fields))
+            }
+            // Discriminant: `Active = 1`
+            TokenType::Equal => {
+                self.cursor.advance();
+                if let Some(e) = self.parse_expr_or_none() {
+                    EnumVariantPayload::Discriminant(e)
+                } else {
+                    EnumVariantPayload::None
+                }
+            }
+            _ => EnumVariantPayload::None,
+        };
+
+        Some(EnumVariant { name, payload, span: lo.merge(&self.span()) })
+    }
+
+    fn parse_enum_field(&mut self) -> Option<FieldDecl<'ast>> {
+        let lo  = self.span();
+        let vis = self.parse_visibility();
+        let (name, _) = self.expect_ident()?;
+        let ty = self.parse_type_annotation()?;
+        Some(FieldDecl { visibility: vis, name, ty, span: lo.merge(&ty.span) })
+    }
+
+    // ── Trait declaration ─────────────────────────────────────────────────────
+
+    pub(crate) fn parse_trait_decl(
+        &mut self,
+        attrs: &'ast [Attribute<'ast>],
+        vis:   Visibility,
+    ) -> Option<TraitDecl<'ast>> {
+        let prev = self.enter(ParseContext::TraitDecl);
+        let lo   = self.span();
+
+        self.cursor.advance(); // consume `trait`
+        let (name, _) = self.expect_ident()?;
+        let generic_params = self.parse_generic_params();
+
+        // Body is optional per EBNF: `("{ TraitItem* "}")?`
+        let items: &'ast [TraitItem<'ast>] = if self.cursor.is_at(&TokenType::LeftBrace) {
+            let open_span = self.span();
+            self.cursor.advance();
+            let mut items: Vec<TraitItem<'ast>> = Vec::with_capacity(cap::TRAIT_ITEMS);
+
+            while !self.cursor.is_at(&TokenType::RightBrace) && !self.cursor.is_eof() {
+                if let Some(item) = self.parse_trait_item() { items.push(item); }
+                self.eat_sep();
+            }
+
+            if !self.cursor.eat(&TokenType::RightBrace) {
+                self.emit(crate::error::unclosed('{', open_span, None, self.span()));
+            }
+            self.arena.alloc_slice_clone(&items)
+        } else { &[] };
+
+        let span = lo.merge(&self.span());
+        self.leave(prev);
+
+        Some(TraitDecl { attributes: attrs, visibility: vis, name, generic_params, items, span })
+    }
+
+    fn parse_trait_item(&mut self) -> Option<TraitItem<'ast>> {
+        let (attrs, _) = if self.cursor.is_at(&TokenType::At) {
+            self.parse_attribute_list()
+        } else {
+            (&[][..], None)
+        };
+
+        // Associated type: `type Output`
+        if self.cursor.eat(&TokenType::TypeKw) {
+            let (name, span) = self.expect_ident()?;
+            return Some(TraitItem::AssociatedType { name, span });
+        }
+
+        // Method signature or default method
+        let is_async = self.cursor.eat(&TokenType::Async);
+        if let Err(e) = self.cursor.expect(&TokenType::Fn) {
+            self.emit(crate::error::from_cursor(e, ParseContext::TraitDecl));
+            return None;
+        }
+        let (name, _) = self.expect_ident()?;
+        let generic_params = self.parse_generic_params();
+
+        let open_span = self.span();
+        if let Err(e) = self.cursor.expect(&TokenType::LeftParen) {
+            self.emit(crate::error::from_cursor(e, ParseContext::FunctionParam));
+            return None;
+        }
+        let params = self.parse_param_list();
+        if !self.cursor.eat(&TokenType::RightParen) {
+            self.emit(crate::error::unclosed('(', open_span, None, self.span()));
+        }
+        let return_type = self.parse_return_spec();
+
+        // Has body → default method
+        if self.cursor.is_at(&TokenType::LeftBrace) {
+            let body = self.parse_block()?;
+            let span = body.span;
+            return Some(TraitItem::DefaultMethod(MethodDecl {
+                attributes: attrs,
+                tier: TierAnnotation::High,
+                visibility: Visibility::Public,
+                is_async,
+                name, generic_params, params, return_type, body, span,
+            }));
+        }
+
+        // No body → required method signature
+        Some(TraitItem::MethodSig(MethodSig {
+            name, generic_params, params, return_type,
+            span: self.span(),
+        }))
+    }
+
+    // ── Impl block ────────────────────────────────────────────────────────────
+
+    pub(crate) fn parse_impl_block(
+        &mut self,
+        attrs: &'ast [Attribute<'ast>],
+    ) -> Option<ImplBlock<'ast>> {
+        let prev = self.enter(ParseContext::ImplBlock);
+        let lo   = self.span();
+
+        self.cursor.advance(); // consume `impl`
+
+        // Block-level tier: `@tier(low) impl Foo { ... }` — all methods inherit
+        let tier = extract_tier_from_attrs(attrs);
+
+        // Check for trait impl: `impl TraitName for Type` vs `impl Type`
+        // Heuristic: if we see `Ident` followed by `for`, it's a trait impl.
+        let trait_path: Option<&'ast [&'ast str]> = {
+            let pos = self.cursor.position();
+            // Speculatively collect a path
+            let mut segs: Vec<&'ast str> = Vec::with_capacity(cap::PATH_SEGS);
+
+            while let Some((seg, _)) = self.eat_ident() {
+                segs.push(seg);
+                if !self.cursor.eat(&TokenType::Dot) { break; }
+            }
+            // Also consume generic args if any (trait can be generic: impl Foo<T> for Bar)
+            let _ = self.try_parse_generic_args();
+
+            if self.cursor.eat(&TokenType::For) {
+                // Confirmed trait impl
+                let path = self.arena.alloc_slice_clone(&segs);
+                Some(path)
+            } else {
+                // Wasn't a trait impl — restore and re-parse as the target type
+                self.cursor.restore(pos);
+                None
+            }
+        };
+
+        // Parse the target type
+        let target_type = self.parse_type_expr()?;
+
+        let open_span = self.span();
+        if let Err(e) = self.cursor.expect(&TokenType::LeftBrace) {
+            self.emit(crate::error::from_cursor(e, ParseContext::ImplBlock));
+            self.leave(prev);
+            return None;
+        }
+
+        let mut methods: Vec<MethodDecl<'ast>> = Vec::with_capacity(cap::IMPL_ITEMS);
+        while !self.cursor.is_at(&TokenType::RightBrace) && !self.cursor.is_eof() {
+            let (m_attrs, _) = if self.cursor.is_at(&TokenType::At) {
+                self.parse_attribute_list()
+            } else {
+                (&[][..], None)
+            };
+            let m_tier = if m_attrs.is_empty() { tier }
+                         else { extract_tier_from_attrs(m_attrs) };
+            let m_vis = self.parse_visibility();
+            if let Some(m) = self.parse_method_decl_inner(m_attrs, m_tier, m_vis) {
+                methods.push(m);
+            } else {
+                self.recover_to_decl();
+            }
+            self.eat_sep();
+        }
+
+        let close_span = self.span();
+        if !self.cursor.eat(&TokenType::RightBrace) {
+            self.emit(crate::error::unclosed('{', open_span, None, close_span));
+        }
+
+        let span = lo.merge(&close_span);
+        self.leave(prev);
+
+        Some(ImplBlock {
+            attributes: attrs,
+            tier: if tier == TierAnnotation::High { None } else { Some(tier) },
+            trait_path,
+            target_type,
+            methods: self.arena.alloc_slice_clone(&methods),
+            span,
+        })
+    }
+
+    // ── Extend declaration ────────────────────────────────────────────────────
+
+    pub(crate) fn parse_extend_decl(
+        &mut self,
+        attrs: &'ast [Attribute<'ast>],
+    ) -> Option<ExtendDecl<'ast>> {
+        let prev = self.enter(ParseContext::ExtendDecl);
+        let lo   = self.span();
+
+        self.cursor.advance(); // consume `extend`
+        let target_type = self.parse_type_expr()?;
+
+        // Body is optional per EBNF: `("{" ExtendItem* "}")?`
+        let methods: &'ast [MethodDecl<'ast>] = if self.cursor.is_at(&TokenType::LeftBrace) {
+            let open_span = self.span();
+            self.cursor.advance();
+            let mut ms: Vec<MethodDecl<'ast>> = Vec::with_capacity(cap::IMPL_ITEMS);
+
+            while !self.cursor.is_at(&TokenType::RightBrace) && !self.cursor.is_eof() {
+                let (m_attrs, _) = if self.cursor.is_at(&TokenType::At) {
+                    self.parse_attribute_list()
+                } else {
+                    (&[][..], None)
+                };
+                let m_tier = extract_tier_from_attrs(m_attrs);
+                let m_vis  = self.parse_visibility();
+                if let Some(m) = self.parse_method_decl_inner(m_attrs, m_tier, m_vis) {
+                    ms.push(m);
+                } else {
+                    self.recover_to_decl();
+                }
+                self.eat_sep();
+            }
+
+            if !self.cursor.eat(&TokenType::RightBrace) {
+                self.emit(crate::error::unclosed('{', open_span, None, self.span()));
+            }
+            self.arena.alloc_slice_clone(&ms)
+        } else { &[] };
+
+        let span = lo.merge(&self.span());
+        self.leave(prev);
+        Some(ExtendDecl { attributes: attrs, target_type, methods, span })
+    }
+
+    // ── Const declaration ─────────────────────────────────────────────────────
+
+    pub(crate) fn parse_const_decl(
+        &mut self,
+        attrs: &'ast [Attribute<'ast>],
+    ) -> Option<ConstDecl<'ast>> {
+        let prev = self.enter(ParseContext::ConstDecl);
+        let lo   = self.span();
+
+        self.cursor.advance(); // consume `const`
+        let (name, _) = self.expect_ident()?;
+        let ty = self.parse_type_annotation();
+
+        if let Err(e) = self.cursor.expect(&TokenType::Equal) {
+            self.emit(crate::error::from_cursor(e, ParseContext::ConstDecl));
+            self.leave(prev);
+            return None;
+        }
+
+        let value = self.parse_expr_or_none()?;
+        let span  = lo.merge(&value.span);
+        self.eat_sep();
+        self.leave(prev);
+
+        Some(ConstDecl { attributes: attrs, name, ty, value, span })
+    }
+
+    // ── Type alias ────────────────────────────────────────────────────────────
+
+    pub(crate) fn parse_type_alias(
+        &mut self,
+        attrs: &'ast [Attribute<'ast>],
+    ) -> Option<TypeAlias<'ast>> {
+        let prev = self.enter(ParseContext::TypeAliasDecl);
+        let lo   = self.span();
+
+        self.cursor.advance(); // consume `type`
+        let (name, _) = self.expect_ident()?;
+        let generic_params = self.parse_generic_params();
+
+        if let Err(e) = self.cursor.expect(&TokenType::Equal) {
+            self.emit(crate::error::from_cursor(e, ParseContext::TypeAliasDecl));
+            self.leave(prev);
+            return None;
+        }
+
+        let ty   = self.parse_type_expr()?;
+        let span = lo.merge(&ty.span);
+        self.eat_sep();
+        self.leave(prev);
+
+        Some(TypeAlias { attributes: attrs, name, generic_params, ty, span })
+    }
+
+    // ── Package + import (used by parse_program.rs) ───────────────────────────
+
+    pub(crate) fn parse_package(&mut self) -> Option<PackageDecl<'ast>> {
+        let lo = self.span();
+        self.cursor.advance(); // consume `package`
+        let (path, span) = self.parse_qualified_path()?;
+        self.eat_sep();
+        Some(PackageDecl { path, span: lo.merge(&span) })
+    }
+
+    pub(crate) fn parse_import(&mut self) -> Option<Import<'ast>> {
+        let prev = self.enter(ParseContext::ImportDecl);
+        let lo   = self.span();
+
+        let kind = match self.cursor.peek().clone() {
+            // `summon path.to.Thing`
+            TokenType::Summon => {
+                self.cursor.advance();
+                let (path, _) = self.parse_qualified_path()?;
+                let alias = if self.cursor.eat(&TokenType::As) {
+                    self.eat_ident().map(|(n, _)| n)
+                } else { None };
+                ImportKind::Summon { path, alias }
+            }
+            // `from path.to summon [A, B]` or `from path.to summon A`
+            TokenType::From => {
+                self.cursor.advance();
+                let (module_path, _) = self.parse_qualified_path()?;
+                if let Err(e) = self.cursor.expect(&TokenType::Summon) {
+                    self.emit(crate::error::from_cursor(e, ParseContext::ImportDecl));
+                    self.leave(prev);
+                    return None;
+                }
+                let items = if self.cursor.eat(&TokenType::LeftBracket) {
+                    let mut names: Vec<&'ast str> = Vec::with_capacity(cap::IMPORT_LIST);
+                    while !self.cursor.is_at(&TokenType::RightBracket) && !self.cursor.is_eof() {
+                        if let Some((n, _)) = self.eat_ident() { names.push(n); }
+                        self.eat_sep();
+                    }
+                    self.cursor.eat(&TokenType::RightBracket);
+                    ImportItems::List(self.arena.alloc_slice_clone(&names))
+                } else {
+                    let (name, _) = self.expect_ident()?;
+                    ImportItems::Single(name)
+                };
+                ImportKind::FromSummon { module_path, items }
+            }
+            _ => {
+                self.expected(&["'summon'", "'from'"]);
+                self.leave(prev);
+                return None;
+            }
+        };
+
+        let span = lo.merge(&self.span());
+        self.eat_sep();
+        self.leave(prev);
+        Some(Import { kind, span })
+    }
+
+    // ── Qualified path helper ─────────────────────────────────────────────────
+
+    pub(crate) fn parse_qualified_path(&mut self) -> Option<(&'ast [&'ast str], Span)> {
+        let lo = self.span();
+        let mut segs: Vec<&'ast str> = Vec::with_capacity(cap::PATH_SEGS);
+        let (first, _) = self.expect_ident()?;
+        segs.push(first);
+        while self.cursor.eat(&TokenType::Dot) {
+            if let Some((seg, _)) = self.eat_ident() {
+                segs.push(seg);
+            } else {
+                self.expected(&["identifier after '.'"]);
+                break;
+            }
+        }
+        let hi   = self.span();
+        let path = self.arena.alloc_slice_clone(&segs);
+        Some((path, lo.merge(&hi)))
+    }
+
+    // ── Expression stub (implemented in parse_expr.rs) ────────────────────────
+
+    /// Thin wrapper — calls into parse_expr.rs.
+    /// Returns None and emits an error if the expression fails.
+    pub(crate) fn parse_expr_or_none(
+        &mut self,
+    ) -> Option<&'ast ubel_stratum::ast::expressions::Expr<'ast>> {
+        crate::parsers::parse_expr::parse_expr(self)
+    }
+          }
