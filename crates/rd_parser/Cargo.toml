@@ -1,0 +1,17 @@
+[package]
+name        = "ubel_stratum_rd"
+version     = "0.1.0"
+edition     = "2021"
+authors     = ["Mid-D-Man"]
+license     = "MIT OR Apache-2.0"
+description = "Recursive-descent parser for Ubel Stratum — no code-generation step required"
+repository  = "https://github.com/Mid-D-Man/ubel_stratum"
+
+[dependencies]
+ubel_stratum = { path = "../core" }
+
+[dev-dependencies]
+# Use the same test fixtures as the LALRPOP parser
+ubel_stratum = { path = "../core" }
+
+# No build.rs, no lalrpop, no generated code.
