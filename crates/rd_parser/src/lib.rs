@@ -1,7 +1,7 @@
 // crates/rd_parser/src/lib.rs
 //! Recursive-descent parser for Ubel Stratum.
 //!
-//! Produces the same `ubel_stratum::ast` types as the LALRPOP parser in
+//! Produces the same [`ubel_stratum::ast`] types as the LALRPOP parser in
 //! `crates/parser`, but requires no code-generation step and compiles as fast
 //! as any ordinary Rust crate.
 //!
@@ -12,40 +12,29 @@
 //! use ubel_stratum::ast::arena::AstArena;
 //! use ubel_stratum::lexer::tokenize;
 //!
+//! let src    = r#"fn main() { println("hi") }"#;
 //! let arena  = AstArena::new();
-//! let tokens = tokenize(source).unwrap();
-//! let program = parse(&arena, &tokens, source.to_string()).unwrap();
+//! let tokens = tokenize(src).unwrap();
+//! let program = parse(&arena, &tokens, src.to_string()).unwrap();
 //! ```
 //!
-//! # Module layout
+//! # Crate layout
 //!
-//! | Module           | Contents                                              |
-//! |------------------|-------------------------------------------------------|
-//! | `cursor`         | `Cursor` — peek / advance / expect over a token slice |
-//! | `error`          | Error constructor helpers → `ParseError`              |
-//! | `parser`         | `Parser<'ast,'tok>` struct + entry points             |
-//! | `parse_attr`     | `@tier`, `@cfg`, `@core`, `@tag`, custom attributes   |
-//! | `parse_type`     | Type expression parsing                               |
-//! | `parse_pattern`  | Destructure pattern parsing                           |
-//! | `parse_expr`     | Expression parsing (Pratt precedence climbing)        |
-//! | `parse_stmt`     | Statement + block parsing                             |
-//! | `parse_decl`     | fn / struct / enum / trait / impl / extend / const    |
-//! | `parse_program`  | Package declaration, imports, top-level item list     |
+//! | Module / File        | Contents                                           |
+//! |----------------------|----------------------------------------------------|
+//! | `cursor`             | `Cursor<'tok>` — zero-copy token stream view       |
+//! | `error`              | Error constructor helpers → `core::ParseError`     |
+//! | `parser`             | `Parser<'ast,'tok>` struct + shared hot helpers    |
+//! | `parsers/`           | `impl Parser` blocks, one file per grammar category|
 
 pub mod cursor;
 pub mod error;
 
-mod parser;
+pub(crate) mod parser;
 
-// Each module adds `impl Parser { ... }` methods for its grammar category.
-// Declared `pub(crate)` — not exposed publicly; callers go through `parse()`.
-pub(crate) mod parse_attr;
-pub(crate) mod parse_type;
-pub(crate) mod parse_pattern;
-pub(crate) mod parse_expr;
-pub(crate) mod parse_stmt;
-pub(crate) mod parse_decl;
-pub(crate) mod parse_program;
+/// All grammar-category parse modules live under this sub-module.
+/// Each file adds `impl Parser<'ast, 'tok> { ... }` for its category.
+pub(crate) mod parsers;
 
 pub use parser::Parser;
 
@@ -57,13 +46,14 @@ use ubel_stratum::{
 
 // ── Public entry points ───────────────────────────────────────────────────────
 
-/// Parse a full `.strat` source file into a `Program<'ast>`.
+/// Parse a complete `.strat` source file into a `Program<'ast>`.
 ///
-/// `tokens` must end with a `TokenType::Eof` token; `ubel_stratum::lexer::tokenize`
+/// `tokens` must end with `TokenType::Eof`; `ubel_stratum::lexer::tokenize`
 /// guarantees this.
 ///
-/// Returns `Ok(program)` if parsing succeeded without errors, or
-/// `Err(errors)` containing every diagnostic collected during parsing.
+/// Returns `Ok(program)` on success or `Err(diagnostics)` on failure.
+/// The parser is error-recovering — it always attempts to continue past the
+/// first error, so `Err` may contain multiple diagnostics.
 pub fn parse<'ast>(
     arena:  &'ast AstArena,
     tokens: &[Token],
@@ -72,10 +62,11 @@ pub fn parse<'ast>(
     Parser::new(arena, tokens, source).parse_program()
 }
 
-/// Parse a single expression from a raw source string.
+/// Parse a single expression from raw source text.
 ///
-/// Used by the interpreter to evaluate interpolated-string segments.
-/// Returns `None` if the source is empty, invalid, or contains only errors.
+/// Lexes `source` internally. Used by the interpreter to evaluate
+/// interpolated-string segments without a full file parse.
+/// Returns `None` if the source is empty, invalid, or produces only errors.
 pub fn parse_expr_str<'ast>(
     arena:  &'ast AstArena,
     source: &str,
