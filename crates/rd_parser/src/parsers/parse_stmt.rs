@@ -1,473 +1,457 @@
 // crates/rd_parser/src/parsers/parse_stmt.rs
 //
-// Statement and block parser.
-// Full statement implementations come next batch; parse_block is needed now
-// so parse_decl.rs can compile and be tested end-to-end.
-//
-// Grammar:
-//   Block     ::= "{" Statement* "}"
-//   Statement ::= LetStmt | AssignStmt | ReturnStmt | IfStmt | MatchStmt |
-//                 ForStmt | WhileStmt | LoopStmt | BreakStmt | ContinueStmt |
-//                 WithStmt | UsingStmt | ExtractStmt | DeferStmt | TryBlock |
-//                 UnsafeBlock | ExprStmt
+// Fixed to match the actual statements.rs AST types:
+//   StmtKind::Let { mutable, binding: BindingTarget, ty, value }
+//   StmtKind::If(&'ast IfExpr)  — pointer, not inline
+//   StmtKind::For { binding, iter, body: &'ast Block }  — body is pointer
+//   StmtKind::With { allocator: AllocatorKind, body: &'ast Block }
+//   StmtKind::Try { body, catch_binding, catch_body }
+//   SizeUnit::Bytes / KB / MB / GB  (not B)
 
 use ubel_stratum::{
-    ast::statements::{Block, Stmt, StmtKind},
+    ast::{
+        common::AssignOp,
+        expressions::{ElifBranch, IfExpr, MatchArm, MatchArmBody},
+        statements::{
+            AllocatorKind, BindingTarget, Block, SizeExpr, SizeUnit,
+            Stmt, StmtKind, UsingBinding,
+        },
+        patterns::DestructurePattern,
+    },
     error_management::error_types::ParseContext,
-    lexer::{Span, TokenType},
+    lexer::TokenType,
 };
 
-use crate::parser::{cap, Parser};
+use crate::parser::Parser;
+use crate::parsers::parse_expr;
 
 impl<'ast, 'tok> Parser<'ast, 'tok> {
 
-    // ── Block ─────────────────────────────────────────────────────────────────
+    // ── Block (public — called from parse_decl) ───────────────────────────────
 
-    /// Parse `{ Statement* }`. Called from every declaration parser.
     pub(crate) fn parse_block(&mut self) -> Option<Block<'ast>> {
-        let prev = self.enter(ParseContext::Block);
-        let lo   = self.span();
+        parse_block_inner(self)
+    }
+}
 
-        let open_span = lo;
-        if let Err(e) = self.cursor.expect(&TokenType::LeftBrace) {
-            self.emit(crate::error::from_cursor(e, ParseContext::Block));
-            self.leave(prev);
-            return None;
-        }
+/// Free function so parse_expr.rs can call it without going through `impl Parser`.
+pub(crate) fn parse_block_inner<'ast, 'tok>(
+    p: &mut Parser<'ast, 'tok>,
+) -> Option<Block<'ast>> {
+    let prev = p.enter(ParseContext::Block);
+    let lo   = p.span();
 
-        let mut stmts: Vec<Stmt<'ast>> = Vec::with_capacity(cap::BLOCK_STMTS);
-
-        while !self.cursor.is_at(&TokenType::RightBrace) && !self.cursor.is_eof() {
-            // Eat stray separators between statements (optional semicolons)
-            while self.cursor.eat(&TokenType::Semicolon) {}
-
-            if self.cursor.is_at(&TokenType::RightBrace) { break; }
-
-            if let Some(stmt) = self.parse_stmt() {
-                stmts.push(stmt);
-            } else {
-                self.recover_to_stmt();
-            }
-        }
-
-        let close_span = self.span();
-        if !self.cursor.eat(&TokenType::RightBrace) {
-            self.emit(crate::error::unclosed('{', open_span, None, close_span));
-        }
-
-        self.leave(prev);
-        let span  = lo.merge(&close_span);
-        let stmts = self.arena.alloc_slice_clone(&stmts);
-        Some(Block { stmts, span })
+    let open_span = lo;
+    if let Err(e) = p.cursor.expect(&TokenType::LeftBrace) {
+        p.emit(crate::error::from_cursor(e, ParseContext::Block));
+        p.leave(prev);
+        return None;
     }
 
-    // ── Statement dispatcher ──────────────────────────────────────────────────
+    let mut stmts: Vec<Stmt<'ast>> = Vec::with_capacity(p.estimates.block_stmts);
 
-    pub(crate) fn parse_stmt(&mut self) -> Option<Stmt<'ast>> {
-        let lo = self.span();
-        let prev = self.enter(ParseContext::Statement);
+    while !p.cursor.is_at(&TokenType::RightBrace) && !p.cursor.is_eof() {
+        while p.cursor.eat(&TokenType::Semicolon) {}
+        if p.cursor.is_at(&TokenType::RightBrace) { break; }
 
-        let kind = match self.cursor.peek().clone() {
-            TokenType::Let     => self.parse_let_stmt()?,
-            TokenType::Return  => self.parse_return_stmt()?,
-            TokenType::Fail    => self.parse_fail_stmt()?,
-            TokenType::If      => self.parse_if_stmt()?,
-            TokenType::Match   => self.parse_match_stmt()?,
-            TokenType::For     => self.parse_for_stmt()?,
-            TokenType::While   => self.parse_while_stmt()?,
-            TokenType::Loop    => self.parse_loop_stmt()?,
-            TokenType::Break   => self.parse_break_stmt()?,
-            TokenType::Continue => { self.cursor.advance(); StmtKind::Continue }
-            TokenType::With    => self.parse_with_stmt()?,
-            TokenType::Using   => self.parse_using_stmt()?,
-            TokenType::Extract => self.parse_extract_stmt()?,
-            TokenType::Defer   => self.parse_defer_stmt()?,
-            TokenType::Try     => self.parse_try_block_stmt()?,
-            TokenType::Unsafe  => self.parse_unsafe_block_stmt()?,
-            // Short declaration: `name := expr`
-            TokenType::Ident(_) if matches!(self.cursor.peek_nth(1), TokenType::ColonEqual) =>
-                self.parse_short_decl()?,
-            // Assignment or expression statement
-            _ => {
-                let expr = crate::parsers::parse_expr::parse_expr(self)?;
-                // Check for assignment op following the expression
-                if let Some(op) = self.try_eat_assign_op() {
-                    let value = crate::parsers::parse_expr::parse_expr(self)?;
-                    StmtKind::Assign { op, target: expr, value }
-                } else {
-                    StmtKind::Expr(expr)
-                }
-            }
-        };
-
-        self.eat_sep(); // optional trailing semicolon
-        self.leave(prev);
-        Some(Stmt { kind, span: lo.merge(&self.span()) })
-    }
-
-    // ── let stmt ─────────────────────────────────────────────────────────────
-
-    fn parse_let_stmt(&mut self) -> Option<StmtKind<'ast>> {
-        self.cursor.advance(); // consume `let`
-        let mutable = self.cursor.eat(&TokenType::Mut);
-        // Binding target: simple ident for now (destructure: next batch)
-        let (name, _) = self.expect_ident()?;
-        let ty        = self.parse_type_annotation();
-        if let Err(e) = self.cursor.expect(&TokenType::Equal) {
-            self.emit(crate::error::from_cursor(e, ParseContext::Statement));
-            return None;
-        }
-        let init = crate::parsers::parse_expr::parse_expr(self)?;
-        Some(StmtKind::Let { mutable, name, ty, init })
-    }
-
-    // ── Short declaration: `name := expr` ────────────────────────────────────
-
-    fn parse_short_decl(&mut self) -> Option<StmtKind<'ast>> {
-        let (name, _) = self.eat_ident()?;
-        self.cursor.advance(); // consume `:=`
-        let init = crate::parsers::parse_expr::parse_expr(self)?;
-        Some(StmtKind::Let { mutable: false, name, ty: None, init })
-    }
-
-    // ── return / fail ─────────────────────────────────────────────────────────
-
-    fn parse_return_stmt(&mut self) -> Option<StmtKind<'ast>> {
-        self.cursor.advance(); // consume `return`
-        // Value is optional — if next token can't start an expression, treat as void
-        let value = if self.can_start_expr() {
-            crate::parsers::parse_expr::parse_expr(self)
-        } else { None };
-        Some(StmtKind::Return(value))
-    }
-
-    fn parse_fail_stmt(&mut self) -> Option<StmtKind<'ast>> {
-        self.cursor.advance(); // consume `fail`
-        let value = crate::parsers::parse_expr::parse_expr(self)?;
-        Some(StmtKind::Fail(value))
-    }
-
-    // ── if / elif / else ─────────────────────────────────────────────────────
-
-    fn parse_if_stmt(&mut self) -> Option<StmtKind<'ast>> {
-        let prev = self.enter(ParseContext::Statement);
-        self.cursor.advance(); // consume `if`
-        let cond      = crate::parsers::parse_expr::parse_expr(self)?;
-        let then_body = self.parse_block()?;
-
-        let mut elif_branches = Vec::with_capacity(2);
-        while self.cursor.eat(&TokenType::Elif) {
-            let elif_cond = crate::parsers::parse_expr::parse_expr(self)?;
-            let elif_body = self.parse_block()?;
-            elif_branches.push((elif_cond, elif_body));
-        }
-
-        let else_body = if self.cursor.eat(&TokenType::Else) {
-            Some(self.parse_block()?)
-        } else { None };
-
-        self.leave(prev);
-        Some(StmtKind::If {
-            cond,
-            then_body,
-            elif_branches: self.arena.alloc_slice_clone(&elif_branches),
-            else_body,
-        })
-    }
-
-    // ── match ─────────────────────────────────────────────────────────────────
-
-    fn parse_match_stmt(&mut self) -> Option<StmtKind<'ast>> {
-        self.cursor.advance(); // consume `match`
-        let subject = crate::parsers::parse_expr::parse_expr(self)?;
-        let open    = self.span();
-        if let Err(e) = self.cursor.expect(&TokenType::LeftBrace) {
-            self.emit(crate::error::from_cursor(e, ParseContext::MatchArm));
-            return None;
-        }
-        let mut arms = Vec::with_capacity(cap::MATCH_ARMS);
-        while !self.cursor.is_at(&TokenType::RightBrace) && !self.cursor.is_eof() {
-            if let Some(arm) = self.parse_match_arm() { arms.push(arm); }
-            self.eat_sep();
-        }
-        if !self.cursor.eat(&TokenType::RightBrace) {
-            self.emit(crate::error::unclosed('{', open, None, self.span()));
-        }
-        Some(StmtKind::Match {
-            subject,
-            arms: self.arena.alloc_slice_clone(&arms),
-        })
-    }
-
-    fn parse_match_arm(
-        &mut self,
-    ) -> Option<ubel_stratum::ast::statements::MatchArm<'ast>> {
-        let prev    = self.enter(ParseContext::MatchArm);
-        let lo      = self.span();
-        let pattern = crate::parsers::parse_pattern::parse_pattern(self)?;
-
-        // Optional guard: `where expr`
-        let guard = if self.cursor.eat(&TokenType::Where) {
-            Some(crate::parsers::parse_expr::parse_expr(self)?)
-        } else { None };
-
-        if let Err(e) = self.cursor.expect(&TokenType::FatArrow) {
-            self.emit(crate::error::from_cursor(e, ParseContext::MatchArm));
-            self.leave(prev);
-            return None;
-        }
-
-        // Body: either a block or an expression
-        let body = if self.cursor.is_at(&TokenType::LeftBrace) {
-            ubel_stratum::ast::statements::MatchBody::Block(self.parse_block()?)
+        if let Some(stmt) = parse_stmt(p) {
+            stmts.push(stmt);
         } else {
-            ubel_stratum::ast::statements::MatchBody::Expr(
-                crate::parsers::parse_expr::parse_expr(self)?
-            )
-        };
-
-        self.leave(prev);
-        Some(ubel_stratum::ast::statements::MatchArm {
-            pattern,
-            guard,
-            body,
-            span: lo.merge(&self.span()),
-        })
-    }
-
-    // ── for / while / loop ────────────────────────────────────────────────────
-
-    fn parse_for_stmt(&mut self) -> Option<StmtKind<'ast>> {
-        self.cursor.advance(); // consume `for`
-        let (binding, _) = self.expect_ident()?;
-        if let Err(e) = self.cursor.expect(&TokenType::In) {
-            self.emit(crate::error::from_cursor(e, ParseContext::Statement));
-            return None;
-        }
-        let iter = crate::parsers::parse_expr::parse_expr(self)?;
-        let body = self.parse_block()?;
-        Some(StmtKind::For { binding, iter, body })
-    }
-
-    fn parse_while_stmt(&mut self) -> Option<StmtKind<'ast>> {
-        self.cursor.advance();
-        let cond = crate::parsers::parse_expr::parse_expr(self)?;
-        let body = self.parse_block()?;
-        Some(StmtKind::While { cond, body })
-    }
-
-    fn parse_loop_stmt(&mut self) -> Option<StmtKind<'ast>> {
-        self.cursor.advance();
-        let body = self.parse_block()?;
-        Some(StmtKind::Loop(body))
-    }
-
-    fn parse_break_stmt(&mut self) -> Option<StmtKind<'ast>> {
-        self.cursor.advance();
-        let value = if self.can_start_expr() {
-            crate::parsers::parse_expr::parse_expr(self)
-        } else { None };
-        Some(StmtKind::Break(value))
-    }
-
-    // ── with arena / pool / gc / heap ─────────────────────────────────────────
-
-    fn parse_with_stmt(&mut self) -> Option<StmtKind<'ast>> {
-        let prev = self.enter(ParseContext::ArenaBlock);
-        self.cursor.advance(); // consume `with`
-
-        let alloc = self.parse_allocator_expr()?;
-        let body  = self.parse_block()?;
-
-        self.leave(prev);
-        Some(StmtKind::With { alloc, body })
-    }
-
-    fn parse_allocator_expr(
-        &mut self,
-    ) -> Option<ubel_stratum::ast::statements::AllocatorExpr<'ast>> {
-        use ubel_stratum::ast::statements::{AllocatorExpr, AllocatorKind, SizeExpr, SizeUnit};
-
-        let (kw, span) = self.eat_ident()?;
-        match kw {
-            "arena" => {
-                if let Err(e) = self.cursor.expect(&TokenType::LeftParen) {
-                    self.emit(crate::error::from_cursor(e, ParseContext::ArenaBlock));
-                    return None;
-                }
-                let size = self.parse_size_expr()?;
-                if let Err(e) = self.cursor.expect(&TokenType::RightParen) {
-                    self.emit(crate::error::from_cursor(e, ParseContext::ArenaBlock));
-                }
-                Some(AllocatorExpr { kind: AllocatorKind::Arena, size: Some(size), span })
-            }
-            "pool" => {
-                // pool<T>(size)
-                let _ = self.try_parse_generic_args(); // eat <T>
-                if let Err(e) = self.cursor.expect(&TokenType::LeftParen) {
-                    self.emit(crate::error::from_cursor(e, ParseContext::ArenaBlock));
-                    return None;
-                }
-                let size = self.parse_size_expr()?;
-                if let Err(e) = self.cursor.expect(&TokenType::RightParen) {
-                    self.emit(crate::error::from_cursor(e, ParseContext::ArenaBlock));
-                }
-                Some(AllocatorExpr { kind: AllocatorKind::Pool, size: Some(size), span })
-            }
-            "gc"   => Some(AllocatorExpr { kind: AllocatorKind::Gc,   size: None, span }),
-            "heap" => Some(AllocatorExpr { kind: AllocatorKind::Heap, size: None, span }),
-            _ => {
-                self.emit(crate::error::raw(
-                    format!("unknown allocator '{}'; expected 'arena', 'pool', 'gc', or 'heap'", kw),
-                    span,
-                ));
-                None
-            }
+            p.recover_to_stmt();
         }
     }
 
-    fn parse_size_expr(
-        &mut self,
-    ) -> Option<ubel_stratum::ast::statements::SizeExpr<'ast>> {
-        use ubel_stratum::ast::statements::{SizeExpr, SizeUnit};
+    let close_span = p.span();
+    if !p.cursor.eat(&TokenType::RightBrace) {
+        p.emit(crate::error::unclosed('{', open_span, None, close_span));
+    }
 
-        // Either `Expr` or `Integer SizeUnit`
-        if let TokenType::IntLit(n) = self.cursor.peek().clone() {
-            let n_val = n;
-            let pos   = self.cursor.position();
-            self.cursor.advance();
+    p.leave(prev);
+    let span  = lo.merge(&close_span);
+    let stmts = p.arena.alloc_slice_clone(&stmts);
+    Some(Block { stmts, span })
+}
 
-            // Check for size unit: B KB MB GB
-            if let TokenType::Ident(unit) = self.cursor.peek().clone() {
-                let unit_parsed = match unit.as_str() {
-                    "B"  => Some(SizeUnit::B),
-                    "KB" => Some(SizeUnit::KB),
-                    "MB" => Some(SizeUnit::MB),
-                    "GB" => Some(SizeUnit::GB),
-                    _    => None,
-                };
-                if let Some(unit) = unit_parsed {
-                    self.cursor.advance();
-                    return Some(SizeExpr::Literal { value: n_val as u64, unit });
-                }
+// ── Statement dispatcher ──────────────────────────────────────────────────────
+
+pub(crate) fn parse_stmt<'ast, 'tok>(p: &mut Parser<'ast, 'tok>) -> Option<Stmt<'ast>> {
+    let lo   = p.span();
+    let prev = p.enter(ParseContext::Statement);
+
+    let kind = match p.cursor.peek().clone() {
+        TokenType::Let      => parse_let_stmt(p)?,
+        TokenType::Return   => parse_return_stmt(p)?,
+        TokenType::Fail     => parse_fail_stmt(p)?,
+        TokenType::If       => parse_if_stmt(p)?,
+        TokenType::Match    => parse_match_stmt(p)?,
+        TokenType::For      => parse_for_stmt(p)?,
+        TokenType::While    => parse_while_stmt(p)?,
+        TokenType::Loop     => parse_loop_stmt(p)?,
+        TokenType::Break    => parse_break_stmt(p)?,
+        TokenType::Continue => { p.cursor.advance(); StmtKind::Continue }
+        TokenType::With     => parse_with_stmt(p)?,
+        TokenType::Using    => parse_using_stmt(p)?,
+        TokenType::Extract  => parse_extract_stmt(p)?,
+        TokenType::Defer    => parse_defer_stmt(p)?,
+        TokenType::Try      => parse_try_stmt(p)?,
+        TokenType::Unsafe   => parse_unsafe_stmt(p)?,
+        // Short declaration: `name := expr`
+        TokenType::Ident(_) if matches!(p.cursor.peek_nth(1), TokenType::ColonEqual) =>
+            parse_short_decl(p)?,
+        // Assign or expression statement
+        _ => {
+            let expr = parse_expr::parse_expr(p)?;
+            // Check for assignment after expr
+            if let Some(op) = try_eat_assign_op(p) {
+                let value = parse_expr::parse_expr(p)?;
+                StmtKind::Expr(p.alloc(ubel_stratum::ast::expressions::Expr {
+                    kind: ubel_stratum::ast::expressions::ExprKind::Assign {
+                        op, target: expr, value,
+                    },
+                    span: lo.merge(&value.span),
+                }))
+            } else {
+                StmtKind::Expr(expr)
             }
-            // Not a unit — restore and parse as expression
-            self.cursor.restore(pos);
         }
+    };
 
-        let expr = crate::parsers::parse_expr::parse_expr(self)?;
-        Some(SizeExpr::Expr(expr))
+    p.eat_sep();
+    p.leave(prev);
+    Some(Stmt { kind, span: lo.merge(&p.span()) })
+}
+
+// ── let binding ───────────────────────────────────────────────────────────────
+
+fn parse_let_stmt<'ast, 'tok>(p: &mut Parser<'ast, 'tok>) -> Option<StmtKind<'ast>> {
+    p.cursor.advance(); // `let`
+    let mutable = p.cursor.eat(&TokenType::Mut);
+    let (name, _) = p.expect_ident()?;
+    let ty    = crate::parsers::parse_decl::parse_type_annotation_opt(p);
+    if let Err(e) = p.cursor.expect(&TokenType::Equal) {
+        p.emit(crate::error::from_cursor(e, ParseContext::Statement));
+        return None;
+    }
+    let value = parse_expr::parse_expr(p)?;
+    Some(StmtKind::Let {
+        mutable,
+        binding: BindingTarget::Ident(name),
+        ty,
+        value,
+    })
+}
+
+fn parse_short_decl<'ast, 'tok>(p: &mut Parser<'ast, 'tok>) -> Option<StmtKind<'ast>> {
+    let (name, _) = p.eat_ident()?;
+    p.cursor.advance(); // `:=`
+    let value = parse_expr::parse_expr(p)?;
+    Some(StmtKind::Let {
+        mutable: false,
+        binding: BindingTarget::Ident(name),
+        ty: None,
+        value,
+    })
+}
+
+// ── return / fail ─────────────────────────────────────────────────────────────
+
+fn parse_return_stmt<'ast, 'tok>(p: &mut Parser<'ast, 'tok>) -> Option<StmtKind<'ast>> {
+    p.cursor.advance(); // `return`
+    let value = if p.can_start_expr() {
+        Some(parse_expr::parse_expr(p)?)
+    } else { None };
+    Some(StmtKind::Return(value))
+}
+
+fn parse_fail_stmt<'ast, 'tok>(p: &mut Parser<'ast, 'tok>) -> Option<StmtKind<'ast>> {
+    p.cursor.advance(); // `fail`
+    let value = parse_expr::parse_expr(p)?;
+    Some(StmtKind::Fail(value))
+}
+
+// ── if / elif / else ──────────────────────────────────────────────────────────
+
+fn parse_if_stmt<'ast, 'tok>(p: &mut Parser<'ast, 'tok>) -> Option<StmtKind<'ast>> {
+    let lo = p.span();
+    p.cursor.advance(); // `if`
+
+    let condition = parse_expr::parse_expr(p)?;
+    let then_block = parse_block_inner(p)?;
+
+    let mut elif_branches: Vec<ElifBranch<'ast>> = Vec::with_capacity(2);
+    while p.cursor.eat(&TokenType::Elif) {
+        let elif_lo  = p.span();
+        let cond     = parse_expr::parse_expr(p)?;
+        let block    = parse_block_inner(p)?;
+        let span     = elif_lo.merge(&block.span);
+        elif_branches.push(ElifBranch { condition: cond, block, span });
+    }
+    let elif_branches = p.arena.alloc_slice_clone(&elif_branches);
+
+    let else_block = if p.cursor.eat(&TokenType::Else) {
+        Some(parse_block_inner(p)?)
+    } else { None };
+
+    let span    = lo.merge(&p.span());
+    let if_node = p.alloc(IfExpr { condition, then_block, elif_branches, else_block, span });
+    Some(StmtKind::If(if_node))
+}
+
+// ── match ─────────────────────────────────────────────────────────────────────
+
+fn parse_match_stmt<'ast, 'tok>(p: &mut Parser<'ast, 'tok>) -> Option<StmtKind<'ast>> {
+    p.cursor.advance(); // `match`
+    let scrutinee = parse_expr::parse_expr(p)?;
+
+    let open_span = p.span();
+    if let Err(e) = p.cursor.expect(&TokenType::LeftBrace) {
+        p.emit(crate::error::from_cursor(e, ParseContext::MatchArm));
+        return None;
     }
 
-    // ── using ─────────────────────────────────────────────────────────────────
+    let mut arms: Vec<MatchArm<'ast>> = Vec::with_capacity(p.estimates.match_arms);
+    while !p.cursor.is_at(&TokenType::RightBrace) && !p.cursor.is_eof() {
+        if let Some(arm) = parse_match_arm(p) { arms.push(arm); }
+        p.eat_sep();
+    }
 
-    fn parse_using_stmt(&mut self) -> Option<StmtKind<'ast>> {
-        self.cursor.advance(); // consume `using`
-        let mut bindings = Vec::with_capacity(2);
+    if !p.cursor.eat(&TokenType::RightBrace) {
+        p.emit(crate::error::unclosed('{', open_span, None, p.span()));
+    }
+    let arms = p.arena.alloc_slice_clone(&arms);
+    Some(StmtKind::Match { scrutinee, arms })
+}
 
-        loop {
-            if let Err(e) = self.cursor.expect(&TokenType::Let) {
-                self.emit(crate::error::from_cursor(e, ParseContext::Statement));
-                break;
+fn parse_match_arm<'ast, 'tok>(p: &mut Parser<'ast, 'tok>) -> Option<MatchArm<'ast>> {
+    let lo      = p.span();
+    let pattern = crate::parsers::parse_pattern::parse_pattern(p)?;
+    let guard   = if p.cursor.eat(&TokenType::Where) {
+        Some(parse_expr::parse_expr(p)?)
+    } else { None };
+    if let Err(e) = p.cursor.expect(&TokenType::FatArrow) {
+        p.emit(crate::error::from_cursor(e, ParseContext::MatchArm));
+        return None;
+    }
+    let body = if p.cursor.is_at(&TokenType::LeftBrace) {
+        MatchArmBody::Block(parse_block_inner(p)?)
+    } else {
+        MatchArmBody::Expr(parse_expr::parse_expr(p)?)
+    };
+    let span = lo.merge(&p.span());
+    Some(MatchArm { pattern, guard, body, span })
+}
+
+// ── for / while / loop ────────────────────────────────────────────────────────
+
+fn parse_for_stmt<'ast, 'tok>(p: &mut Parser<'ast, 'tok>) -> Option<StmtKind<'ast>> {
+    p.cursor.advance(); // `for`
+    let (name, _) = p.expect_ident()?;
+    if let Err(e) = p.cursor.expect(&TokenType::In) {
+        p.emit(crate::error::from_cursor(e, ParseContext::Statement));
+        return None;
+    }
+    let iter  = parse_expr::parse_expr(p)?;
+    let body  = parse_block_inner(p)?;
+    let body  = p.alloc(body); // body is &'ast Block in StmtKind::For
+    Some(StmtKind::For { binding: BindingTarget::Ident(name), iter, body })
+}
+
+fn parse_while_stmt<'ast, 'tok>(p: &mut Parser<'ast, 'tok>) -> Option<StmtKind<'ast>> {
+    p.cursor.advance(); // `while`
+    let condition = parse_expr::parse_expr(p)?;
+    let body      = p.alloc(parse_block_inner(p)?);
+    Some(StmtKind::While { condition, body })
+}
+
+fn parse_loop_stmt<'ast, 'tok>(p: &mut Parser<'ast, 'tok>) -> Option<StmtKind<'ast>> {
+    p.cursor.advance(); // `loop`
+    let body = p.alloc(parse_block_inner(p)?);
+    Some(StmtKind::Loop(body))
+}
+
+fn parse_break_stmt<'ast, 'tok>(p: &mut Parser<'ast, 'tok>) -> Option<StmtKind<'ast>> {
+    p.cursor.advance(); // `break`
+    let value = if p.can_start_expr() { Some(parse_expr::parse_expr(p)?) } else { None };
+    Some(StmtKind::Break(value))
+}
+
+// ── with arena(...) ───────────────────────────────────────────────────────────
+
+fn parse_with_stmt<'ast, 'tok>(p: &mut Parser<'ast, 'tok>) -> Option<StmtKind<'ast>> {
+    let prev = p.enter(ParseContext::ArenaBlock);
+    p.cursor.advance(); // `with`
+
+    let allocator = parse_allocator_kind(p)?;
+    let body      = p.alloc(parse_block_inner(p)?);
+
+    p.leave(prev);
+    Some(StmtKind::With { allocator, body })
+}
+
+fn parse_allocator_kind<'ast, 'tok>(
+    p: &mut Parser<'ast, 'tok>,
+) -> Option<AllocatorKind<'ast>> {
+    let (kw, span) = p.eat_ident()?;
+    match kw {
+        "arena" => {
+            let open = p.span();
+            if let Err(e) = p.cursor.expect(&TokenType::LeftParen) {
+                p.emit(crate::error::from_cursor(e, ParseContext::ArenaBlock));
+                return None;
             }
-            let mutable = self.cursor.eat(&TokenType::Mut);
-            let (name, _) = self.expect_ident()?;
-            if let Err(e) = self.cursor.expect(&TokenType::Equal) {
-                self.emit(crate::error::from_cursor(e, ParseContext::Statement));
-                break;
+            let size = parse_size_expr(p)?;
+            if !p.cursor.eat(&TokenType::RightParen) {
+                p.emit(crate::error::unclosed('(', open, None, p.span()));
             }
-            let init = crate::parsers::parse_expr::parse_expr(self)?;
-            bindings.push((mutable, name, init));
-            if !self.cursor.eat(&TokenType::Comma) { break; }
+            Some(AllocatorKind::Arena(size))
         }
-
-        let body = self.parse_block()?;
-        Some(StmtKind::Using {
-            bindings: self.arena.alloc_slice_clone(&bindings),
-            body,
-        })
-    }
-
-    // ── extract / defer / try / unsafe ────────────────────────────────────────
-
-    fn parse_extract_stmt(&mut self) -> Option<StmtKind<'ast>> {
-        self.cursor.advance();
-        // Pattern + = + expr — pattern parser next batch, stub for now
-        let (name, _) = self.expect_ident()?;
-        if let Err(e) = self.cursor.expect(&TokenType::Equal) {
-            self.emit(crate::error::from_cursor(e, ParseContext::Statement));
-            return None;
+        "pool" => {
+            // pool<T>(count)
+            let _ = crate::parsers::parse_type::parse_type_annotation_opt_inner(p);
+            let open = p.span();
+            if let Err(e) = p.cursor.expect(&TokenType::LeftParen) {
+                p.emit(crate::error::from_cursor(e, ParseContext::ArenaBlock));
+                return None;
+            }
+            let ty_ref = p.parse_type_expr();
+            let count  = parse_expr::parse_expr(p)?;
+            if !p.cursor.eat(&TokenType::RightParen) {
+                p.emit(crate::error::unclosed('(', open, None, p.span()));
+            }
+            let ty = ty_ref.unwrap_or_else(|| {
+                let void_ty = ubel_stratum::ast::types::TypeKind::Void;
+                p.alloc(ubel_stratum::ast::types::Type {
+                    kind: void_ty, span,
+                })
+            });
+            Some(AllocatorKind::Pool { ty, count })
         }
-        let value = crate::parsers::parse_expr::parse_expr(self)?;
-        Some(StmtKind::Extract { name, value })
+        "gc"   => Some(AllocatorKind::Gc),
+        "heap" => Some(AllocatorKind::Heap),
+        _ => {
+            p.emit(crate::error::raw(
+                format!("unknown allocator '{}'; expected arena, pool, gc, or heap", kw),
+                span,
+            ));
+            None
+        }
     }
+}
 
-    fn parse_defer_stmt(&mut self) -> Option<StmtKind<'ast>> {
-        self.cursor.advance();
-        let expr = crate::parsers::parse_expr::parse_expr(self)?;
-        Some(StmtKind::Defer(expr))
-    }
-
-    fn parse_try_block_stmt(&mut self) -> Option<StmtKind<'ast>> {
-        self.cursor.advance();
-        let body = self.parse_block()?;
-        let catch_body = if self.cursor.eat(&TokenType::Catch) {
-            if let Err(e) = self.cursor.expect(&TokenType::LeftParen) {
-                self.emit(crate::error::from_cursor(e, ParseContext::Statement));
+fn parse_size_expr<'ast, 'tok>(p: &mut Parser<'ast, 'tok>) -> Option<SizeExpr<'ast>> {
+    // `Integer SizeUnit` or general expression
+    if let TokenType::IntLit(n) = p.cursor.peek().clone() {
+        let saved = p.cursor.position();
+        p.cursor.advance();
+        if let TokenType::Ident(unit_str) = p.cursor.peek().clone() {
+            if let Some(unit) = crate::keywords::parse_size_unit(&unit_str) {
+                p.cursor.advance();
+                return Some(SizeExpr::WithUnit { value: n as u64, unit });
             }
-            let (err_name, _) = self.expect_ident()?;
-            if let Err(e) = self.cursor.expect(&TokenType::RightParen) {
-                self.emit(crate::error::from_cursor(e, ParseContext::Statement));
-            }
-            let cb = self.parse_block()?;
-            Some((err_name, cb))
-        } else { None };
-        Some(StmtKind::Try { body, catch_body })
+        }
+        // Not a unit — restore and fall through to expression parse
+        p.cursor.restore(saved);
+    }
+    let expr = parse_expr::parse_expr(p)?;
+    Some(SizeExpr::Expr(expr))
+}
+
+// ── using ─────────────────────────────────────────────────────────────────────
+
+fn parse_using_stmt<'ast, 'tok>(p: &mut Parser<'ast, 'tok>) -> Option<StmtKind<'ast>> {
+    p.cursor.advance(); // `using`
+    let mut bindings: Vec<UsingBinding<'ast>> = Vec::with_capacity(2);
+
+    loop {
+        let blo = p.span();
+        if let Err(e) = p.cursor.expect(&TokenType::Let) {
+            p.emit(crate::error::from_cursor(e, ParseContext::Statement));
+            break;
+        }
+        let mutable = p.cursor.eat(&TokenType::Mut);
+        let (name, _) = p.expect_ident()?;
+        if let Err(e) = p.cursor.expect(&TokenType::Equal) {
+            p.emit(crate::error::from_cursor(e, ParseContext::Statement));
+            break;
+        }
+        let value = parse_expr::parse_expr(p)?;
+        let span  = blo.merge(&value.span);
+        bindings.push(UsingBinding { mutable, name, value, span });
+        if !p.cursor.eat(&TokenType::Comma) { break; }
     }
 
-    fn parse_unsafe_block_stmt(&mut self) -> Option<StmtKind<'ast>> {
-        self.cursor.advance();
-        let body = self.parse_block()?;
-        Some(StmtKind::Unsafe(body))
+    let body     = p.alloc(parse_block_inner(p)?);
+    let bindings = p.arena.alloc_slice_clone(&bindings);
+    Some(StmtKind::Using { bindings, body })
+}
+
+// ── extract / defer / try / unsafe ───────────────────────────────────────────
+
+fn parse_extract_stmt<'ast, 'tok>(p: &mut Parser<'ast, 'tok>) -> Option<StmtKind<'ast>> {
+    p.cursor.advance(); // `extract`
+    // Simple ident for now — full destructure pattern in parse_pattern.rs next batch
+    let (name, span) = p.expect_ident()?;
+    let pattern = DestructurePattern::Ident(name, span);
+    if let Err(e) = p.cursor.expect(&TokenType::Equal) {
+        p.emit(crate::error::from_cursor(e, ParseContext::Statement));
+        return None;
     }
+    let value = parse_expr::parse_expr(p)?;
+    Some(StmtKind::Extract { pattern, value })
+}
 
-    // ── Assignment op helper ──────────────────────────────────────────────────
+fn parse_defer_stmt<'ast, 'tok>(p: &mut Parser<'ast, 'tok>) -> Option<StmtKind<'ast>> {
+    p.cursor.advance(); // `defer`
+    let expr = parse_expr::parse_expr(p)?;
+    Some(StmtKind::Defer(expr))
+}
 
-    fn try_eat_assign_op(
-        &mut self,
-    ) -> Option<ubel_stratum::ast::common::AssignOp> {
-        use ubel_stratum::ast::common::AssignOp;
-        let op = match self.cursor.peek() {
-            TokenType::Equal          => AssignOp::Assign,
-            TokenType::PlusEqual      => AssignOp::AddAssign,
-            TokenType::MinusEqual     => AssignOp::SubAssign,
-            TokenType::StarEqual      => AssignOp::MulAssign,
-            TokenType::SlashEqual     => AssignOp::DivAssign,
-            TokenType::PercentEqual   => AssignOp::RemAssign,
-            TokenType::AmpEqual       => AssignOp::BitAndAssign,
-            TokenType::PipeEqual      => AssignOp::BitOrAssign,
-            TokenType::CaretEqual     => AssignOp::BitXorAssign,
-            TokenType::LeftShiftEqual => AssignOp::ShlAssign,
-            TokenType::RightShiftEqual=> AssignOp::ShrAssign,
-            _                         => return None,
-        };
-        self.cursor.advance();
-        Some(op)
-    }
+fn parse_try_stmt<'ast, 'tok>(p: &mut Parser<'ast, 'tok>) -> Option<StmtKind<'ast>> {
+    p.cursor.advance(); // `try`
+    let body = p.alloc(parse_block_inner(p)?);
 
-    // ── Can-start-expression check ────────────────────────────────────────────
+    let (catch_binding, catch_body) = if p.cursor.eat(&TokenType::Catch) {
+        let open = p.span();
+        if let Err(e) = p.cursor.expect(&TokenType::LeftParen) {
+            p.emit(crate::error::from_cursor(e, ParseContext::Statement));
+            return Some(StmtKind::Try { body, catch_binding: None, catch_body: None });
+        }
+        let (name, _) = p.expect_ident()?;
+        if !p.cursor.eat(&TokenType::RightParen) {
+            p.emit(crate::error::unclosed('(', open, None, p.span()));
+        }
+        let cb = p.alloc(parse_block_inner(p)?);
+        (Some(name), Some(cb))
+    } else {
+        (None, None)
+    };
 
-    pub(crate) fn can_start_expr(&self) -> bool {
-        matches!(self.cursor.peek(),
-            TokenType::Ident(_)  | TokenType::IntLit(_)   | TokenType::FloatLit(_) |
-            TokenType::StringLit(_) | TokenType::True     | TokenType::False        |
-            TokenType::Null      | TokenType::SelfKw      | TokenType::Minus        |
-            TokenType::Bang      | TokenType::Not         | TokenType::Tilde        |
-            TokenType::Await     | TokenType::LeftParen   | TokenType::LeftBracket  |
-            TokenType::LeftBrace | TokenType::If          | TokenType::Match        |
-            TokenType::From      | TokenType::Unsafe      | TokenType::Async        |
-            TokenType::Fn       | TokenType::InterpolatedString(_) |
-            TokenType::VerbatimString(_) | TokenType::CharLit(_)
-        )
-    }
-          }
+    Some(StmtKind::Try { body, catch_binding, catch_body })
+}
+
+fn parse_unsafe_stmt<'ast, 'tok>(p: &mut Parser<'ast, 'tok>) -> Option<StmtKind<'ast>> {
+    p.cursor.advance(); // `unsafe`
+    let body = p.alloc(parse_block_inner(p)?);
+    Some(StmtKind::Unsafe(body))
+}
+
+// ── Assignment op helper ──────────────────────────────────────────────────────
+
+fn try_eat_assign_op(p: &mut Parser<'_, '_>) -> Option<AssignOp> {
+    let op = match p.cursor.peek() {
+        TokenType::Equal           => AssignOp::Assign,
+        TokenType::PlusEqual       => AssignOp::AddAssign,
+        TokenType::MinusEqual      => AssignOp::SubAssign,
+        TokenType::StarEqual       => AssignOp::MulAssign,
+        TokenType::SlashEqual      => AssignOp::DivAssign,
+        TokenType::PercentEqual    => AssignOp::RemAssign,
+        TokenType::AmpEqual        => AssignOp::BitAndAssign,
+        TokenType::PipeEqual       => AssignOp::BitOrAssign,
+        TokenType::CaretEqual      => AssignOp::BitXorAssign,
+        TokenType::LeftShiftEqual  => AssignOp::ShlAssign,
+        TokenType::RightShiftEqual => AssignOp::ShrAssign,
+        _                          => return None,
+    };
+    p.cursor.advance();
+    Some(op)
+        }
