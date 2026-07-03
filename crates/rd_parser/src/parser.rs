@@ -73,7 +73,7 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
     }
 
     pub fn parse_single_expr(mut self) -> Option<&'ast Expr<'ast>> {
-        crate::parsers::parse_expr::parse_expr_entry(&mut self)
+        crate::parsers::parse_expr::parse_expr(&mut self)
     }
 }
 
@@ -218,6 +218,25 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
         self.cursor.eat(&TokenType::Semicolon);
     }
 
+    /// Call at the end of every iteration of a "while not at closing
+    /// delimiter" list-parsing loop. `pos_before` must be the cursor
+    /// position recorded at the *top* of that same iteration.
+    ///
+    /// `skip_until_any` (used by `recover_to_decl` / `recover_to_stmt` /
+    /// bespoke recovery functions) can legitimately perform zero
+    /// iterations when the cursor already sits on a sync token — that is
+    /// correct for *finding* a sync point, but it does not by itself
+    /// guarantee a list loop advances. If a failed inner parse consumed
+    /// no tokens and recovery also consumed none, this forces exactly
+    /// one token of progress so the loop is guaranteed to terminate on
+    /// malformed input instead of hanging forever.
+    #[cold]
+    pub(crate) fn guard_progress(&mut self, pos_before: usize) {
+        if self.cursor.position() == pos_before && !self.cursor.is_eof() {
+            self.cursor.advance();
+        }
+    }
+
     /// Returns true if the current token can start an expression.
     pub(crate) fn can_start_expr(&self) -> bool {
         matches!(self.cursor.peek(),
@@ -251,4 +270,4 @@ pub(crate) mod cap {
     pub const ENUM_VARIANTS:  usize = 8;
     pub const LINQ_CLAUSES:   usize = 4;
     pub const PATH_SEGS:      usize = 3;
-}
+        }
