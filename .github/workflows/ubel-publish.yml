@@ -79,7 +79,7 @@ jobs:
 
       - name: cargo test
         run: |
-          cargo test -p ubel_stratum --lib --tests --color=never 2>&1 | tee test-core.txt
+          cargo test -p ubel_stratum -p ubel_stratum_rd --lib --tests --color=never 2>&1 | tee test-core.txt
 
       - name: Summarise
         if: always()
@@ -128,7 +128,7 @@ jobs:
 
       - name: cargo test (parser)
         run: |
-          cargo test -p ubel_stratum_parser --lib --tests --color=never 2>&1 | tee test-parser.txt
+          cargo test --manifest-path crates/parser/Cargo.toml --lib --tests --color=never 2>&1 | tee test-parser.txt
 
       - name: Summarise
         if: always()
@@ -186,7 +186,7 @@ jobs:
       - name: Parser bench
         if: needs.parse-trigger.outputs.run_parser_bench == 'true'
         run: |
-          cargo bench -p ubel_stratum_parser --bench parser_bench \
+          cargo bench --manifest-path crates/parser/Cargo.toml --bench parser_bench \
             -- --output-format bencher 2>&1 | tee bench-parser.txt
 
       - name: Summarise
