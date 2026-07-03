@@ -32,3 +32,41 @@ jobs:
 
       - name: Check debug compilation
         run: cargo check --workspace --all-targets
+
+      - name: Run tests (core + rd_parser)
+        if: always()
+        run: |
+          cargo test --workspace --all-targets --color=never 2>&1 | tee test-results.txt
+
+      - name: Post test summary
+        if: always()
+        run: |
+          echo "## Test Results — Run #${{ github.run_number }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          grep -E "^test .+ \.\.\. (ok|FAILED|ignored)" test-results.txt | tail -100 >> $GITHUB_STEP_SUMMARY || true
+          echo "" >> $GITHUB_STEP_SUMMARY
+          grep "^test result" test-results.txt >> $GITHUB_STEP_SUMMARY || true
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload test log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ github.run_number }}
+          path: test-results.txt
+          retention-days: 30
+
+      - name: Run full pipeline report (lex -> parse -> sema -> interpret)
+        if: always()
+        run: |
+          cargo run -p ubel_stratum_rd --example pipeline -- tests/fixtures 2>&1 | tee pipeline-report.txt || true
+
+      - name: Post pipeline report to summary
+        if: always()
+        run: |
+          echo "## rd_parser Pipeline Report — Run #${{ github.run_number }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          cat pipeline-report.txt >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
