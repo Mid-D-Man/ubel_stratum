@@ -22,7 +22,7 @@
 
 use ubel_stratum::{
     ast::{
-        common::{AssignOp, BinOp, Span, TierAnnotation, UnaryOp},
+        common::{AssignOp, BinOp, TierAnnotation, UnaryOp},
         expressions::{
             Arg, ArgKind, DictEntry, ElifBranch, Expr, ExprKind,
             FieldInit, IfExpr, Lambda, LambdaBody, LambdaParam,
@@ -269,7 +269,7 @@ fn is_struct_open(p: &Parser<'_, '_>) -> bool {
     )
 }
 
-fn extract_path_from_expr<'ast>(p: &Parser<'ast, '_>, e: &'ast Expr<'ast>) -> Vec<&'ast str> {
+fn extract_path_from_expr<'ast>(_p: &Parser<'ast, '_>, e: &'ast Expr<'ast>) -> Vec<&'ast str> {
     let mut segs = Vec::new();
     fn collect<'a>(e: &'a Expr<'a>, segs: &mut Vec<&'a str>) {
         match e.kind {
@@ -315,7 +315,7 @@ fn parse_brace_expr<'ast, 'tok>(p: &mut Parser<'ast, 'tok>, lo: LSpan) -> Option
         (TokenType::Ident(_), TokenType::Equal) => parse_anon_object(p, lo),
         // `{ }` → empty AnonObject
         (TokenType::RightBrace, _) => {
-            let open = p.span(); p.cursor.advance(); p.cursor.advance(); // { }
+            p.cursor.advance(); p.cursor.advance(); // { }
             let span = lo.merge(&p.span());
             Some(p.alloc(Expr { kind: ExprKind::AnonObject(&[]), span }))
         }
@@ -436,7 +436,10 @@ fn parse_match_expr<'ast, 'tok>(p: &mut Parser<'ast, 'tok>, lo: LSpan) -> Option
     if let Err(e) = p.cursor.expect(&TokenType::LeftBrace) { p.emit(crate::error::from_cursor(e, ParseContext::MatchArm)); p.leave(prev); return None; }
     let mut arms: Vec<MatchArm<'ast>> = Vec::with_capacity(p.estimates.match_arms);
     while !p.cursor.is_at(&TokenType::RightBrace) && !p.cursor.is_eof() {
-        if let Some(arm) = parse_match_arm(p) { arms.push(arm); } p.eat_sep();
+        let pos_before = p.cursor.position();
+        if let Some(arm) = parse_match_arm(p) { arms.push(arm); } else { p.recover_to_stmt(); }
+        p.eat_sep();
+        p.guard_progress(pos_before);
     }
     if !p.cursor.eat(&TokenType::RightBrace) { p.emit(crate::error::unclosed('{', open, None, p.span())); }
     let span = lo.merge(&p.span());
@@ -451,11 +454,7 @@ fn parse_match_arm<'ast, 'tok>(p: &mut Parser<'ast, 'tok>) -> Option<MatchArm<'a
     let pattern = crate::parsers::parse_pattern::parse_pattern(p)?;
     let guard   = if p.cursor.eat(&TokenType::Where) { Some(parse_expr(p)?) } else { None };
     if let Err(e) = p.cursor.expect(&TokenType::FatArrow) { p.emit(crate::error::from_cursor(e, ParseContext::MatchArm)); return None; }
-    let body = if p.cursor.is_at(&TokenType::LeftBrace) {
-        MatchArmBody::Block(crate::parsers::parse_stmt::parse_block_inner(p)?)
-    } else {
-        MatchArmBody::Expr(parse_expr(p)?)
-    };
+    let body = crate::parsers::parse_stmt::parse_match_arm_body(p)?;
     Some(MatchArm { pattern, guard, body, span: lo.merge(&p.span()) })
 }
 
@@ -669,4 +668,4 @@ fn to_assign_op(tt: &TokenType) -> Option<AssignOp> {
         TokenType::RightShiftEqual => Some(AssignOp::ShrAssign),
         _ => None,
     }
-            }
+                               }
