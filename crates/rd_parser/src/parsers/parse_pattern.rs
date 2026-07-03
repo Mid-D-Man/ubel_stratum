@@ -118,7 +118,7 @@ fn parse_or_pattern<'ast, 'tok>(p: &mut Parser<'ast, 'tok>) -> Option<Pattern<'a
     let hi   = alts.last().unwrap().span;
     let span = lo.merge(&hi);
     let alts = p.arena.alloc_slice_clone(&alts);
-    Some(p.alloc(Pattern { kind: PatternKind::Or(alts), span }))
+    Some(Pattern { kind: PatternKind::Or(alts), span })
 }
 
 // ── Single non-OR pattern ─────────────────────────────────────────────────────
@@ -131,7 +131,7 @@ fn parse_single_pattern<'ast, 'tok>(p: &mut Parser<'ast, 'tok>) -> Option<Patter
         // ── Wildcard `_` ──────────────────────────────────────────────────────
         TokenType::Ident(ref name) if name == "_" => {
             p.cursor.advance();
-            Some(p.alloc(Pattern { kind: PatternKind::Wildcard, span: lo }))
+            Some(Pattern { kind: PatternKind::Wildcard, span: lo })
         }
 
         // ── Numeric literals (+ optional range) ───────────────────────────────
@@ -153,21 +153,21 @@ fn parse_single_pattern<'ast, 'tok>(p: &mut Parser<'ast, 'tok>) -> Option<Patter
             let s = s.clone();
             p.cursor.advance();
             let s = p.intern(&s);
-            Some(p.alloc(Pattern { kind: PatternKind::Literal(Literal::Str(s)), span: lo }))
+            Some(Pattern { kind: PatternKind::Literal(Literal::Str(s)), span: lo })
         }
 
         // ── Boolean literals ──────────────────────────────────────────────────
         TokenType::True  => {
             p.cursor.advance();
-            Some(p.alloc(Pattern { kind: PatternKind::Literal(Literal::Bool(true)), span: lo }))
+            Some(Pattern { kind: PatternKind::Literal(Literal::Bool(true)), span: lo })
         }
         TokenType::False => {
             p.cursor.advance();
-            Some(p.alloc(Pattern { kind: PatternKind::Literal(Literal::Bool(false)), span: lo }))
+            Some(Pattern { kind: PatternKind::Literal(Literal::Bool(false)), span: lo })
         }
         TokenType::Null  => {
             p.cursor.advance();
-            Some(p.alloc(Pattern { kind: PatternKind::Literal(Literal::Null), span: lo }))
+            Some(Pattern { kind: PatternKind::Literal(Literal::Null), span: lo })
         }
 
         // ── Negative numeric literal: `-42`, `-3.14` ──────────────────────────
@@ -197,7 +197,7 @@ fn parse_single_pattern<'ast, 'tok>(p: &mut Parser<'ast, 'tok>) -> Option<Patter
             p.cursor.advance();
             let (name, nspan) = p.expect_ident()?;
             let span = lo.merge(&nspan);
-            Some(p.alloc(Pattern { kind: PatternKind::Ident { name, mutable: true }, span }))
+            Some(Pattern { kind: PatternKind::Ident { name, mutable: true }, span })
         }
 
         // ── Identifier: binding / enum variant / named struct ─────────────────
@@ -219,7 +219,7 @@ fn parse_single_pattern<'ast, 'tok>(p: &mut Parser<'ast, 'tok>) -> Option<Patter
         TokenType::LeftBrace => {
             let fields = parse_struct_fields_pattern(p)?;
             let span   = lo.merge(&p.span());
-            Some(p.alloc(Pattern { kind: PatternKind::Struct { name: None, fields }, span }))
+            Some(Pattern { kind: PatternKind::Struct { name: None, fields }, span })
         }
 
         _ => {
@@ -243,20 +243,20 @@ fn parse_range_or_literal<'ast, 'tok>(
     if p.cursor.eat(&TokenType::DotDotEqual) {
         let hi_lit = parse_bare_literal(p)?;
         let hi_span = p.span();
-        return Some(p.alloc(Pattern {
+        return Some(Pattern {
             kind: PatternKind::Range { lo: lo_lit, hi: hi_lit, inclusive: true },
             span: span.merge(&hi_span),
-        }));
+        });
     }
     if p.cursor.eat(&TokenType::DotDot) {
         let hi_lit  = parse_bare_literal(p)?;
         let hi_span = p.span();
-        return Some(p.alloc(Pattern {
+        return Some(Pattern {
             kind: PatternKind::Range { lo: lo_lit, hi: hi_lit, inclusive: false },
             span: span.merge(&hi_span),
-        }));
+        });
     }
-    Some(p.alloc(Pattern { kind: PatternKind::Literal(lo_lit), span }))
+    Some(Pattern { kind: PatternKind::Literal(lo_lit), span })
 }
 
 /// Parse just a literal value — used as the high bound in a range pattern.
@@ -320,10 +320,10 @@ fn parse_ident_pattern<'ast, 'tok>(
             let path  = p.arena.alloc_slice_clone(&path);
             let elems = p.arena.alloc_slice_clone(&elems);
             let span  = lo.merge(&p.span());
-            Some(p.alloc(Pattern {
+            Some(Pattern {
                 kind: PatternKind::Enum { path, payload: EnumPatternPayload::Tuple(elems) },
                 span,
-            }))
+            })
         }
 
         // `Name { field, other = pat }` — struct pattern (named or enum-struct)
@@ -332,19 +332,19 @@ fn parse_ident_pattern<'ast, 'tok>(
                 // Named struct pattern: `Point { x, y }`
                 let fields = parse_struct_fields_pattern(p)?;
                 let span   = lo.merge(&p.span());
-                Some(p.alloc(Pattern {
+                Some(Pattern {
                     kind: PatternKind::Struct { name: Some(path[0]), fields },
                     span,
-                }))
+                })
             } else {
                 // Enum variant with struct payload: `Result.Err { code }`
                 let path   = p.arena.alloc_slice_clone(&path);
                 let fields = parse_struct_fields_pattern(p)?;
                 let span   = lo.merge(&p.span());
-                Some(p.alloc(Pattern {
+                Some(Pattern {
                     kind: PatternKind::Enum { path, payload: EnumPatternPayload::Struct(fields) },
                     span,
-                }))
+                })
             }
         }
 
@@ -353,17 +353,17 @@ fn parse_ident_pattern<'ast, 'tok>(
             let span = lo.merge(&hi);
             if path.len() == 1 {
                 // Simple binding: `x`
-                Some(p.alloc(Pattern {
+                Some(Pattern {
                     kind: PatternKind::Ident { name: path[0], mutable: false },
                     span,
-                }))
+                })
             } else {
                 // Multi-segment enum variant: `Status.Active`
                 let path = p.arena.alloc_slice_clone(&path);
-                Some(p.alloc(Pattern {
+                Some(Pattern {
                     kind: PatternKind::Enum { path, payload: EnumPatternPayload::None },
                     span,
-                }))
+                })
             }
         }
     }
@@ -421,7 +421,7 @@ fn parse_tuple_pattern<'ast, 'tok>(
     }
     let span  = lo.merge(&p.span());
     let elems = p.arena.alloc_slice_clone(&elems);
-    Some(p.alloc(Pattern { kind: PatternKind::Tuple(elems), span }))
+    Some(Pattern { kind: PatternKind::Tuple(elems), span })
 }
 
 // ── Array pattern ─────────────────────────────────────────────────────────────
@@ -453,7 +453,7 @@ fn parse_array_pattern<'ast, 'tok>(
     }
     let span     = lo.merge(&p.span());
     let elements = p.arena.alloc_slice_clone(&elements);
-    Some(p.alloc(Pattern { kind: PatternKind::Array { elements, rest }, span }))
+    Some(Pattern { kind: PatternKind::Array { elements, rest }, span })
 }
 
 // ── Destructure helpers ───────────────────────────────────────────────────────
@@ -559,4 +559,4 @@ fn parse_destructure_element<'ast, 'tok>(
             None
         }
     }
-}
+                                }
