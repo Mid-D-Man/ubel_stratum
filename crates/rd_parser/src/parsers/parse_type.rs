@@ -162,7 +162,6 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
             TokenType::Ident(name) => {
                 let name = name.clone();
                 self.cursor.advance();
-                let span = lo;
 
                 // Check primitive types first (match on string)
                 if let Some(prim) = Self::try_primitive(&name) {
@@ -474,24 +473,7 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
 
         self.arena.alloc_slice_clone(&params)
     }
-/// Free function wrapper — used by parse_stmt.rs to avoid `impl Parser` conflicts.
-pub(crate) fn parse_type_annotation_opt_inner<'ast, 'tok>(
-    p: &mut Parser<'ast, 'tok>,
-) -> Option<&'ast ubel_stratum::ast::types::Type<'ast>> {
-    if p.cursor.eat(&ubel_stratum::lexer::TokenType::LeftBracket) {
-        // This was called speculatively for pool<T> generic arg — not a real type annotation
-        // Restore and return None
-        p.cursor.restore(p.cursor.position().saturating_sub(1));
-        None
-    } else if p.cursor.eat(&ubel_stratum::lexer::TokenType::Less) {
-        // pool<T>: consume the generic arg and `>`
-        let ty = p.parse_type_expr();
-        p.cursor.eat(&ubel_stratum::lexer::TokenType::Greater);
-        ty
-    } else {
-        None
-    }
-}
+
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     /// Try to eat a lifetime label before a type in a reference.
@@ -541,4 +523,23 @@ pub(crate) fn parse_type_annotation_opt_inner<'ast, 'tok>(
         }
         types
     }
-      }
+}
+
+/// Free function wrapper — used by parse_stmt.rs to avoid `impl Parser` conflicts.
+pub(crate) fn parse_type_annotation_opt_inner<'ast, 'tok>(
+    p: &mut Parser<'ast, 'tok>,
+) -> Option<&'ast ubel_stratum::ast::types::Type<'ast>> {
+    if p.cursor.eat(&ubel_stratum::lexer::TokenType::LeftBracket) {
+        // This was called speculatively for pool<T> generic arg — not a real type annotation
+        // Restore and return None
+        p.cursor.restore(p.cursor.position().saturating_sub(1));
+        None
+    } else if p.cursor.eat(&ubel_stratum::lexer::TokenType::Less) {
+        // pool<T>: consume the generic arg and `>`
+        let ty = p.parse_type_expr();
+        p.cursor.eat(&ubel_stratum::lexer::TokenType::Greater);
+        ty
+    } else {
+        None
+    }
+        }
