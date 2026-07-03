@@ -1,12 +1,21 @@
-// .mdix/patches/ebnf-fixes.mdix
+// .mdix/patches/patch.mdix
 // =============================================================================
-// Patch batch 5 — EBNF corrections
-//   Fix 1 — file extension .strat → .ubl
-//   Fix 2 — add nested AttributeArg for @cfg(not(x)) / any(x) / all(x)
-//   Fix 3 — StructDecl gets LifetimeParams?
-//   Fix 4 — StructBody gets optional Separator between members
-//   Fix 5 — add Separator rule and general optionality note
-//   Fix 6 — root.rs comment .strat → .ubl
+// Patch batch 6 — separate lalrpop from default CI/build, wire up rd_parser CI
+//   Fix 1 — Cargo.toml: drop crates/parser from default workspace members.
+//           lalrpop codegen is too heavy for free GitHub runners and for a
+//           mid-2010 MacBook Pro; it now only builds when explicitly asked
+//           for (cargo build --manifest-path crates/parser/Cargo.toml, or
+//           via ubel-publish.yml's existing with-parser toggle).
+//   Fix 2 — ci-check.yml: since crates/parser is no longer a default member,
+//           `cargo check --workspace` is fast again. Add a step that runs
+//           the new rd_parser pipeline example (lex -> parse -> sema ->
+//           interpret) on every push and posts the results straight to the
+//           Actions run summary — so the whole toolchain's health is visible
+//           from the GitHub web UI with zero local compute.
+//   Fix 3 — ubel-publish.yml: the parser job/bench step used `-p
+//           ubel_stratum_parser`, which only resolves for a workspace
+//           member — switch to --manifest-path. Also add ubel_stratum_rd
+//           to the default (no-toggle-needed) core test job.
 // =============================================================================
 
 @CONFIG(
@@ -19,50 +28,46 @@
   ~patch_replace_text<object>(path, anchor, content) {
     return { path = path, op = "replace_text", anchor = anchor, content = content }
   }
+  ~patch_insert_after<object>(path, anchor, content) {
+    return { path = path, op = "insert_after", anchor = anchor, content = content }
+  }
 )
 
 @DATA(
   patch_files::
 
-    // ── Fix 1: file extension ──────────────────────────────────────────────────
+    // ── Fix 1: stop lalrpop building by default ───────────────────────────────
     patch_replace_text(
-      "docs/ubel.ebnf",
-      "(* File Extension: .strat *)",
-      "(* File Extension: .ubl *)"
+      "Cargo.toml",
+      "members  = [\"crates/core\", \"crates/parser\", \"crates/rd_parser\"]",
+      "# crates/parser (lalrpop) is intentionally NOT a default member — lalrpop\n# codegen is too heavy for free GitHub runners and for local dev on older\n# hardware. Build/test it explicitly with:\n#   cargo build --manifest-path crates/parser/Cargo.toml\n# or via ubel-publish.yml's compile_parser: with-parser input.\nmembers  = [\"crates/core\", \"crates/rd_parser\"]"
     )
 
-    // ── Fix 2: nested AttributeArg ────────────────────────────────────────────
-    patch_replace_text(
-      "docs/ubel.ebnf",
-      "AttributeArg  ::= Ident | Literal | Ident \"=\" Literal",
-      "AttributeArg  ::= Ident\n                | Literal\n                | Ident \"=\" Literal\n                | Ident \"(\" AttributeArgList \")\"   (* nested: @cfg(not(debug)), @cfg(any(...)) *)"
+    // ── Fix 2: rd_parser pipeline report on every push ────────────────────────
+    patch_insert_after(
+      ".github/workflows/ci-check.yml",
+      "run: cargo check --workspace --all-targets",
+      "\n      - name: Run full pipeline report (lex -> parse -> sema -> interpret)\n        if: always()\n        run: |\n          cargo run -p ubel_stratum_rd --example pipeline -- tests/fixtures 2>&1 | tee pipeline-report.txt || true\n\n      - name: Post pipeline report to summary\n        if: always()\n        run: |\n          echo \"## rd_parser Pipeline Report — Run #${{ github.run_number }}\" >> $GITHUB_STEP_SUMMARY\n          echo \"\" >> $GITHUB_STEP_SUMMARY\n          echo '```' >> $GITHUB_STEP_SUMMARY\n          cat pipeline-report.txt >> $GITHUB_STEP_SUMMARY\n          echo '```' >> $GITHUB_STEP_SUMMARY\n"
     )
 
-    // ── Fix 3: StructDecl gets LifetimeParams? ────────────────────────────────
+    // ── Fix 3a: core test job also covers ubel_stratum_rd ─────────────────────
     patch_replace_text(
-      "docs/ubel.ebnf",
-      "StructDecl    ::= \"pub\"? \"edge\"? \"struct\" Ident GenericParams? \"{\" StructBody \"}\"",
-      "StructDecl    ::= \"pub\"? \"edge\"? \"struct\" Ident LifetimeParams? GenericParams? \"{\" StructBody \"}\""
+      ".github/workflows/ubel-publish.yml",
+      "cargo test -p ubel_stratum --lib --tests --color=never 2>&1 | tee test-core.txt",
+      "cargo test -p ubel_stratum -p ubel_stratum_rd --lib --tests --color=never 2>&1 | tee test-core.txt"
     )
 
-    // ── Fix 4: StructBody gets optional separator ─────────────────────────────
+    // ── Fix 3b: parser job no longer a workspace member, use --manifest-path ──
     patch_replace_text(
-      "docs/ubel.ebnf",
-      "StructBody    ::= StructMember*",
-      "(* Struct members may be separated by optional \",\" \";\" or just newline. *)\nStructBody    ::= StructMember (Separator? StructMember)* Separator?"
+      ".github/workflows/ubel-publish.yml",
+      "cargo test -p ubel_stratum_parser --lib --tests --color=never 2>&1 | tee test-parser.txt",
+      "cargo test --manifest-path crates/parser/Cargo.toml --lib --tests --color=never 2>&1 | tee test-parser.txt"
     )
 
-    // ── Fix 5: add Separator rule + global optionality note ───────────────────
+    // ── Fix 3c: same for the parser benchmark step ─────────────────────────────
     patch_replace_text(
-      "docs/ubel.ebnf",
-      "StructMember  ::= FieldDecl",
-      "(* Separator is optional in all list contexts throughout the language.  *)\n(* A comma, semicolon, or plain newline/whitespace all delimit list items.  *)\nSeparator     ::= \",\" | \";\"\n\nStructMember  ::= FieldDecl"
-    )
-
-    // ── Fix 6: root.rs comment ────────────────────────────────────────────────
-    patch_replace_text(
-      "crates/core/src/ast/root.rs",
-      "/// The root node returned by the parser for one `.strat` source file.",
-      "/// The root node returned by the parser for one `.ubl` source file."
+      ".github/workflows/ubel-publish.yml",
+      "cargo bench -p ubel_stratum_parser --bench parser_bench",
+      "cargo bench --manifest-path crates/parser/Cargo.toml --bench parser_bench"
     )
 )
