@@ -12,7 +12,7 @@
 
 use ubel_stratum::{
     ast::{
-        common::{Attribute, GenericParam, TierAnnotation, Visibility},
+        common::{Attribute, TierAnnotation, Visibility},
         declarations::{
             ConstDecl, EnumDecl, EnumVariant, EnumVariantPayload, ExtendDecl,
             FieldDecl, FunctionDecl, ImplBlock, MethodDecl, MethodSig,
@@ -20,8 +20,6 @@ use ubel_stratum::{
             StructMember, TraitDecl, TraitItem, TypeAlias,
         },
         root::{Item, Import, ImportItems, ImportKind, PackageDecl},
-        statements::Block,
-        types::TypeKind,
     },
     error_management::error_types::ParseContext,
     lexer::{Span, TokenType},
@@ -319,12 +317,14 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
         let mut members: Vec<StructMember<'ast>> = Vec::with_capacity(cap::STRUCT_FIELDS);
 
         while !self.cursor.is_at(&TokenType::RightBrace) && !self.cursor.is_eof() {
+            let pos_before = self.cursor.position();
             if let Some(m) = self.parse_struct_member() {
                 members.push(m);
             } else {
                 self.recover_to_struct_member();
             }
             self.eat_sep(); // optional separator between members
+            self.guard_progress(pos_before);
         }
 
         self.arena.alloc_slice_clone(&members)
@@ -492,10 +492,14 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
 
         let mut variants: Vec<EnumVariant<'ast>> = Vec::with_capacity(cap::ENUM_VARIANTS);
         while !self.cursor.is_at(&TokenType::RightBrace) && !self.cursor.is_eof() {
+            let pos_before = self.cursor.position();
             if let Some(v) = self.parse_enum_variant() {
                 variants.push(v);
+            } else {
+                self.recover_to_struct_member();
             }
             self.eat_sep();
+            self.guard_progress(pos_before);
         }
 
         let close_span = self.span();
@@ -526,8 +530,10 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
                 self.cursor.advance();
                 let mut types = Vec::with_capacity(2);
                 while !self.cursor.is_at(&TokenType::RightParen) && !self.cursor.is_eof() {
+                    let pos_before = self.cursor.position();
                     if let Some(t) = self.parse_type_expr() { types.push(t); }
                     self.eat_sep();
+                    self.guard_progress(pos_before);
                 }
                 self.cursor.eat(&TokenType::RightParen);
                 let tys: Vec<&'ast ubel_stratum::ast::types::Type<'ast>> = types;
@@ -539,8 +545,10 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
                 self.cursor.advance();
                 let mut fields: Vec<FieldDecl<'ast>> = Vec::with_capacity(4);
                 while !self.cursor.is_at(&TokenType::RightBrace) && !self.cursor.is_eof() {
+                    let pos_before = self.cursor.position();
                     if let Some(f) = self.parse_enum_field() { fields.push(f); }
                     self.eat_sep();
+                    self.guard_progress(pos_before);
                 }
                 self.cursor.eat(&TokenType::RightBrace);
                 EnumVariantPayload::Struct(self.arena.alloc_slice_clone(&fields))
@@ -589,8 +597,10 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
             let mut items: Vec<TraitItem<'ast>> = Vec::with_capacity(cap::TRAIT_ITEMS);
 
             while !self.cursor.is_at(&TokenType::RightBrace) && !self.cursor.is_eof() {
-                if let Some(item) = self.parse_trait_item() { items.push(item); }
+                let pos_before = self.cursor.position();
+                if let Some(item) = self.parse_trait_item() { items.push(item); } else { self.recover_to_decl(); }
                 self.eat_sep();
+                self.guard_progress(pos_before);
             }
 
             if !self.cursor.eat(&TokenType::RightBrace) {
@@ -709,6 +719,7 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
 
         let mut methods: Vec<MethodDecl<'ast>> = Vec::with_capacity(cap::IMPL_ITEMS);
         while !self.cursor.is_at(&TokenType::RightBrace) && !self.cursor.is_eof() {
+            let pos_before = self.cursor.position();
             let (m_attrs, _) = if self.cursor.is_at(&TokenType::At) {
                 self.parse_attribute_list()
             } else {
@@ -723,6 +734,7 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
                 self.recover_to_decl();
             }
             self.eat_sep();
+            self.guard_progress(pos_before);
         }
 
         let close_span = self.span();
@@ -762,6 +774,7 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
             let mut ms: Vec<MethodDecl<'ast>> = Vec::with_capacity(cap::IMPL_ITEMS);
 
             while !self.cursor.is_at(&TokenType::RightBrace) && !self.cursor.is_eof() {
+                let pos_before = self.cursor.position();
                 let (m_attrs, _) = if self.cursor.is_at(&TokenType::At) {
                     self.parse_attribute_list()
                 } else {
@@ -775,6 +788,7 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
                     self.recover_to_decl();
                 }
                 self.eat_sep();
+                self.guard_progress(pos_before);
             }
 
             if !self.cursor.eat(&TokenType::RightBrace) {
@@ -841,12 +855,7 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
 
         Some(TypeAlias { attributes: attrs, name, generic_params, ty, span })
     }
-/// Free function version — callable from parse_stmt.rs and parse_expr.rs.
-pub(crate) fn parse_type_annotation_opt<'ast, 'tok>(
-    p: &mut Parser<'ast, 'tok>,
-) -> Option<&'ast ubel_stratum::ast::types::Type<'ast>> {
-    if p.cursor.eat(&TokenType::Colon) { p.parse_type_expr() } else { None }
-}
+
     // ── Package + import (used by parse_program.rs) ───────────────────────────
 
     pub(crate) fn parse_package(&mut self) -> Option<PackageDecl<'ast>> {
@@ -883,8 +892,10 @@ pub(crate) fn parse_type_annotation_opt<'ast, 'tok>(
                 let items = if self.cursor.eat(&TokenType::LeftBracket) {
                     let mut names: Vec<&'ast str> = Vec::with_capacity(cap::IMPORT_LIST);
                     while !self.cursor.is_at(&TokenType::RightBracket) && !self.cursor.is_eof() {
+                        let pos_before = self.cursor.position();
                         if let Some((n, _)) = self.eat_ident() { names.push(n); }
                         self.eat_sep();
+                        self.guard_progress(pos_before);
                     }
                     self.cursor.eat(&TokenType::RightBracket);
                     ImportItems::List(self.arena.alloc_slice_clone(&names))
@@ -936,4 +947,11 @@ pub(crate) fn parse_type_annotation_opt<'ast, 'tok>(
     ) -> Option<&'ast ubel_stratum::ast::expressions::Expr<'ast>> {
         crate::parsers::parse_expr::parse_expr(self)
     }
-          }
+}
+
+/// Free function version — callable from parse_stmt.rs and parse_expr.rs.
+pub(crate) fn parse_type_annotation_opt<'ast, 'tok>(
+    p: &mut Parser<'ast, 'tok>,
+) -> Option<&'ast ubel_stratum::ast::types::Type<'ast>> {
+    if p.cursor.eat(&TokenType::Colon) { p.parse_type_expr() } else { None }
+            }
