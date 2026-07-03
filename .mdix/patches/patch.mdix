@@ -1,21 +1,11 @@
 // .mdix/patches/patch.mdix
 // =============================================================================
-// Patch batch 6 — separate lalrpop from default CI/build, wire up rd_parser CI
-//   Fix 1 — Cargo.toml: drop crates/parser from default workspace members.
-//           lalrpop codegen is too heavy for free GitHub runners and for a
-//           mid-2010 MacBook Pro; it now only builds when explicitly asked
-//           for (cargo build --manifest-path crates/parser/Cargo.toml, or
-//           via ubel-publish.yml's existing with-parser toggle).
-//   Fix 2 — ci-check.yml: since crates/parser is no longer a default member,
-//           `cargo check --workspace` is fast again. Add a step that runs
-//           the new rd_parser pipeline example (lex -> parse -> sema ->
-//           interpret) on every push and posts the results straight to the
-//           Actions run summary — so the whole toolchain's health is visible
-//           from the GitHub web UI with zero local compute.
-//   Fix 3 — ubel-publish.yml: the parser job/bench step used `-p
-//           ubel_stratum_parser`, which only resolves for a workspace
-//           member — switch to --manifest-path. Also add ubel_stratum_rd
-//           to the default (no-toggle-needed) core test job.
+// Patch batch 8 — fix E0063 in crates/core/src/sema/tests.rs (CI run #126)
+//   StructDecl gained `attributes` and `lifetime_params` fields a while back
+//   (see docs/ubel.ebnf batch 5), but these two test-only struct literals
+//   were never updated to match, so `cargo test --workspace` fails to even
+//   compile. Both call sites get the same two fields, both empty (these
+//   tests don't exercise attributes or lifetimes).
 // =============================================================================
 
 @CONFIG(
@@ -28,46 +18,22 @@
   ~patch_replace_text<object>(path, anchor, content) {
     return { path = path, op = "replace_text", anchor = anchor, content = content }
   }
-  ~patch_insert_after<object>(path, anchor, content) {
-    return { path = path, op = "insert_after", anchor = anchor, content = content }
-  }
 )
 
 @DATA(
   patch_files::
 
-    // ── Fix 1: stop lalrpop building by default ───────────────────────────────
+    // ── Fix 1: test_sema_empty_struct_ok ───────────────────────────────────────
     patch_replace_text(
-      "Cargo.toml",
-      "members  = [\"crates/core\", \"crates/parser\", \"crates/rd_parser\"]",
-      "# crates/parser (lalrpop) is intentionally NOT a default member — lalrpop\n# codegen is too heavy for free GitHub runners and for local dev on older\n# hardware. Build/test it explicitly with:\n#   cargo build --manifest-path crates/parser/Cargo.toml\n# or via ubel-publish.yml's compile_parser: with-parser input.\nmembers  = [\"crates/core\", \"crates/rd_parser\"]"
+      "crates/core/src/sema/tests.rs",
+      "let s = StructDecl {\n        visibility:     Visibility::default(),\n        is_edge:        false,\n        name:           arena.alloc_str(\"Point\"),\n        generic_params: &[],\n        members:        &[],\n        span:           Z,\n    };",
+      "let s = StructDecl {\n        attributes:      &[],\n        visibility:      Visibility::default(),\n        is_edge:         false,\n        name:            arena.alloc_str(\"Point\"),\n        lifetime_params: &[],\n        generic_params:  &[],\n        members:         &[],\n        span:            Z,\n    };"
     )
 
-    // ── Fix 2: rd_parser pipeline report on every push ────────────────────────
-    patch_insert_after(
-      ".github/workflows/ci-check.yml",
-      "run: cargo check --workspace --all-targets",
-      "\n      - name: Run full pipeline report (lex -> parse -> sema -> interpret)\n        if: always()\n        run: |\n          cargo run -p ubel_stratum_rd --example pipeline -- tests/fixtures 2>&1 | tee pipeline-report.txt || true\n\n      - name: Post pipeline report to summary\n        if: always()\n        run: |\n          echo \"## rd_parser Pipeline Report — Run #${{ github.run_number }}\" >> $GITHUB_STEP_SUMMARY\n          echo \"\" >> $GITHUB_STEP_SUMMARY\n          echo '```' >> $GITHUB_STEP_SUMMARY\n          cat pipeline-report.txt >> $GITHUB_STEP_SUMMARY\n          echo '```' >> $GITHUB_STEP_SUMMARY\n"
-    )
-
-    // ── Fix 3a: core test job also covers ubel_stratum_rd ─────────────────────
+    // ── Fix 2: test_sema_struct_and_fn_ok ──────────────────────────────────────
     patch_replace_text(
-      ".github/workflows/ubel-publish.yml",
-      "cargo test -p ubel_stratum --lib --tests --color=never 2>&1 | tee test-core.txt",
-      "cargo test -p ubel_stratum -p ubel_stratum_rd --lib --tests --color=never 2>&1 | tee test-core.txt"
-    )
-
-    // ── Fix 3b: parser job no longer a workspace member, use --manifest-path ──
-    patch_replace_text(
-      ".github/workflows/ubel-publish.yml",
-      "cargo test -p ubel_stratum_parser --lib --tests --color=never 2>&1 | tee test-parser.txt",
-      "cargo test --manifest-path crates/parser/Cargo.toml --lib --tests --color=never 2>&1 | tee test-parser.txt"
-    )
-
-    // ── Fix 3c: same for the parser benchmark step ─────────────────────────────
-    patch_replace_text(
-      ".github/workflows/ubel-publish.yml",
-      "cargo bench -p ubel_stratum_parser --bench parser_bench",
-      "cargo bench --manifest-path crates/parser/Cargo.toml --bench parser_bench"
+      "crates/core/src/sema/tests.rs",
+      "let s = StructDecl {\n        visibility:     Visibility::default(),\n        is_edge:        false,\n        name:           arena.alloc_str(\"Vec3\"),\n        generic_params: &[],\n        members:        &[],\n        span:           Z,\n    };",
+      "let s = StructDecl {\n        attributes:      &[],\n        visibility:      Visibility::default(),\n        is_edge:         false,\n        name:            arena.alloc_str(\"Vec3\"),\n        lifetime_params: &[],\n        generic_params:  &[],\n        members:         &[],\n        span:            Z,\n    };"
     )
 )
