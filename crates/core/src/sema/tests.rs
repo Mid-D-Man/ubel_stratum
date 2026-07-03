@@ -186,12 +186,14 @@ fn test_sema_fn_ref_sibling_as_expr_ok() {
 fn test_sema_empty_struct_ok() {
     let arena = AstArena::new();
     let s = StructDecl {
-        visibility:     Visibility::default(),
-        is_edge:        false,
-        name:           arena.alloc_str("Point"),
-        generic_params: &[],
-        members:        &[],
-        span:           Z,
+        attributes:      &[],
+        visibility:      Visibility::default(),
+        is_edge:         false,
+        name:            arena.alloc_str("Point"),
+        lifetime_params: &[],
+        generic_params:  &[],
+        members:         &[],
+        span:            Z,
     };
     assert_ok(&arena, &prog_with(&arena, &[Item::Struct(s)]));
 }
@@ -200,12 +202,14 @@ fn test_sema_empty_struct_ok() {
 fn test_sema_struct_and_fn_ok() {
     let arena = AstArena::new();
     let s = StructDecl {
-        visibility:     Visibility::default(),
-        is_edge:        false,
-        name:           arena.alloc_str("Vec3"),
-        generic_params: &[],
-        members:        &[],
-        span:           Z,
+        attributes:      &[],
+        visibility:      Visibility::default(),
+        is_edge:         false,
+        name:            arena.alloc_str("Vec3"),
+        lifetime_params: &[],
+        generic_params:  &[],
+        members:         &[],
+        span:            Z,
     };
     let f = make_fn(&arena, "new_vec3", Block::empty(Z));
     assert_ok(&arena, &prog_with(&arena, &[Item::Struct(s), Item::Function(f)]));
