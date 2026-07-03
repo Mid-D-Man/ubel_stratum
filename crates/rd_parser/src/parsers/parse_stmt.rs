@@ -8,7 +8,7 @@ use ubel_stratum::{
         common::AssignOp,
         expressions::{ElifBranch, IfExpr, MatchArm, MatchArmBody},
         statements::{
-            AllocatorKind, BindingTarget, Block, SizeExpr, SizeUnit,
+            AllocatorKind, BindingTarget, Block, SizeExpr,
             Stmt, StmtKind, UsingBinding,
         },
     },
@@ -41,11 +41,13 @@ pub(crate) fn parse_block_inner<'ast, 'tok>(p: &mut Parser<'ast, 'tok>) -> Optio
     while !p.cursor.is_at(&TokenType::RightBrace) && !p.cursor.is_eof() {
         while p.cursor.eat(&TokenType::Semicolon) {}
         if p.cursor.is_at(&TokenType::RightBrace) { break; }
+        let pos_before = p.cursor.position();
         if let Some(stmt) = parse_stmt(p) {
             stmts.push(stmt);
         } else {
             p.recover_to_stmt();
         }
+        p.guard_progress(pos_before);
     }
 
     let close = p.span();
@@ -177,6 +179,34 @@ fn parse_if_stmt<'ast, 'tok>(p: &mut Parser<'ast, 'tok>) -> Option<StmtKind<'ast
     Some(StmtKind::If(node))
 }
 
+// ── match arm body (shared with parse_expr.rs) ─────────────────────────────────
+
+/// Parse a match-arm body.
+///
+/// `return` / `break` / `continue` / `fail` are statements, not
+/// expressions, in this language (see `parse_stmt`'s dispatcher) — so a
+/// bare `pattern => return value` arm cannot go through `parse_expr`.
+/// Detect that case up front and parse it as a single statement wrapped
+/// in an implicit one-statement block instead.
+pub(crate) fn parse_match_arm_body<'ast, 'tok>(
+    p: &mut Parser<'ast, 'tok>,
+) -> Option<MatchArmBody<'ast>> {
+    if p.cursor.is_at(&TokenType::LeftBrace) {
+        Some(MatchArmBody::Block(parse_block_inner(p)?))
+    } else if matches!(
+        p.cursor.peek(),
+        TokenType::Return | TokenType::Break | TokenType::Continue | TokenType::Fail
+    ) {
+        let lo   = p.span();
+        let stmt = parse_stmt(p)?;
+        let span = lo.merge(&stmt.span);
+        let stmts = p.arena.alloc_slice_copy(&[stmt]);
+        Some(MatchArmBody::Block(Block { stmts, span }))
+    } else {
+        Some(MatchArmBody::Expr(parse_expr::parse_expr(p)?))
+    }
+}
+
 // ── match ─────────────────────────────────────────────────────────────────────
 
 fn parse_match_stmt<'ast, 'tok>(p: &mut Parser<'ast, 'tok>) -> Option<StmtKind<'ast>> {
@@ -190,8 +220,10 @@ fn parse_match_stmt<'ast, 'tok>(p: &mut Parser<'ast, 'tok>) -> Option<StmtKind<'
 
     let mut arms: Vec<MatchArm<'ast>> = Vec::with_capacity(p.estimates.match_arms);
     while !p.cursor.is_at(&TokenType::RightBrace) && !p.cursor.is_eof() {
-        if let Some(arm) = parse_match_arm(p) { arms.push(arm); }
+        let pos_before = p.cursor.position();
+        if let Some(arm) = parse_match_arm(p) { arms.push(arm); } else { p.recover_to_stmt(); }
         p.eat_sep();
+        p.guard_progress(pos_before);
     }
     if !p.cursor.eat(&TokenType::RightBrace) {
         p.emit(crate::error::unclosed('{', open, None, p.span()));
@@ -209,11 +241,7 @@ fn parse_match_arm<'ast, 'tok>(p: &mut Parser<'ast, 'tok>) -> Option<MatchArm<'a
         p.emit(crate::error::from_cursor(e, ParseContext::MatchArm));
         return None;
     }
-    let body = if p.cursor.is_at(&TokenType::LeftBrace) {
-        MatchArmBody::Block(parse_block_inner(p)?)
-    } else {
-        MatchArmBody::Expr(parse_expr::parse_expr(p)?)
-    };
+    let body = parse_match_arm_body(p)?;
     Some(MatchArm { pattern, guard, body, span: lo.merge(&p.span()) })
 }
 
@@ -228,20 +256,23 @@ fn parse_for_stmt<'ast, 'tok>(p: &mut Parser<'ast, 'tok>) -> Option<StmtKind<'as
         return None;
     }
     let iter = parse_expr::parse_expr(p)?;
-    let body = p.alloc(parse_block_inner(p)?); // &'ast Block
+    let block = parse_block_inner(p)?;
+    let body = p.alloc(block); // &'ast Block
     Some(StmtKind::For { binding, iter, body })
 }
 
 fn parse_while_stmt<'ast, 'tok>(p: &mut Parser<'ast, 'tok>) -> Option<StmtKind<'ast>> {
     p.cursor.advance(); // `while`
     let condition = parse_expr::parse_expr(p)?;
-    let body      = p.alloc(parse_block_inner(p)?);
+    let block      = parse_block_inner(p)?;
+    let body      = p.alloc(block);
     Some(StmtKind::While { condition, body })
 }
 
 fn parse_loop_stmt<'ast, 'tok>(p: &mut Parser<'ast, 'tok>) -> Option<StmtKind<'ast>> {
     p.cursor.advance(); // `loop`
-    Some(StmtKind::Loop(p.alloc(parse_block_inner(p)?)))
+    let block = parse_block_inner(p)?;
+    Some(StmtKind::Loop(p.alloc(block)))
 }
 
 fn parse_break_stmt<'ast, 'tok>(p: &mut Parser<'ast, 'tok>) -> Option<StmtKind<'ast>> {
@@ -257,7 +288,8 @@ fn parse_with_stmt<'ast, 'tok>(p: &mut Parser<'ast, 'tok>) -> Option<StmtKind<'a
     p.cursor.advance(); // `with`
 
     let allocator = parse_allocator_kind(p)?;
-    let body      = p.alloc(parse_block_inner(p)?);
+    let block      = parse_block_inner(p)?;
+    let body      = p.alloc(block);
 
     p.leave(prev);
     Some(StmtKind::With { allocator, body })
@@ -360,7 +392,8 @@ fn parse_using_stmt<'ast, 'tok>(p: &mut Parser<'ast, 'tok>) -> Option<StmtKind<'
         if !p.cursor.eat(&TokenType::Comma) { break; }
     }
 
-    let body     = p.alloc(parse_block_inner(p)?);
+    let block     = parse_block_inner(p)?;
+    let body     = p.alloc(block);
     let bindings = p.arena.alloc_slice_clone(&bindings);
     Some(StmtKind::Using { bindings, body })
 }
@@ -388,7 +421,8 @@ fn parse_defer_stmt<'ast, 'tok>(p: &mut Parser<'ast, 'tok>) -> Option<StmtKind<'
 
 fn parse_try_stmt<'ast, 'tok>(p: &mut Parser<'ast, 'tok>) -> Option<StmtKind<'ast>> {
     p.cursor.advance(); // `try`
-    let body = p.alloc(parse_block_inner(p)?);
+    let block = parse_block_inner(p)?;
+    let body = p.alloc(block);
 
     let (catch_binding, catch_body) = if p.cursor.eat(&TokenType::Catch) {
         let open = p.span();
@@ -400,7 +434,8 @@ fn parse_try_stmt<'ast, 'tok>(p: &mut Parser<'ast, 'tok>) -> Option<StmtKind<'as
         if !p.cursor.eat(&TokenType::RightParen) {
             p.emit(crate::error::unclosed('(', open, None, p.span()));
         }
-        (Some(name), Some(p.alloc(parse_block_inner(p)?)))
+        let block = parse_block_inner(p)?;
+        (Some(name), Some(p.alloc(block)))
     } else {
         (None, None)
     };
@@ -410,7 +445,8 @@ fn parse_try_stmt<'ast, 'tok>(p: &mut Parser<'ast, 'tok>) -> Option<StmtKind<'as
 
 fn parse_unsafe_stmt<'ast, 'tok>(p: &mut Parser<'ast, 'tok>) -> Option<StmtKind<'ast>> {
     p.cursor.advance(); // `unsafe`
-    Some(StmtKind::Unsafe(p.alloc(parse_block_inner(p)?)))
+    let block = parse_block_inner(p)?;
+    Some(StmtKind::Unsafe(p.alloc(block)))
 }
 
 // ── Assign op helper ──────────────────────────────────────────────────────────
