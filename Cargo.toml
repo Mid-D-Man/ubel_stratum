@@ -1,5 +1,10 @@
 [workspace]
-members  = ["crates/core", "crates/parser", "crates/rd_parser"]
+# crates/parser (lalrpop) is intentionally NOT a default member — lalrpop
+# codegen is too heavy for free GitHub runners and for local dev on older
+# hardware. Build/test it explicitly with:
+#   cargo build --manifest-path crates/parser/Cargo.toml
+# or via ubel-publish.yml's compile_parser: with-parser input.
+members  = ["crates/core", "crates/rd_parser"]
 resolver = "2"
 
 # Profiles are workspace-level; all crates inherit without re-declaring.
