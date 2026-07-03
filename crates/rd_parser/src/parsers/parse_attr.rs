@@ -166,7 +166,7 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
             &[]
         };
 
-        let span = at_span.merge(self.span());
+        let span = at_span.merge(&self.span());
         Some(Attribute { name, args, span })
     }
 
@@ -176,7 +176,7 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
     /// The `(` must be the current token.
     fn parse_attr_arg_list(
         &mut self,
-        attr_name: &str,
+        _attr_name: &str,
         builtin:   Option<BuiltinAttr>,
     ) -> Option<&'ast [AttrArg<'ast>]> {
         let open_span = self.span();
@@ -293,7 +293,7 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
     }
 
     fn parse_cfg_arg_inner(&mut self) -> Option<AttrArg<'ast>> {
-        let name_tok = self.cursor.peek_token().clone();
+        let _name_tok = self.cursor.peek_token().clone();
         let (name, name_span) = self.eat_ident()?;
 
         // Composition operators: not / any / all
@@ -405,4 +405,4 @@ pub(crate) fn extract_tier_from_attrs(attrs: &[Attribute<'_>]) -> TierAnnotation
         .iter()
         .find_map(|a| try_extract_tier(a))
         .unwrap_or(TierAnnotation::High)
-}
+    }
