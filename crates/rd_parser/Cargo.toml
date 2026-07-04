@@ -20,3 +20,8 @@ phf          = { version = "0.11", features = ["macros"] }
 
 [dev-dependencies]
 ubel_stratum = { path = "../core" }
+criterion    = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name    = "pipeline_bench"
+harness = false
