@@ -1,11 +1,13 @@
 // .mdix/patches/patch.mdix
 // =============================================================================
-// Patch batch 8 — fix E0063 in crates/core/src/sema/tests.rs (CI run #126)
-//   StructDecl gained `attributes` and `lifetime_params` fields a while back
-//   (see docs/ubel.ebnf batch 5), but these two test-only struct literals
-//   were never updated to match, so `cargo test --workspace` fails to even
-//   compile. Both call sites get the same two fields, both empty (these
-//   tests don't exercise attributes or lifetimes).
+// Patch batch 9 — fix E0063 in crates/core/benches/ast_bench.rs
+//   Same root cause as batch 8 (sema/tests.rs): StructDecl/ConstDecl grew
+//   `attributes` (both) and `lifetime_params` (StructDecl only) fields a
+//   while back, and these three bench-only struct literals were never
+//   updated. `cargo test --workspace --all-targets` compiles benches too,
+//   so this was failing the CI build the same way sema/tests.rs was.
+//   Verified by actually compiling AND running the benchmark after the
+//   fix — ast/struct_decl/* benches produce real timing output.
 // =============================================================================
 
 @CONFIG(
@@ -23,17 +25,24 @@
 @DATA(
   patch_files::
 
-    // ── Fix 1: test_sema_empty_struct_ok ───────────────────────────────────────
+    // ── Fix 1: StructDecl at line ~466 (MyStruct, direct black_box case) ──────
     patch_replace_text(
-      "crates/core/src/sema/tests.rs",
-      "let s = StructDecl {\n        visibility:     Visibility::default(),\n        is_edge:        false,\n        name:           arena.alloc_str(\"Point\"),\n        generic_params: &[],\n        members:        &[],\n        span:           Z,\n    };",
-      "let s = StructDecl {\n        attributes:      &[],\n        visibility:      Visibility::default(),\n        is_edge:         false,\n        name:            arena.alloc_str(\"Point\"),\n        lifetime_params: &[],\n        generic_params:  &[],\n        members:         &[],\n        span:            Z,\n    };"
+      "crates/core/benches/ast_bench.rs",
+      "let decl = StructDecl {\n                        visibility: Visibility::Public,\n                        is_edge: false,\n                        name: arena.alloc_str(\"MyStruct\"),\n                        generic_params: &[],\n                        members: members.into_bump_slice(),\n                        span: DUMMY,\n                    };",
+      "let decl = StructDecl {\n                        attributes: &[],\n                        visibility: Visibility::Public,\n                        is_edge: false,\n                        name: arena.alloc_str(\"MyStruct\"),\n                        lifetime_params: &[],\n                        generic_params: &[],\n                        members: members.into_bump_slice(),\n                        span: DUMMY,\n                    };"
     )
 
-    // ── Fix 2: test_sema_struct_and_fn_ok ──────────────────────────────────────
+    // ── Fix 2: ConstDecl (MAX) ──────────────────────────────────────────────────
     patch_replace_text(
-      "crates/core/src/sema/tests.rs",
-      "let s = StructDecl {\n        visibility:     Visibility::default(),\n        is_edge:        false,\n        name:           arena.alloc_str(\"Vec3\"),\n        generic_params: &[],\n        members:        &[],\n        span:           Z,\n    };",
-      "let s = StructDecl {\n        attributes:      &[],\n        visibility:      Visibility::default(),\n        is_edge:         false,\n        name:            arena.alloc_str(\"Vec3\"),\n        lifetime_params: &[],\n        generic_params:  &[],\n        members:         &[],\n        span:            Z,\n    };"
+      "crates/core/benches/ast_bench.rs",
+      "items.push(Item::Const(ConstDecl {\n                name: arena.alloc_str(\"MAX\"),\n                ty: Some(int_ty),\n                value: int_lit(&arena, 100),\n                span: DUMMY,\n            }));",
+      "items.push(Item::Const(ConstDecl {\n                attributes: &[],\n                name: arena.alloc_str(\"MAX\"),\n                ty: Some(int_ty),\n                value: int_lit(&arena, 100),\n                span: DUMMY,\n            }));"
+    )
+
+    // ── Fix 3: StructDecl (Point) ────────────────────────────────────────────────
+    patch_replace_text(
+      "crates/core/benches/ast_bench.rs",
+      "items.push(Item::Struct(StructDecl {\n                visibility: Visibility::Public,\n                is_edge: false,\n                name: arena.alloc_str(\"Point\"),\n                generic_params: &[],\n                members: fields.into_bump_slice(),\n                span: DUMMY,\n            }));",
+      "items.push(Item::Struct(StructDecl {\n                attributes: &[],\n                visibility: Visibility::Public,\n                is_edge: false,\n                name: arena.alloc_str(\"Point\"),\n                lifetime_params: &[],\n                generic_params: &[],\n                members: fields.into_bump_slice(),\n                span: DUMMY,\n            }));"
     )
 )
