@@ -1,0 +1,528 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ubel Stratum — Pipeline Dashboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg:          #1B1815;
+    --panel:       #211D19;
+    --panel-alt:   #2A2520;
+    --border:      #3A342C;
+    --text:        #EDE6DA;
+    --text-muted:  #9C9284;
+    --tok:         #C9A46A; /* tokenize — sandstone   */
+    --parse:       #6E8FA3; /* parse     — shale       */
+    --sema:        #B06B4E; /* sema      — fired clay  */
+    --interp:      #7E9270; /* interpret — lichen/verdigris */
+    --fail:        #C24B3F;
+    --skip:        #55504A;
+    --font-display: 'Fraunces', Georgia, serif;
+    --font-body:    -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    --font-mono:    'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-body);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  a { color: var(--tok); }
+
+  /* ── Hero: geological cross-section ─────────────────────────────── */
+  .hero {
+    padding: 2.5rem 2rem 0;
+    max-width: 1180px;
+    margin: 0 auto;
+  }
+  .hero-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    flex-wrap: wrap;
+    gap: 1rem;
+    margin-bottom: 1.25rem;
+  }
+  .hero h1 {
+    font-family: var(--font-display);
+    font-weight: 600;
+    font-size: 2.35rem;
+    letter-spacing: 0.01em;
+    margin: 0;
+  }
+  .hero .subtitle {
+    color: var(--text-muted);
+    font-size: 0.95rem;
+    margin-top: 0.35rem;
+  }
+  .hero-meta {
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    text-align: right;
+    line-height: 1.6;
+  }
+  .hero-meta a { color: var(--parse); text-decoration: none; }
+  .hero-meta a:hover { text-decoration: underline; }
+
+  .strata {
+    width: 100%;
+    height: auto;
+    display: block;
+    border-radius: 6px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+  }
+  .strata text {
+    font-family: var(--font-mono);
+    font-size: 13px;
+    fill: #17140F;
+    font-weight: 600;
+  }
+  .strata .count {
+    font-size: 11px;
+    font-weight: 500;
+    fill: rgba(23,20,15,0.75);
+  }
+
+  /* ── Stage summary strip ─────────────────────────────────────────── */
+  .stage-strip {
+    max-width: 1180px;
+    margin: 1.5rem auto 0;
+    padding: 0 2rem;
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 0.75rem;
+  }
+  .stage-card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-top: 3px solid var(--stage-color);
+    border-radius: 6px;
+    padding: 0.75rem 1rem;
+  }
+  .stage-card .label {
+    font-family: var(--font-mono);
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
+  }
+  .stage-card .counts {
+    margin-top: 0.35rem;
+    font-family: var(--font-mono);
+    font-size: 0.85rem;
+  }
+  .stage-card .ok { color: var(--text); }
+  .stage-card .fail { color: var(--fail); margin-left: 0.6rem; }
+  .stage-card .skip { color: var(--text-muted); margin-left: 0.6rem; }
+
+  /* ── Main layout ──────────────────────────────────────────────────── */
+  .main {
+    max-width: 1180px;
+    margin: 1.75rem auto 3rem;
+    padding: 0 2rem;
+    display: grid;
+    grid-template-columns: 240px 1fr;
+    gap: 1.25rem;
+  }
+
+  .sidebar {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 0.5rem;
+    align-self: start;
+    max-height: 70vh;
+    overflow-y: auto;
+  }
+  .sidebar h2 {
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--text-muted);
+    margin: 0.5rem 0.6rem 0.4rem;
+  }
+  .fixture-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    padding: 0.5rem 0.6rem;
+    border-radius: 5px;
+    cursor: pointer;
+    font-family: var(--font-mono);
+    font-size: 0.82rem;
+  }
+  .fixture-row:hover { background: var(--panel-alt); }
+  .fixture-row.active { background: var(--panel-alt); box-shadow: inset 2px 0 0 var(--tok); }
+  .fixture-row .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .dots { display: flex; gap: 3px; flex-shrink: 0; }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--skip); }
+  .dot.ok.tok    { background: var(--tok); }
+  .dot.ok.parse  { background: var(--parse); }
+  .dot.ok.sema   { background: var(--sema); }
+  .dot.ok.interp { background: var(--interp); }
+  .dot.fail { background: var(--fail); }
+
+  .content {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    min-height: 480px;
+  }
+  .tabs {
+    display: flex;
+    border-bottom: 1px solid var(--border);
+    background: var(--panel-alt);
+  }
+  .tab {
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    padding: 0.7rem 1rem;
+    color: var(--text-muted);
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    user-select: none;
+  }
+  .tab:hover { color: var(--text); }
+  .tab.active { color: var(--text); border-bottom-color: var(--tab-color, var(--tok)); }
+  .tab .status { margin-left: 0.4rem; font-size: 0.7rem; }
+  .tab .status.ok { color: var(--interp); }
+  .tab .status.fail { color: var(--fail); }
+  .tab .status.skip { color: var(--text-muted); }
+
+  .panel-body {
+    flex: 1;
+    overflow: auto;
+    padding: 1rem 1.25rem;
+  }
+  .panel-body pre {
+    margin: 0;
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+    line-height: 1.55;
+    white-space: pre-wrap;
+    word-break: break-word;
+    color: var(--text);
+  }
+  .empty-note {
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+    font-size: 0.85rem;
+    padding: 2rem;
+    text-align: center;
+  }
+
+  /* ── Benchmarks ───────────────────────────────────────────────────── */
+  .bench-section {
+    max-width: 1180px;
+    margin: 0 auto 3rem;
+    padding: 0 2rem;
+  }
+  .bench-section h2 {
+    font-family: var(--font-display);
+    font-weight: 600;
+    font-size: 1.4rem;
+    margin-bottom: 0.25rem;
+  }
+  .bench-section .subtitle { color: var(--text-muted); font-size: 0.85rem; margin-bottom: 1rem; }
+  .bench-group {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1rem 1.25rem;
+    margin-bottom: 0.9rem;
+  }
+  .bench-group h3 {
+    font-family: var(--font-mono);
+    font-size: 0.82rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-muted);
+    margin: 0 0 0.75rem;
+  }
+  .bench-row {
+    display: grid;
+    grid-template-columns: 180px 1fr 90px;
+    align-items: center;
+    gap: 0.75rem;
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    padding: 0.28rem 0;
+  }
+  .bench-row .bname { color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .bench-bar-track { background: var(--panel-alt); border-radius: 3px; height: 8px; overflow: hidden; }
+  .bench-bar-fill { height: 100%; border-radius: 3px; }
+  .bench-row .bval { text-align: right; color: var(--text); }
+
+  footer {
+    max-width: 1180px;
+    margin: 0 auto 2.5rem;
+    padding: 0 2rem;
+    color: var(--text-muted);
+    font-size: 0.78rem;
+    font-family: var(--font-mono);
+  }
+
+  @media (max-width: 760px) {
+    .main { grid-template-columns: 1fr; }
+    .stage-strip { grid-template-columns: repeat(2, 1fr); }
+    .sidebar { max-height: 240px; }
+  }
+</style>
+</head>
+<body>
+
+  <div class="hero">
+    <div class="hero-top">
+      <div>
+        <h1>Ubel Stratum</h1>
+        <div class="subtitle">Pipeline &amp; benchmark dashboard — tokenize → parse → sema → interpret</div>
+      </div>
+      <div class="hero-meta" id="hero-meta">loading…</div>
+    </div>
+    <svg class="strata" viewBox="0 0 1200 160" preserveAspectRatio="none" id="strata-svg">
+      <!-- populated by JS: 4 bands, one per stage -->
+    </svg>
+  </div>
+
+  <div class="stage-strip" id="stage-strip"></div>
+
+  <div class="main">
+    <div class="sidebar">
+      <h2>Fixtures</h2>
+      <div id="fixture-list"></div>
+    </div>
+    <div class="content">
+      <div class="tabs" id="tabs"></div>
+      <div class="panel-body" id="panel-body">
+        <div class="empty-note">Select a fixture on the left.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="bench-section">
+    <h2>Benchmarks</h2>
+    <div class="subtitle">Mean wall-clock time per iteration, via criterion. Bars are log-scaled within each group.</div>
+    <div id="bench-groups"></div>
+  </div>
+
+  <footer>
+    <a href="https://github.com/Mid-D-Man/ubel_stratum" target="_blank" rel="noopener">Mid-D-Man/ubel_stratum</a>
+    — generated by <code>.github/workflows/pipeline-dashboard.yml</code>
+  </footer>
+
+<script>
+const STAGE_COLORS = { tok: '#C9A46A', parse: '#6E8FA3', sema: '#B06B4E', interp: '#7E9270' };
+const STAGE_ORDER  = ['tok', 'parse', 'sema', 'interp'];
+const STAGE_LABELS = { tok: 'Tokenize', parse: 'Parse', sema: 'Sema', interp: 'Interpret' };
+const SUMMARY_KEY  = { tok: 'lex', parse: 'parse', sema: 'sema', interp: 'interpret' };
+const TAB_DEFS = [
+  { id: 'source',    label: 'Source',    stage: null },
+  { id: 'tokens',    label: 'Tokens',    stage: 'tok' },
+  { id: 'parse',     label: 'Parse',     stage: 'parse' },
+  { id: 'sema',      label: 'Sema',      stage: 'sema' },
+  { id: 'interpret', label: 'Interpret', stage: 'interp' },
+];
+
+let REPORT = null;
+let ACTIVE_FIXTURE = null;
+let ACTIVE_TAB = 'source';
+
+function statusClass(v) {
+  if (!v) return 'skip';
+  v = v.toLowerCase();
+  if (v.includes('fail')) return 'fail';
+  if (v.includes('skip')) return 'skip';
+  return 'ok';
+}
+
+function buildStrata() {
+  const svg = document.getElementById('strata-svg');
+  const bandH = 40;
+  let html = '';
+  STAGE_ORDER.forEach((stage, i) => {
+    const y = i * bandH;
+    const color = STAGE_COLORS[stage];
+    const wave = i % 2 === 0 ? 6 : -6;
+    html += `
+      <path d="M0,${y+bandH} L0,${y+8}
+               C 200,${y+8+wave} 400,${y-wave+8} 600,${y+8}
+               C 800,${y+8+wave} 1000,${y-wave+8} 1200,${y+8}
+               L1200,${y+bandH} Z" fill="${color}" />
+      <text x="18" y="${y+26}">${STAGE_LABELS[stage]}</text>
+      <text class="count" x="150" y="${y+26}" id="strata-count-${stage}"></text>
+    `;
+  });
+  svg.innerHTML = html;
+}
+
+function renderStageStrip() {
+  const strip = document.getElementById('stage-strip');
+  strip.innerHTML = '';
+  STAGE_ORDER.forEach(stage => {
+    const key = SUMMARY_KEY[stage];
+    const counts = REPORT.stage_counts[key] || {};
+    const ok = counts.ok || 0, fail = counts.fail || 0, skip = counts.skipped || 0;
+    const card = document.createElement('div');
+    card.className = 'stage-card';
+    card.style.setProperty('--stage-color', STAGE_COLORS[stage]);
+    card.innerHTML = `
+      <div class="label">${STAGE_LABELS[stage]}</div>
+      <div class="counts">
+        <span class="ok">${ok} ok</span>
+        ${fail ? `<span class="fail">${fail} fail</span>` : ''}
+        ${skip ? `<span class="skip">${skip} skip</span>` : ''}
+      </div>`;
+    strip.appendChild(card);
+    const el = document.getElementById(`strata-count-${stage}`);
+    if (el) el.textContent = `${ok} ok · ${fail} fail · ${skip} skip`;
+  });
+}
+
+function renderFixtureList() {
+  const list = document.getElementById('fixture-list');
+  list.innerHTML = '';
+  const names = Object.keys(REPORT.fixtures).sort();
+  names.forEach(name => {
+    const f = REPORT.fixtures[name];
+    const row = document.createElement('div');
+    row.className = 'fixture-row' + (name === ACTIVE_FIXTURE ? ' active' : '');
+    const dots = STAGE_ORDER.map(stage => {
+      const v = f.summary[SUMMARY_KEY[stage]];
+      const cls = statusClass(v);
+      return `<span class="dot ${cls === 'ok' ? 'ok ' + stage : cls}"></span>`;
+    }).join('');
+    row.innerHTML = `<span class="name">${name}</span><span class="dots">${dots}</span>`;
+    row.addEventListener('click', () => selectFixture(name));
+    list.appendChild(row);
+  });
+}
+
+function renderTabs() {
+  const tabs = document.getElementById('tabs');
+  tabs.innerHTML = '';
+  const f = REPORT.fixtures[ACTIVE_FIXTURE];
+  TAB_DEFS.forEach(tab => {
+    const el = document.createElement('div');
+    el.className = 'tab' + (tab.id === ACTIVE_TAB ? ' active' : '');
+    if (tab.stage) el.style.setProperty('--tab-color', STAGE_COLORS[tab.stage]);
+    let statusHtml = '';
+    if (tab.stage && f) {
+      const v = f.summary[SUMMARY_KEY[tab.stage]];
+      const cls = statusClass(v);
+      statusHtml = `<span class="status ${cls}">${v || 'skipped'}</span>`;
+    }
+    el.innerHTML = `${tab.label}${statusHtml}`;
+    el.addEventListener('click', () => { ACTIVE_TAB = tab.id; renderTabs(); renderPanelBody(); });
+    tabs.appendChild(el);
+  });
+}
+
+function renderPanelBody() {
+  const body = document.getElementById('panel-body');
+  const f = REPORT.fixtures[ACTIVE_FIXTURE];
+  if (!f) { body.innerHTML = '<div class="empty-note">Select a fixture on the left.</div>'; return; }
+  const content = f[ACTIVE_TAB] || '(empty)';
+  const pre = document.createElement('pre');
+  pre.textContent = content;
+  body.innerHTML = '';
+  body.appendChild(pre);
+}
+
+function selectFixture(name) {
+  ACTIVE_FIXTURE = name;
+  renderFixtureList();
+  renderTabs();
+  renderPanelBody();
+}
+
+function renderBenchmarks() {
+  const container = document.getElementById('bench-groups');
+  container.innerHTML = '';
+  const groups = {};
+  (REPORT.benchmarks || []).forEach(b => {
+    const groupName = b.name.includes('/') ? b.name.split('/')[0] : b.name;
+    (groups[groupName] = groups[groupName] || []).push(b);
+  });
+  const groupColors = { lex_scaling: STAGE_COLORS.tok, parse_scaling: STAGE_COLORS.parse,
+                         sema_scaling: STAGE_COLORS.sema, fixtures_lex_parse: STAGE_COLORS.interp };
+
+  Object.keys(groups).sort().forEach(groupName => {
+    const rows = groups[groupName];
+    const maxNs = Math.max(...rows.map(r => r.mean_ns), 1);
+    const color = groupColors[groupName] || STAGE_COLORS.parse;
+    const box = document.createElement('div');
+    box.className = 'bench-group';
+    let rowsHtml = '';
+    rows.forEach(r => {
+      const pct = Math.max(4, (Math.log10(r.mean_ns + 1) / Math.log10(maxNs + 1)) * 100);
+      const label = r.name.includes('/') ? r.name.split('/').slice(1).join('/') : r.name;
+      rowsHtml += `
+        <div class="bench-row">
+          <div class="bname" title="${r.name}">${label}</div>
+          <div class="bench-bar-track"><div class="bench-bar-fill" style="width:${pct}%;background:${color}"></div></div>
+          <div class="bval">${formatNs(r.mean_ns)}</div>
+        </div>`;
+    });
+    box.innerHTML = `<h3>${groupName}</h3>${rowsHtml}`;
+    container.appendChild(box);
+  });
+
+  if (!(REPORT.benchmarks || []).length) {
+    container.innerHTML = '<div class="empty-note">No benchmark data in this report yet.</div>';
+  }
+}
+
+function formatNs(ns) {
+  if (ns < 1000) return ns.toFixed(0) + ' ns';
+  if (ns < 1_000_000) return (ns / 1000).toFixed(2) + ' µs';
+  return (ns / 1_000_000).toFixed(2) + ' ms';
+}
+
+function renderMeta() {
+  const meta = document.getElementById('hero-meta');
+  const sha = (REPORT.commit_sha || '').slice(0, 8);
+  const runLink = REPORT.run_url ? `<a href="${REPORT.run_url}" target="_blank" rel="noopener">view run →</a>` : '';
+  meta.innerHTML = `commit ${sha || 'n/a'}<br>${REPORT.generated_at || ''}<br>${runLink}`;
+}
+
+async function init() {
+  buildStrata();
+  try {
+    const res = await fetch('report.json', { cache: 'no-store' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    REPORT = await res.json();
+  } catch (e) {
+    document.getElementById('panel-body').innerHTML =
+      `<div class="empty-note">Couldn't load report.json (${e.message}).<br>Run the pipeline-dashboard workflow to generate one.</div>`;
+    document.getElementById('hero-meta').textContent = 'no report loaded';
+    return;
+  }
+  renderMeta();
+  renderStageStrip();
+  renderFixtureList();
+  renderBenchmarks();
+  const first = Object.keys(REPORT.fixtures).sort()[0];
+  if (first) selectFixture(first);
+}
+
+init();
+</script>
+</body>
+</html>
