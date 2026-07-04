@@ -464,9 +464,11 @@ fn bench_struct_decl(c: &mut Criterion) {
                     }));
 
                     let decl = StructDecl {
+                        attributes: &[],
                         visibility: Visibility::Public,
                         is_edge: false,
                         name: arena.alloc_str("MyStruct"),
+                        lifetime_params: &[],
                         generic_params: &[],
                         members: members.into_bump_slice(),
                         span: DUMMY,
@@ -587,6 +589,7 @@ fn bench_full_small_program(c: &mut Criterion) {
 
             // const MAX: int = 100
             items.push(Item::Const(ConstDecl {
+                attributes: &[],
                 name: arena.alloc_str("MAX"),
                 ty: Some(int_ty),
                 value: int_lit(&arena, 100),
@@ -604,9 +607,11 @@ fn bench_full_small_program(c: &mut Criterion) {
                 }));
             }
             items.push(Item::Struct(StructDecl {
+                attributes: &[],
                 visibility: Visibility::Public,
                 is_edge: false,
                 name: arena.alloc_str("Point"),
+                lifetime_params: &[],
                 generic_params: &[],
                 members: fields.into_bump_slice(),
                 span: DUMMY,
