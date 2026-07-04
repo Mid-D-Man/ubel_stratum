@@ -1,0 +1,98 @@
+name: Pipeline Dashboard
+
+# Builds the full tokenize -> parse -> sema -> interpret diagnostic report
+# plus benchmarks for every fixture in tests/fixtures, and publishes the
+# result as a static site via GitHub Pages.
+#
+# Kept as its own workflow (not folded into ci-check.yml) because the
+# benchmark step is slow relative to a normal push check, and because this
+# produces a deployable artifact rather than a pass/fail gate.
+
+on:
+  push:
+    branches: [master, main]
+  workflow_dispatch:
+    inputs:
+      run_benchmarks:
+        description: "Run the criterion benchmark suite (slower)"
+        required: false
+        type: choice
+        default: "true"
+        options:
+          - "true"
+          - "false"
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pipeline-dashboard"
+  cancel-in-progress: false
+
+jobs:
+  build-report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "ubel-dashboard"
+          cache-on-failure: true
+
+      - name: Build diagnose tool
+        run: cargo build -p ubel_stratum_rd --example diagnose
+
+      - name: Run diagnose against every fixture
+        run: |
+          mkdir -p results
+          for f in tests/fixtures/*.ubl; do
+            name=$(basename "$f" .ubl)
+            ./target/debug/examples/diagnose "$f" > "results/${name}.txt" 2>&1 || true
+          done
+          ls -la results/
+
+      - name: Run benchmark suite
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.run_benchmarks == 'true' }}
+        run: cargo bench -p ubel_stratum_rd --bench pipeline_bench
+
+      - name: Build dashboard report.json
+        run: |
+          python3 scripts/build_dashboard_report.py \
+            --results-dir results/ \
+            --criterion-dir target/criterion \
+            --out web/dashboard/report.json \
+            --commit-sha "${{ github.sha }}" \
+            --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+            --generated-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+      - name: Upload dashboard log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dashboard-results-${{ github.run_number }}
+          path: |
+            results/
+            web/dashboard/report.json
+          retention-days: 30
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: web/dashboard
+
+  deploy:
+    needs: build-report
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
