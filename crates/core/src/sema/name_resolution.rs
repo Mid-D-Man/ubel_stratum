@@ -62,7 +62,21 @@ impl<'a> Resolver<'a> {
         let mut r = Resolver { ctx, errors, scopes: ScopeStack::new(), in_method: false, current_fn: None };
         // Push the module (top-level) scope.
         r.scopes.push();
+        r.declare_builtins();
         r
+    }
+
+    /// Pre-declare every native builtin (`println`, `len`, `sqrt`, ...) into
+    /// the module scope, using the exact same list the interpreter registers
+    /// at runtime (`interpreter::builtins::all_builtins`). Deriving from that
+    /// one list — instead of hand-maintaining a second copy of the names
+    /// here — is what keeps sema and the interpreter from silently
+    /// disagreeing about what's in scope, the way they did before this fix.
+    fn declare_builtins(&mut self) {
+        const NO_SPAN: Span = Span { start: 0, end: 0, line: 0, column: 0 };
+        for (name, _builtin_fn) in crate::interpreter::builtins::all_builtins() {
+            self.declare(name.to_string(), DefKind::Builtin, NO_SPAN, Visibility::Public);
+        }
     }
 
     // ── Program ───────────────────────────────────────────────────
@@ -836,4 +850,4 @@ dp[i - 1][j - 1]
 
 dp[m][n].min(2)
 
-                }
+    }
