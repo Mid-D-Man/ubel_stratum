@@ -64,6 +64,11 @@ pub struct Interpreter<'ast> {
     /// Static and instance methods both live here; the call site determines
     /// whether a receiver is passed.
     pub(crate) method_table: HashMap<String, HashMap<String, FunctionId>>,
+    /// enum_type_name → set of its declared (bare, payload-less) variant
+    /// names. Consulted by `EnumName.Variant` field-access evaluation to
+    /// tell "construct an enum value" apart from an ordinary field lookup —
+    /// see `eval::expr::eval_expr`'s `ExprKind::Field` case.
+    pub(crate) enum_table:   HashMap<String, std::collections::HashSet<String>>,
     /// The arena used to parse the program.  Kept here so interpolated-string
     /// expression holes (`$"Hello {expr}"`) can be parsed at runtime via
     /// `crate::parser::parse_expr`.
@@ -76,6 +81,7 @@ impl<'ast> Interpreter<'ast> {
             env:          Environment::new(),
             functions:    Vec::new(),
             method_table: HashMap::new(),
+            enum_table:   HashMap::new(),
             arena,
         };
         interp.register_builtins();
@@ -160,12 +166,14 @@ impl<'ast> Interpreter<'ast> {
     pub fn run_program(&mut self, program: &'ast Program<'ast>) -> Result<(), String> {
         // Pre-declare pass: register everything before running any body so
         // forward references and mutual recursion work.
+        let mut top_level_fns: Vec<FunctionId> = Vec::new();
         for item in program.items.iter().copied() {
             match item {
                 Item::Function(f) => {
                     // f: FunctionDecl<'ast> — Copy value whose fields point into 'ast arena
                     let id = self.register_fn(f);
                     self.env.define(f.name, Value::Function(id));
+                    top_level_fns.push(id);
                 }
                 Item::Struct(s) => {
                     for member in s.members.iter().copied() {
@@ -175,11 +183,36 @@ impl<'ast> Interpreter<'ast> {
                                 .entry(s.name.to_string())
                                 .or_default()
                                 .insert(m.name.to_string(), id);
+                            top_level_fns.push(id);
                         }
                     }
                 }
+                Item::Enum(e) => {
+                    let variants: std::collections::HashSet<String> = e.variants.iter()
+                        .filter(|v| matches!(v.payload, crate::ast::declarations::EnumVariantPayload::None))
+                        .map(|v| v.name.to_string())
+                        .collect();
+                    self.enum_table.insert(e.name.to_string(), variants);
+                    // TODO: EnumVariantPayload::Discriminant/Tuple/Struct aren't
+                    // constructible at runtime yet — payload-carrying variants
+                    // are silently excluded from enum_table rather than handled.
+                }
                 _ => {}
             }
+        }
+
+        // `register_fn`/`register_method` snapshot `self.env` for the
+        // closure at the moment each item is registered — which, mid-loop,
+        // is *before* later top-level items have been declared. A function
+        // declared early in the file (e.g. `main`) would otherwise end up
+        // with a closure that can't see a function declared later in the
+        // same file (e.g. `greet`), even though both are top-level and
+        // should share one module scope. Backfill every top-level
+        // fn/method's closure with a single snapshot taken now, after the
+        // whole pre-declare pass has finished.
+        let module_scope = self.env.snapshot();
+        for id in top_level_fns {
+            self.functions[id].closure = module_scope.clone();
         }
 
         let main_val = self.env.get("main").cloned()
@@ -320,4 +353,4 @@ impl<'ast> Interpreter<'ast> {
             .cloned()
             .ok_or_else(|| Signal::Panic(format!("undefined name '{}'", name)))
     }
-                }
+}
