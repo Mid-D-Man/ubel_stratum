@@ -122,6 +122,24 @@ pub fn eval_expr<'ast>(interp: &mut Interpreter<'ast>, expr: &Expr<'ast>) -> Eva
 
         // ── Field access: obj.field ───────────────────────────────
         ExprKind::Field { target, field } => {
+            // `EnumName.Variant` constructs an enum value — this has to be
+            // checked before evaluating `target`, since `EnumName` is a
+            // type name, not something bound in the environment.
+            if let ExprKind::Ident(name) = &target.kind {
+                if let Some(variants) = interp.enum_table.get(*name) {
+                    return if variants.contains(*field) {
+                        Ok(Value::Enum {
+                            type_name: name.to_string(),
+                            variant:   field.to_string(),
+                            payload:   Box::new(crate::interpreter::value::EnumPayload::None),
+                        })
+                    } else {
+                        Err(Signal::Panic(format!(
+                            "enum '{}' has no variant '{}'", name, field
+                        )))
+                    };
+                }
+            }
             let obj = eval_expr(interp, target)?;
             get_field(obj, field)
         }
@@ -939,4 +957,4 @@ fn compare_values(a: &Value, b: &Value) -> Option<std::cmp::Ordering> {
         (Value::Bool(x),   Value::Bool(y))   => Some(x.cmp(y)),
         _ => None,
     }
-    }
+                }
