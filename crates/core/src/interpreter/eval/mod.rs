@@ -18,7 +18,7 @@ use crate::ast::declarations::{FunctionDecl, MethodDecl, ParamKind, StructMember
 use crate::ast::expressions::Expr;
 use crate::ast::root::{Item, Program};
 use crate::ast::statements::Block;
-use crate::interpreter::builtins::{all_builtins, BuiltinFn};
+use crate::builtins::BuiltinFn;
 use crate::interpreter::env::Environment;
 use crate::interpreter::value::{EvalResult, FunctionId, Signal, Value};
 
@@ -91,17 +91,17 @@ impl<'ast> Interpreter<'ast> {
     // ── Registration ─────────────────────────────────────────────
 
     fn register_builtins(&mut self) {
-        for (name, func) in all_builtins() {
+        for sig in crate::builtins::global::GLOBAL_BUILTINS {
             let id = self.functions.len();
             self.functions.push(FunctionDef {
-                name:     Some(name.to_string()),
+                name:     Some(sig.name.to_string()),
                 params:   vec![],
-                body:     FunctionBody::Builtin(func),
+                body:     FunctionBody::Builtin(sig.run),
                 closure:  Environment::new(),
                 tier:     TierAnnotation::High,
                 is_async: false,
             });
-            self.env.define(name, Value::Function(id));
+            self.env.define(sig.name, Value::Function(id));
         }
     }
 
@@ -353,4 +353,4 @@ impl<'ast> Interpreter<'ast> {
             .cloned()
             .ok_or_else(|| Signal::Panic(format!("undefined name '{}'", name)))
     }
-}
+    }
