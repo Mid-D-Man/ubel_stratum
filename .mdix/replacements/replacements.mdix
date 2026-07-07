@@ -1,0 +1,91 @@
+// .mdix/replacements/replacements.mdix
+// =============================================================================
+// Every file dropped into this SAME folder (next to this manifest) gets
+// routed to its real destination below — real content, real filename, no
+// DixScript string-escaping. This manifest holds config only.
+//
+// Every entry below is an explicit override rather than relying on
+// target_root search-matching, on purpose: most of these are brand-new
+// files (search-matching only replaces something that already exists —
+// a new file with 0 matches would land flatly at target_root/<name>,
+// which is wrong for anything nested), and a few share a filename with
+// another file elsewhere in the repo (mod.rs, Cargo.toml) which would
+// otherwise hard-error as ambiguous.
+//
+// ⚠ BEFORE UPLOADING: two pairs of files share a basename. Your browser
+// will silently rename the second download of each ("mod (1).rs" etc.)
+// unless you rename them yourself first. Save these as:
+//   crates/core/src/interpreter/mod.rs  ->  interpreter_mod.rs
+//   crates/core/src/builtins/mod.rs     ->  builtins_mod.rs
+//   Cargo.toml (repo root)              ->  root_Cargo.toml
+//   crates/rd_parser/Cargo.toml         ->  rd_parser_Cargo.toml
+// Every other file keeps its natural name. See the reference table in
+// chat for the full list.
+// =============================================================================
+
+@CONFIG(
+  version    -> "1.0.0"
+  author     -> "Mid-D-Man"
+  debug_mode -> "regular"
+)
+
+@QUICKFUNCS(
+  ~target<object>(name, path) { return { name = name, path = path } }
+)
+
+@DATA(
+  // Fallback only — every real file below is routed via overrides::, so
+  // this mostly matters for anything dropped in later without one.
+  target_root = "."
+
+  overrides::
+
+    // ── rd_parser fixes ──────────────────────────────────────────────────────
+    target("parser.rs",          "crates/rd_parser/src/parser.rs")
+    target("parse_attr.rs",      "crates/rd_parser/src/parsers/parse_attr.rs")
+    target("parse_decl.rs",      "crates/rd_parser/src/parsers/parse_decl.rs")
+    target("parse_pattern.rs",   "crates/rd_parser/src/parsers/parse_pattern.rs")
+    target("parse_stmt.rs",      "crates/rd_parser/src/parsers/parse_stmt.rs")
+    target("parse_type.rs",      "crates/rd_parser/src/parsers/parse_type.rs")
+    target("parse_expr.rs",      "crates/rd_parser/src/parsers/parse_expr.rs")
+    target("smoke.rs",           "crates/rd_parser/examples/smoke.rs")
+    target("pipeline.rs",        "crates/rd_parser/examples/pipeline.rs")
+    target("diagnose.rs",        "crates/rd_parser/examples/diagnose.rs")
+    target("pipeline_bench.rs",  "crates/rd_parser/benches/pipeline_bench.rs")
+    target("rd_parser_Cargo.toml", "crates/rd_parser/Cargo.toml")
+
+    // ── workspace root ───────────────────────────────────────────────────────
+    target("root_Cargo.toml",    "Cargo.toml")
+
+    // ── CI / dashboard ───────────────────────────────────────────────────────
+    target("ci-check.yml",              ".github/workflows/ci-check.yml")
+    target("ubel-publish.yml",          ".github/workflows/ubel-publish.yml")
+    target("pipeline-dashboard.yml",    ".github/workflows/pipeline-dashboard.yml")
+    target("build_dashboard_report.py", "scripts/build_dashboard_report.py")
+    target("index.html",                "web/dashboard/index.html")
+
+    // ── builtins restructuring ───────────────────────────────────────────────
+    target("builtins_mod.rs",    "crates/core/src/builtins/mod.rs")
+    target("global.rs",          "crates/core/src/builtins/global.rs")
+    target("io.rs",              "crates/core/src/builtins/global/io.rs")
+    target("diagnostics.rs",     "crates/core/src/builtins/global/diagnostics.rs")
+    target("math.rs",            "crates/core/src/builtins/global/math.rs")
+    target("conversions.rs",     "crates/core/src/builtins/global/conversions.rs")
+    target("instance.rs",        "crates/core/src/builtins/instance.rs")
+    target("list_methods.rs",    "crates/core/src/builtins/instance/list_methods.rs")
+    target("string_methods.rs",  "crates/core/src/builtins/instance/string_methods.rs")
+    target("dict_methods.rs",    "crates/core/src/builtins/instance/dict_methods.rs")
+    target("tuple_methods.rs",   "crates/core/src/builtins/instance/tuple_methods.rs")
+    target("validate.rs",        "crates/core/src/builtins/validate.rs")
+
+    // ── interpreter / sema updates for builtins split ────────────────────────
+    target("lib.rs",             "crates/core/src/lib.rs")
+    target("interpreter_mod.rs", "crates/core/src/interpreter/mod.rs")
+    target("expr.rs",            "crates/core/src/interpreter/eval/expr.rs")
+    target("name_resolution.rs", "crates/core/src/sema/name_resolution.rs")
+
+    // NOTE: crates/core/src/interpreter/eval/mod.rs is ALSO named "mod.rs" —
+    // a THIRD file with that basename. If you're uploading it too, save it
+    // as "eval_mod.rs" and uncomment the line below.
+    // target("eval_mod.rs",     "crates/core/src/interpreter/eval/mod.rs")
+)
