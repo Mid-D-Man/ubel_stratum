@@ -65,7 +65,7 @@
     target("index.html",                "web/dashboard/index.html")
 
     // ── builtins restructuring ───────────────────────────────────────────────
-    target("builtins_mod.rs",    "crates/core/src/builtins/mod.rs")
+    target("mod.rs",    "crates/core/src/builtins/mod.rs")
     target("global.rs",          "crates/core/src/builtins/global.rs")
     target("io.rs",              "crates/core/src/builtins/global/io.rs")
     target("diagnostics.rs",     "crates/core/src/builtins/global/diagnostics.rs")
@@ -80,7 +80,7 @@
 
     // ── interpreter / sema updates for builtins split ────────────────────────
     target("lib.rs",             "crates/core/src/lib.rs")
-    target("interpreter_mod.rs", "crates/core/src/interpreter/mod.rs")
+    //target("interpreter_mod.rs", "crates/core/src/interpreter/mod.rs")
     target("expr.rs",            "crates/core/src/interpreter/eval/expr.rs")
     target("name_resolution.rs", "crates/core/src/sema/name_resolution.rs")
 
