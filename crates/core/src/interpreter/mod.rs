@@ -33,7 +33,6 @@
 
 pub mod value;
 pub mod env;
-pub mod builtins;
 pub mod eval;
 
 pub use value::{EnumPayload, EvalResult, FunctionId, Signal, Value};
