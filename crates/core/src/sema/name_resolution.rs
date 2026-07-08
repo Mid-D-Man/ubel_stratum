@@ -74,8 +74,15 @@ impl<'a> Resolver<'a> {
     /// disagreeing about what's in scope, the way they did before this fix.
     fn declare_builtins(&mut self) {
         const NO_SPAN: Span = Span { start: 0, end: 0, line: 0, column: 0 };
-        for (name, _builtin_fn) in crate::interpreter::builtins::all_builtins() {
-            self.declare(name.to_string(), DefKind::Builtin, NO_SPAN, Visibility::Public);
+        for sig in crate::builtins::global::GLOBAL_BUILTINS {
+            self.declare(sig.name.to_string(), DefKind::Builtin, NO_SPAN, Visibility::Public);
+        }
+        // Builtin static namespaces (`Math.sqrt(x)`) — declare the namespace
+        // name itself so `Ident("Math")` resolves during name resolution.
+        // Member validity (`Math.frobnicate` vs a real member) isn't
+        // checked here; see `builtins::namespace_member_names`.
+        for ns in crate::builtins::BUILTIN_NAMESPACES {
+            self.declare(ns.to_string(), DefKind::Builtin, NO_SPAN, Visibility::Public);
         }
     }
 

@@ -7,8 +7,11 @@
 //! |------------|-------------------------------------------------------|
 //! | `value`    | `Value` enum, `Signal`, `EvalResult`, `FunctionId`    |
 //! | `env`      | `Environment` — lexical scope stack                   |
-//! | `builtins` | Native built-in function implementations               |
 //! | `eval`     | `Interpreter` struct, expression/statement evaluation  |
+//!
+//! Native builtins (`println`, `sqrt`, instance methods, ...) live in the
+//! top-level `crate::builtins` module, not here — they're shared with
+//! `sema::name_resolution`, which needs to know about them too.
 //!
 //! # Value and lifetime design
 //!

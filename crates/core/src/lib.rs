@@ -6,6 +6,7 @@
 pub mod lexer;
 pub mod error_management;
 pub mod ast;
+pub mod builtins;
 pub mod sema;
 pub mod interpreter;
 
