@@ -1,13 +1,22 @@
 // .mdix/patches/patch.mdix
 // =============================================================================
-// Patch batch 9 — fix E0063 in crates/core/benches/ast_bench.rs
-//   Same root cause as batch 8 (sema/tests.rs): StructDecl/ConstDecl grew
-//   `attributes` (both) and `lifetime_params` (StructDecl only) fields a
-//   while back, and these three bench-only struct literals were never
-//   updated. `cargo test --workspace --all-targets` compiles benches too,
-//   so this was failing the CI build the same way sema/tests.rs was.
-//   Verified by actually compiling AND running the benchmark after the
-//   fix — ast/struct_decl/* benches produce real timing output.
+// Patch batch 10 — fix E0432/E0433 from the builtins restructuring landing
+//   incompletely. Root causes, confirmed by cloning the live repo directly:
+//     1. lib.rs never got `pub mod builtins;` added — crates/core/src/builtins/
+//        exists in full (all 12 files landed correctly) but was never wired
+//        into the crate's module tree, so `crate::builtins` didn't resolve
+//        anywhere.
+//     2. sema/name_resolution.rs is running the PRE-restructuring version of
+//        declare_builtins() — it still calls the now-deleted
+//        crate::interpreter::builtins::all_builtins(). That file's update
+//        didn't make it into the replacements batch.
+//     3. interpreter/mod.rs's doc comment still lists `builtins` as living
+//        under `interpreter` — cosmetic, but wrong now, fixed alongside.
+//   Verified by cloning the actual live repo, applying these three edits,
+//   and running `cargo build -p ubel_stratum --lib` +
+//   `cargo test -p ubel_stratum --lib` (49/49 pass) +
+//   `cargo build -p ubel_stratum_rd --example diagnose` (the exact command
+//   from the failing CI run) — all clean.
 // =============================================================================
 
 @CONFIG(
@@ -25,24 +34,24 @@
 @DATA(
   patch_files::
 
-    // ── Fix 1: StructDecl at line ~466 (MyStruct, direct black_box case) ──────
+    // ── Fix 1: wire the builtins module into the crate root ────────────────────
     patch_replace_text(
-      "crates/core/benches/ast_bench.rs",
-      "let decl = StructDecl {\n                        visibility: Visibility::Public,\n                        is_edge: false,\n                        name: arena.alloc_str(\"MyStruct\"),\n                        generic_params: &[],\n                        members: members.into_bump_slice(),\n                        span: DUMMY,\n                    };",
-      "let decl = StructDecl {\n                        attributes: &[],\n                        visibility: Visibility::Public,\n                        is_edge: false,\n                        name: arena.alloc_str(\"MyStruct\"),\n                        lifetime_params: &[],\n                        generic_params: &[],\n                        members: members.into_bump_slice(),\n                        span: DUMMY,\n                    };"
+      "crates/core/src/lib.rs",
+      "pub mod lexer;\npub mod error_management;\npub mod ast;\npub mod sema;\npub mod interpreter;",
+      "pub mod lexer;\npub mod error_management;\npub mod ast;\npub mod builtins;\npub mod sema;\npub mod interpreter;"
     )
 
-    // ── Fix 2: ConstDecl (MAX) ──────────────────────────────────────────────────
+    // ── Fix 2: declare_builtins() — new registry + Math namespace ──────────────
     patch_replace_text(
-      "crates/core/benches/ast_bench.rs",
-      "items.push(Item::Const(ConstDecl {\n                name: arena.alloc_str(\"MAX\"),\n                ty: Some(int_ty),\n                value: int_lit(&arena, 100),\n                span: DUMMY,\n            }));",
-      "items.push(Item::Const(ConstDecl {\n                attributes: &[],\n                name: arena.alloc_str(\"MAX\"),\n                ty: Some(int_ty),\n                value: int_lit(&arena, 100),\n                span: DUMMY,\n            }));"
+      "crates/core/src/sema/name_resolution.rs",
+      "fn declare_builtins(&mut self) {\n        const NO_SPAN: Span = Span { start: 0, end: 0, line: 0, column: 0 };\n        for (name, _builtin_fn) in crate::interpreter::builtins::all_builtins() {\n            self.declare(name.to_string(), DefKind::Builtin, NO_SPAN, Visibility::Public);\n        }\n    }",
+      "fn declare_builtins(&mut self) {\n        const NO_SPAN: Span = Span { start: 0, end: 0, line: 0, column: 0 };\n        for sig in crate::builtins::global::GLOBAL_BUILTINS {\n            self.declare(sig.name.to_string(), DefKind::Builtin, NO_SPAN, Visibility::Public);\n        }\n        // Builtin static namespaces (`Math.sqrt(x)`) — declare the namespace\n        // name itself so `Ident(\"Math\")` resolves during name resolution.\n        // Member validity (`Math.frobnicate` vs a real member) isn't\n        // checked here; see `builtins::namespace_member_names`.\n        for ns in crate::builtins::BUILTIN_NAMESPACES {\n            self.declare(ns.to_string(), DefKind::Builtin, NO_SPAN, Visibility::Public);\n        }\n    }"
     )
 
-    // ── Fix 3: StructDecl (Point) ────────────────────────────────────────────────
+    // ── Fix 3: stale doc comment — cosmetic, but wrong since the move ─────────
     patch_replace_text(
-      "crates/core/benches/ast_bench.rs",
-      "items.push(Item::Struct(StructDecl {\n                visibility: Visibility::Public,\n                is_edge: false,\n                name: arena.alloc_str(\"Point\"),\n                generic_params: &[],\n                members: fields.into_bump_slice(),\n                span: DUMMY,\n            }));",
-      "items.push(Item::Struct(StructDecl {\n                attributes: &[],\n                visibility: Visibility::Public,\n                is_edge: false,\n                name: arena.alloc_str(\"Point\"),\n                lifetime_params: &[],\n                generic_params: &[],\n                members: fields.into_bump_slice(),\n                span: DUMMY,\n            }));"
+      "crates/core/src/interpreter/mod.rs",
+      "//! | Module     | Contents                                               |\n//! |------------|-------------------------------------------------------|\n//! | `value`    | `Value` enum, `Signal`, `EvalResult`, `FunctionId`    |\n//! | `env`      | `Environment` — lexical scope stack                   |\n//! | `builtins` | Native built-in function implementations               |\n//! | `eval`     | `Interpreter` struct, expression/statement evaluation  |",
+      "//! | Module     | Contents                                               |\n//! |------------|-------------------------------------------------------|\n//! | `value`    | `Value` enum, `Signal`, `EvalResult`, `FunctionId`    |\n//! | `env`      | `Environment` — lexical scope stack                   |\n//! | `eval`     | `Interpreter` struct, expression/statement evaluation  |\n//!\n//! Native builtins (`println`, `sqrt`, instance methods, ...) live in the\n//! top-level `crate::builtins` module, not here — they're shared with\n//! `sema::name_resolution`, which needs to know about them too."
     )
 )
