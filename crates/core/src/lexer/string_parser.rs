@@ -135,7 +135,7 @@ impl<'a> StringParser<'a> {
 
                 _ => {
                     current_text.push(ch);
-                    self.position += 1;
+                    self.position += ch.len_utf8();
                     self.column += 1;
                 }
             }
@@ -183,7 +183,7 @@ impl<'a> StringParser<'a> {
                 }
                 _ => {
                     expr.push(ch);
-                    self.position += 1;
+                    self.position += ch.len_utf8();
                     self.column += 1;
                 }
             }
@@ -250,7 +250,7 @@ impl<'a> StringParser<'a> {
 
                 _ => {
                     content.push(ch);
-                    self.position += 1;
+                    self.position += ch.len_utf8();
                     self.column += 1;
                 }
             }
@@ -328,7 +328,7 @@ impl<'a> StringParser<'a> {
 
                 _ => {
                     current_text.push(ch);
-                    self.position += 1;
+                    self.position += ch.len_utf8();
                     self.column += 1;
                 }
             }
@@ -342,6 +342,6 @@ impl<'a> StringParser<'a> {
 
     #[inline]
     fn char_at(&self, pos: usize) -> char {
-        self.input.chars().nth(pos).unwrap_or('\0')
+        self.input[pos..].chars().next().unwrap_or('\0')
     }
 }
