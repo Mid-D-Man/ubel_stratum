@@ -346,23 +346,19 @@ fn eval_literal<'ast>(interp: &mut Interpreter<'ast>, lit: &Literal<'ast>) -> Ev
         Literal::Str(s)        => Ok(Value::str_from(*s)),
         Literal::VerbatimStr(s) => Ok(Value::str_from(*s)),
 
-        // Evaluate interpolated string holes by re-parsing each Expr source.
+        // Interpolation holes are fully parsed Expr nodes by the time the
+        // interpreter sees them (parsed by rd_parser, alongside everything
+        // else) — evaluating one is no different from evaluating any other
+        // expression in the language.
         Literal::InterpolatedStr(parts)
         | Literal::InterpolatedVerbatimStr(parts) => {
             let mut result = String::new();
             for part in parts.iter() {
                 match part {
                     InterpolationPart::Text(t) => result.push_str(t),
-                    InterpolationPart::Expr(src) => {
-                        match None {
-                            Some(e) => {
-                                let val = eval_expr(interp, e)?;
-                                result.push_str(&val.to_string());
-                            }
-                            None => return Err(Signal::Panic(format!(
-                                "failed to parse interpolated expression: `{}`", src
-                            ))),
-                        }
+                    InterpolationPart::Expr(expr) => {
+                        let val = eval_expr(interp, expr)?;
+                        result.push_str(&val.to_string());
                     }
                 }
             }
@@ -957,4 +953,4 @@ fn compare_values(a: &Value, b: &Value) -> Option<std::cmp::Ordering> {
         (Value::Bool(x),   Value::Bool(y))   => Some(x.cmp(y)),
         _ => None,
     }
-                }
+                       }
