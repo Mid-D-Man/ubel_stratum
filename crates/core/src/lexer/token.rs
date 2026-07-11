@@ -235,11 +235,17 @@ impl fmt::Display for TokenType {
     }
 }
 
-/// Parts of an interpolated string `$"..."`.
+/// Parts of an interpolated string `$"...{...}..."`.
+///
+/// `Expr` holds real tokens for the hole, produced by recursively invoking
+/// the tokenizer on just that hole's source range — not raw text to be
+/// re-parsed later. The parser (`rd_parser`) turns these into a fully
+/// parsed `Expr` node when building the AST; the interpreter never sees
+/// unparsed source text at all.
 #[derive(Debug, Clone, PartialEq)]
 pub enum InterpolationPart {
     Text(String),
-    Expr(String),
+    Expr(Vec<Token>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -269,7 +275,7 @@ impl Span {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Token {
     pub kind: TokenType,
     pub span: Span,
@@ -292,4 +298,4 @@ impl fmt::Display for Token {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(f, "{} @{}:{}", self.kind, self.span.line, self.span.column)
     }
-                }
+            }
