@@ -149,12 +149,14 @@ impl<'a> StringParser<'a> {
     }
 
     /// Parse expression inside { }
-    fn parse_interpolation_expr(&mut self) -> Result<String, LexicalError> {
+    fn parse_interpolation_expr(&mut self) -> Result<Vec<Token>, LexicalError> {
         // Skip {
         self.position += 1;
         self.column += 1;
 
-        let mut expr = String::new();
+        let expr_start = self.position;
+        let expr_start_line = self.line;
+        let expr_start_column = self.column;
         let mut depth = 1; // We're inside one {
 
         while self.position < self.input.len() && depth > 0 {
@@ -163,40 +165,66 @@ impl<'a> StringParser<'a> {
             match ch {
                 '{' => {
                     depth += 1;
-                    expr.push(ch);
                     self.position += 1;
                     self.column += 1;
                 }
                 '}' => {
                     depth -= 1;
-                    if depth > 0 {
-                        expr.push(ch);
-                    }
                     self.position += 1;
                     self.column += 1;
                 }
                 '\n' => {
-                    expr.push(ch);
                     self.position += 1;
                     self.line += 1;
                     self.column = 1;
                 }
                 _ => {
-                    expr.push(ch);
                     self.position += ch.len_utf8();
                     self.column += 1;
                 }
             }
         }
 
-        if depth == 0 {
-            Ok(expr.trim().to_string())
-        } else {
-            Err(LexicalError::InvalidInterpolation {
+        if depth != 0 {
+            return Err(LexicalError::InvalidInterpolation {
                 message: "Unclosed interpolation expression".to_string(),
                 span: Span::new(self.position, self.position, self.line, self.column),
                 suggestion: Some("Add closing }".to_string()),
-            })
+            });
+        }
+
+        // Loop above consumed the closing '}' already (in the '}' arm), so
+        // self.position sits one byte past it; the hole's own source text
+        // excludes that final brace, same as before this rewrite.
+        let expr_end = self.position - 1;
+        let expr_src = &self.input[expr_start..expr_end];
+
+        match crate::lexer::tokenize(expr_src) {
+            Ok(mut tokens) => {
+                // Tokens come back with spans relative to `expr_src` (starting
+                // at byte 0, line 1). Offset them to be relative to the whole
+                // file so later error messages point at the right place.
+                for tok in &mut tokens {
+                    tok.span.start += expr_start;
+                    tok.span.end += expr_start;
+                    if tok.span.line == 1 {
+                        tok.span.column += expr_start_column - 1;
+                    }
+                    tok.span.line += expr_start_line - 1;
+                }
+                Ok(tokens)
+            }
+            Err(mut err_mgr) => {
+                let detail = err_mgr.take_lexical_errors().into_iter().next();
+                Err(LexicalError::InvalidInterpolation {
+                    message: match detail {
+                        Some(e) => format!("invalid expression in interpolation hole: {}", e.message()),
+                        None => "invalid expression in interpolation hole".to_string(),
+                    },
+                    span: Span::new(expr_start, expr_end, expr_start_line, expr_start_column),
+                    suggestion: None,
+                })
+            }
         }
     }
 
@@ -344,4 +372,4 @@ impl<'a> StringParser<'a> {
     fn char_at(&self, pos: usize) -> char {
         self.input[pos..].chars().next().unwrap_or('\0')
     }
-}
+                        }
