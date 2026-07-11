@@ -526,7 +526,34 @@ fn parse_interp<'ast, 'tok>(p: &mut Parser<'ast, 'tok>, parts: Vec<LexPart>, lo:
     for part in &parts {
         match part {
             LexPart::Text(t) => ast_parts.push(InterpolationPart::Text(p.intern(t))),
-            LexPart::Expr(e) => ast_parts.push(InterpolationPart::Expr(p.intern(e))),
+            LexPart::Expr(tokens) => {
+                // The lexer already tokenized this hole's own source range
+                // (see string_parser.rs::parse_interpolation_expr) — sub-parse
+                // those tokens into a real expression right now, the same way
+                // everything else in the file gets parsed. Shares `p.arena` so
+                // the result is valid for 'ast; the sub-parser's own cursor
+                // and error manager are local to just this one hole.
+                let mut sub = Parser::new(p.arena, tokens, String::new());
+                match parse_expr(&mut sub) {
+                    Some(expr) => ast_parts.push(InterpolationPart::Expr(expr)),
+                    None => {
+                        let sub_errors = sub.errors.take_parse_errors();
+                        if sub_errors.is_empty() {
+                            p.emit(crate::error::illegal_here(
+                                "interpolation hole",
+                                "expression could not be parsed",
+                                lo,
+                                None,
+                            ));
+                        } else {
+                            for err in sub_errors {
+                                p.emit(err);
+                            }
+                        }
+                        return None;
+                    }
+                }
+            }
         }
     }
     p.cursor.advance();
@@ -668,4 +695,4 @@ fn to_assign_op(tt: &TokenType) -> Option<AssignOp> {
         TokenType::RightShiftEqual => Some(AssignOp::ShrAssign),
         _ => None,
     }
-                               }
+                                       }
