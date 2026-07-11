@@ -1,4 +1,3 @@
-
 // src/ast/literals.rs
 //! Literal value nodes.
 //!
@@ -11,14 +10,17 @@
 
 
 
-/// One segment of an interpolated string `$"..."`.
-#[derive(Debug, Clone, Copy, PartialEq)]
+use crate::ast::expressions::Expr;
+
+/// One segment of an interpolated string `$"...{...}..."`.
+#[derive(Debug, Clone, Copy)]
 pub enum InterpolationPart<'ast> {
     /// A plain text run: `"Hello, "` in `$"Hello, {name}"`.
     Text(&'ast str),
-    /// The raw source text of an expression hole: `"name"` in `{name}`.
-    /// The parser will re-tokenize this during expression lowering.
-    Expr(&'ast str),
+    /// A fully parsed expression hole: `name` in `{name}`. Parsed by
+    /// rd_parser at the same time as everything else -- no re-parsing
+    /// happens later, in sema or the interpreter.
+    Expr(&'ast Expr<'ast>),
 }
 
 
