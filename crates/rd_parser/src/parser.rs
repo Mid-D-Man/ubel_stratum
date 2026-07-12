@@ -155,13 +155,27 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
 
     #[inline(always)]
     pub(crate) fn eat_ident(&mut self) -> Option<(&'ast str, Span)> {
-        if let TokenType::Ident(name) = self.cursor.peek() {
-            let name = name.clone();
-            let span = self.cursor.current_span();
-            self.cursor.advance();
-            Some((self.intern(&name), span))
-        } else {
-            None
+        match self.cursor.peek() {
+            TokenType::Ident(name) => {
+                let name = name.clone();
+                let span = self.cursor.current_span();
+                self.cursor.advance();
+                Some((self.intern(&name), span))
+            }
+            // Built-in collection type names are dedicated keyword tokens
+            // (so `parse_type.rs` can special-case them for generic syntax
+            // like `List<int>`), but they're also valid ordinary names
+            // anywhere an identifier is expected — `List.new()`, `summon
+            // std.collections.List`, etc. Accept them here as identifier-
+            // like, using the same canonical spelling as their Display impl.
+            TokenType::KwList | TokenType::KwDictionary | TokenType::KwSet
+            | TokenType::KwQueue | TokenType::KwStack => {
+                let name = self.cursor.peek().to_string();
+                let span = self.cursor.current_span();
+                self.cursor.advance();
+                Some((self.intern(&name), span))
+            }
+            _ => None,
         }
     }
 
@@ -270,4 +284,4 @@ pub(crate) mod cap {
     pub const ENUM_VARIANTS:  usize = 8;
     pub const LINQ_CLAUSES:   usize = 4;
     pub const PATH_SEGS:      usize = 3;
-        }
+            }
