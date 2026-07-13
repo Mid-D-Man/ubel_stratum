@@ -531,7 +531,17 @@ impl<'a> InferCtx<'a> {
                     };
                     self.unify(expected_inner, ret, stmt.span);
                 }
-                self.void_ty()
+                // NOT void_ty(): a block's trailing statement type matters
+                // for expression-bodied lambdas (`fn(x) x * 2`), which unify
+                // it against the lambda's inferred return type. A `return`
+                // statement diverges — it has no meaningful "value" of its
+                // own here, already unified against current_return above —
+                // so this must be an unconstrained fresh var (unifies with
+                // anything) rather than void (which would conflict with
+                // whatever `ret` actually was, exactly like the never-taken
+                // `Some` branch bug this fixes: correct type computed, then
+                // silently overwritten by a hardcoded wrong one).
+                self.fresh_var()
             }
             StmtKind::Fail(e)        => { self.infer_expr(e); self.void_ty() }
             StmtKind::Break(maybe_e) => { maybe_e.map(|e| self.infer_expr(e)); self.void_ty() }
@@ -1050,4 +1060,4 @@ impl<'a> InferCtx<'a> {
         if id == TypeId::ERROR { return "<error>".into(); }
         self.ctx.types.get(id).display(&self.ctx.types)
     }
-    }
+        }
