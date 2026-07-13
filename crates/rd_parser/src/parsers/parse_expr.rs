@@ -153,6 +153,16 @@ fn parse_prefix<'ast, 'tok>(p: &mut Parser<'ast, 'tok>) -> Option<&'ast Expr<'as
         TokenType::InterpolatedString(parts) => parse_interp(p, parts, lo),
         TokenType::SelfKw       => { p.cursor.advance(); Some(p.alloc(Expr { kind: ExprKind::SelfExpr, span: lo })) }
         TokenType::Ident(name)  => parse_ident_expr(p, name, lo),
+        // Built-in collection type names (List, Dictionary, Set, Queue,
+        // Stack) are dedicated keyword tokens for parse_type.rs's benefit,
+        // but they're also ordinary names in expression position —
+        // `List.new()`, `Dictionary.new()`. Route through the same path
+        // as a plain identifier, using the canonical spelling.
+        TokenType::KwList | TokenType::KwDictionary | TokenType::KwSet
+        | TokenType::KwQueue | TokenType::KwStack => {
+            let name = p.cursor.peek().to_string();
+            parse_ident_expr(p, name, lo)
+        }
         TokenType::Minus => { p.cursor.advance(); let o = parse_bp(p, 28)?; let span = lo.merge(&o.span); Some(p.alloc(Expr { kind: ExprKind::UnaryOp { op: UnaryOp::Neg,    operand: o }, span })) }
         TokenType::Bang  => { p.cursor.advance(); let o = parse_bp(p, 28)?; let span = lo.merge(&o.span); Some(p.alloc(Expr { kind: ExprKind::UnaryOp { op: UnaryOp::Not,    operand: o }, span })) }
         TokenType::Not   => { p.cursor.advance(); let o = parse_bp(p, 28)?; let span = lo.merge(&o.span); Some(p.alloc(Expr { kind: ExprKind::UnaryOp { op: UnaryOp::Not,    operand: o }, span })) }
@@ -220,8 +230,16 @@ fn parse_ident_expr<'ast, 'tok>(
     let mut hi = lo;
 
     while p.cursor.eat(&TokenType::Dot) {
-        // Peek: if Ident followed by `(` it's a method call — break path, let postfix handle
-        if let TokenType::Ident(seg) = p.cursor.peek().clone() {
+        // Peek: if Ident (or a built-in collection keyword, which is also
+        // valid as an ordinary name here) followed by `(` it's a method
+        // call — break path, let postfix handle it.
+        let seg_name = match p.cursor.peek() {
+            TokenType::Ident(s) => Some(s.clone()),
+            TokenType::KwList | TokenType::KwDictionary | TokenType::KwSet
+            | TokenType::KwQueue | TokenType::KwStack => Some(p.cursor.peek().to_string()),
+            _ => None,
+        };
+        if let Some(seg) = seg_name {
             let seg = p.intern(&seg);
             if matches!(p.cursor.peek_nth(1), TokenType::LeftParen) {
                 // Field access result; postfix loop will handle `(`
@@ -695,4 +713,4 @@ fn to_assign_op(tt: &TokenType) -> Option<AssignOp> {
         TokenType::RightShiftEqual => Some(AssignOp::ShrAssign),
         _ => None,
     }
-                                       }
+                }
