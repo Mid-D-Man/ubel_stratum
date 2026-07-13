@@ -114,21 +114,13 @@ impl<'a> Resolver<'a> {
                 let local_name = alias
                     .unwrap_or_else(|| path.last().copied().unwrap_or(""))
                     .to_string();
-
                 let canonical: Vec<String> = path.iter().map(|s| s.to_string()).collect();
-                let id = self.ctx.symbols.insert(
-                    local_name.clone(),
+                self.declare(
+                    local_name,
                     DefKind::Import { canonical_path: canonical },
                     import.span,
                     Visibility::Public,
                 );
-                if let Some(existing) = self.scopes.define(local_name.clone(), id) {
-                    self.errors.add_name_error(NameError::DuplicateDefinition {
-                        name:          local_name,
-                        first_defined: self.ctx.symbols.lookup(existing).defined_at,
-                        redefined_at:  import.span,
-                    });
-                }
             }
             ImportKind::FromSummon { module_path, items } => {
                 let module: Vec<String> = module_path.iter().map(|s| s.to_string()).collect();
@@ -139,19 +131,12 @@ impl<'a> Resolver<'a> {
                 for name in names {
                     let mut canonical = module.clone();
                     canonical.push(name.to_string());
-                    let id = self.ctx.symbols.insert(
+                    self.declare(
                         name.to_string(),
                         DefKind::Import { canonical_path: canonical },
                         import.span,
                         Visibility::Public,
                     );
-                    if let Some(existing) = self.scopes.define(name.to_string(), id) {
-                        self.errors.add_name_error(NameError::DuplicateDefinition {
-                            name:          name.to_string(),
-                            first_defined: self.ctx.symbols.lookup(existing).defined_at,
-                            redefined_at:  import.span,
-                        });
-                    }
                 }
             }
         }
@@ -797,11 +782,19 @@ fn declare(
 ) -> DefId {
     let id = self.ctx.symbols.insert(name.clone(), kind, span, visibility);
     if let Some(existing_id) = self.scopes.define(name.clone(), id) {
-        self.errors.add_name_error(NameError::DuplicateDefinition {
-            name,
-            first_defined: self.ctx.symbols.lookup(existing_id).defined_at,
-            redefined_at:  span,
-        });
+        // Colliding with a pre-declared builtin isn't a real duplicate —
+        // `summon std.io.println` naming the same thing println already
+        // is is expected, not an error. (The scope keeps pointing at the
+        // builtin's own DefId either way; see ScopeStack::define — this
+        // only changes whether we report it as a conflict.)
+        let existing_kind = &self.ctx.symbols.lookup(existing_id).kind;
+        if !matches!(existing_kind, DefKind::Builtin) {
+            self.errors.add_name_error(NameError::DuplicateDefinition {
+                name,
+                first_defined: self.ctx.symbols.lookup(existing_id).defined_at,
+                redefined_at:  span,
+            });
+        }
     }
     id
 }
@@ -857,4 +850,4 @@ dp[i - 1][j - 1]
 
 dp[m][n].min(2)
 
-    }
+        }
