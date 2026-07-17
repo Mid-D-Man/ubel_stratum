@@ -18,6 +18,7 @@
 pub mod global;
 pub mod instance;
 pub mod validate;
+pub mod constructors;
 
 use crate::interpreter::value::{EvalResult, Value};
 
@@ -89,7 +90,7 @@ pub struct BuiltinSignature {
 /// Names of builtin static namespaces. Checked before falling through to
 /// `method_table` in `eval_call_with_receiver`, and before sema treats a
 /// `Namespace.method` call as an unresolved user type.
-pub const BUILTIN_NAMESPACES: &[&str] = &["Math"];
+pub const BUILTIN_NAMESPACES: &[&str] = &["Math", "List", "Dictionary", "Queue", "Stack"];
 
 pub fn is_builtin_namespace(name: &str) -> bool {
     BUILTIN_NAMESPACES.contains(&name)
@@ -111,18 +112,32 @@ static MATH_NAMESPACE: &[(&str, BuiltinFn)] = &[
 /// real builtin namespace member. Returns `None` for both "not a builtin
 /// namespace" and "no such member" — callers that already checked
 /// `is_builtin_namespace` first can treat `None` as the latter.
+static LIST_NAMESPACE: &[(&str, BuiltinFn)] = &[("new", constructors::list_new)];
+static DICTIONARY_NAMESPACE: &[(&str, BuiltinFn)] = &[("new", constructors::dictionary_new)];
+static QUEUE_NAMESPACE: &[(&str, BuiltinFn)] = &[("new", constructors::queue_new)];
+static STACK_NAMESPACE: &[(&str, BuiltinFn)] = &[("new", constructors::stack_new)];
+
 pub fn resolve_namespace_member(namespace: &str, method: &str) -> Option<BuiltinFn> {
-    match namespace {
-        "Math" => MATH_NAMESPACE.iter().find(|(n, _)| *n == method).map(|(_, f)| *f),
-        _ => None,
-    }
+    let table = match namespace {
+        "Math"       => MATH_NAMESPACE,
+        "List"       => LIST_NAMESPACE,
+        "Dictionary" => DICTIONARY_NAMESPACE,
+        "Queue"      => QUEUE_NAMESPACE,
+        "Stack"      => STACK_NAMESPACE,
+        _ => return None,
+    };
+    table.iter().find(|(n, _)| *n == method).map(|(_, f)| *f)
 }
 
 /// Every member name under a builtin namespace — used by sema to validate
 /// `Math.frobnicate()` the same way an undefined global name is caught.
 pub fn namespace_member_names(namespace: &str) -> &'static [&'static str] {
     match namespace {
-        "Math" => &["sqrt", "abs", "min", "max", "floor", "ceil", "range"],
+        "Math"       => &["sqrt", "abs", "min", "max", "floor", "ceil", "range"],
+        "List"       => &["new"],
+        "Dictionary" => &["new"],
+        "Queue"      => &["new"],
+        "Stack"      => &["new"],
         _ => &[],
     }
-}
+    }
