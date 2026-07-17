@@ -662,6 +662,14 @@ fn eval_call_with_receiver<'ast>(
 ) -> EvalResult {
     // Case 1: static call — receiver is a bare identifier naming a type.
     if let ExprKind::Ident(type_name) = &recv_expr.kind {
+        if crate::builtins::is_builtin_namespace(type_name) {
+            let func = crate::builtins::resolve_namespace_member(type_name, method_name)
+                .ok_or_else(|| Signal::Panic(format!(
+                    "'{}' has no member '{}'", type_name, method_name
+                )))?;
+            let args = eval_args(interp, raw_args)?;
+            return func(&args);
+        }
         if interp.method_table.contains_key(*type_name) {
             let fn_id = interp.method_table
                 .get(*type_name)
@@ -690,36 +698,50 @@ fn eval_method_call(
 ) -> EvalResult {
     match &receiver {
         // ── Built-in List methods ──────────────────────────────────
-        Value::List(rc) => match method_name {
-            "len" => return Ok(Value::Int(rc.borrow().len() as i64)),
-            "push" => {
-                let val = args.first().cloned().ok_or_else(|| Signal::Panic("push() needs 1 argument".into()))?;
-                rc.borrow_mut().push(val);
-                return Ok(Value::Void);
+        Value::List(rc) => {
+            use crate::builtins::instance::list_methods as m;
+            match method_name {
+                "len"      => return Ok(m::len(rc)),
+                "push"     => return m::push(rc, args),
+                "pop"      => return Ok(m::pop(rc)),
+                "contains" => return m::contains(rc, args),
+                "first"    => return Ok(m::first(rc)),
+                "last"     => return Ok(m::last(rc)),
+                "is_empty" => return Ok(m::is_empty(rc)),
+                "reverse"  => return Ok(m::reverse(rc)),
+                _ => {}
             }
-            "pop" => {
-                return Ok(rc.borrow_mut().pop().unwrap_or(Value::Null));
+        }
+
+        // ── Built-in Queue methods ──────────────────────────────────
+        Value::Queue(rc) => {
+            use crate::builtins::instance::queue_methods as m;
+            match method_name {
+                "len"      => return Ok(m::len(rc)),
+                "is_empty" => return Ok(m::is_empty(rc)),
+                "enqueue"  => return m::enqueue(rc, args),
+                "dequeue"  => return Ok(m::dequeue(rc)),
+                "peek"     => return Ok(m::peek(rc)),
+                "contains" => return m::contains(rc, args),
+                "clear"    => return Ok(m::clear(rc)),
+                _ => {}
             }
-            "contains" => {
-                let val = args.first().ok_or_else(|| Signal::Panic("contains() needs 1 argument".into()))?;
-                let found = rc.borrow().iter().any(|v| v.equals(val));
-                return Ok(Value::Bool(found));
+        }
+
+        // ── Built-in Stack methods ──────────────────────────────────
+        Value::Stack(rc) => {
+            use crate::builtins::instance::stack_methods as m;
+            match method_name {
+                "len"      => return Ok(m::len(rc)),
+                "is_empty" => return Ok(m::is_empty(rc)),
+                "push"     => return m::push(rc, args),
+                "pop"      => return Ok(m::pop(rc)),
+                "peek"     => return Ok(m::peek(rc)),
+                "contains" => return m::contains(rc, args),
+                "clear"    => return Ok(m::clear(rc)),
+                _ => {}
             }
-            "first" => {
-                return Ok(rc.borrow().first().cloned().unwrap_or(Value::Null));
-            }
-            "last" => {
-                return Ok(rc.borrow().last().cloned().unwrap_or(Value::Null));
-            }
-            "is_empty" => {
-                return Ok(Value::Bool(rc.borrow().is_empty()));
-            }
-            "reverse" => {
-                rc.borrow_mut().reverse();
-                return Ok(Value::Void);
-            }
-            _ => {}
-        },
+        }
 
         // ── Built-in String methods ────────────────────────────────
         Value::Str(s) => {
@@ -953,4 +975,4 @@ fn compare_values(a: &Value, b: &Value) -> Option<std::cmp::Ordering> {
         (Value::Bool(x),   Value::Bool(y))   => Some(x.cmp(y)),
         _ => None,
     }
-                       }
+                        }
