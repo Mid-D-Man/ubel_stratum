@@ -11,6 +11,8 @@ pub mod list_methods;
 pub mod string_methods;
 pub mod dict_methods;
 pub mod tuple_methods;
+pub mod queue_methods;
+pub mod stack_methods;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReceiverKind {
@@ -18,6 +20,8 @@ pub enum ReceiverKind {
     Str,
     Dict,
     Tuple,
+    Queue,
+    Stack,
 }
 
 /// Returns the valid method names for a given receiver kind — used by sema
@@ -29,5 +33,7 @@ pub fn method_names(kind: ReceiverKind) -> &'static [&'static str] {
         ReceiverKind::Str   => string_methods::METHOD_NAMES,
         ReceiverKind::Dict  => dict_methods::METHOD_NAMES,
         ReceiverKind::Tuple => tuple_methods::METHOD_NAMES,
+        ReceiverKind::Queue => queue_methods::METHOD_NAMES,
+        ReceiverKind::Stack => stack_methods::METHOD_NAMES,
     }
 }
