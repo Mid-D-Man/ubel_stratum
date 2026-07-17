@@ -4,7 +4,7 @@
 #![allow(dead_code)]
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fmt;
 use std::rc::Rc;
 
@@ -36,6 +36,10 @@ pub enum Value {
     /// Ordered key-value store — Vec<pair> because Value doesn't impl Hash.
     /// O(n) lookup is fine for the tree-walking interpreter.
     Dict(Rc<RefCell<Vec<(Value, Value)>>>),
+    /// FIFO queue.
+    Queue(Rc<RefCell<VecDeque<Value>>>),
+    /// LIFO stack.
+    Stack(Rc<RefCell<Vec<Value>>>),
     /// Immutable fixed-size tuple.
     Tuple(Vec<Value>),
     /// Named struct instance with mutable fields.
@@ -98,6 +102,8 @@ impl Value {
             Value::Str(_)        => "string",
             Value::List(_)       => "List",
             Value::Dict(_)       => "Dictionary",
+            Value::Queue(_)      => "Queue",
+            Value::Stack(_)      => "Stack",
             Value::Tuple(_)      => "tuple",
             Value::Struct { .. } => "struct",
             Value::Enum { .. }   => "enum",
@@ -139,6 +145,8 @@ impl Value {
             // Heap types: pointer equality.
             (Value::List(a),   Value::List(b))   => Rc::ptr_eq(a, b),
             (Value::Dict(a),   Value::Dict(b))   => Rc::ptr_eq(a, b),
+            (Value::Queue(a),  Value::Queue(b))  => Rc::ptr_eq(a, b),
+            (Value::Stack(a),  Value::Stack(b))  => Rc::ptr_eq(a, b),
             (Value::Struct { fields: a, .. },
              Value::Struct { fields: b, .. })    => Rc::ptr_eq(a, b),
             (Value::Function(a), Value::Function(b)) => a == b,
@@ -159,6 +167,14 @@ impl Value {
     /// Convenience: make an empty `Value::Dict`.
     pub fn new_dict() -> Self {
         Value::Dict(Rc::new(RefCell::new(Vec::new())))
+    }
+
+    pub fn new_queue() -> Self {
+        Value::Queue(Rc::new(RefCell::new(VecDeque::new())))
+    }
+
+    pub fn new_stack() -> Self {
+        Value::Stack(Rc::new(RefCell::new(Vec::new())))
     }
 }
 
@@ -204,6 +220,24 @@ impl fmt::Display for Value {
                 }
                 write!(f, "}}")
             }
+            Value::Queue(rc) => {
+                let items = rc.borrow();
+                write!(f, "Queue[")?;
+                for (i, v) in items.iter().enumerate() {
+                    if i > 0 { write!(f, ", ")?; }
+                    write!(f, "{}", v)?;
+                }
+                write!(f, "]")
+            }
+            Value::Stack(rc) => {
+                let items = rc.borrow();
+                write!(f, "Stack[")?;
+                for (i, v) in items.iter().enumerate() {
+                    if i > 0 { write!(f, ", ")?; }
+                    write!(f, "{}", v)?;
+                }
+                write!(f, "]")
+            }
             Value::Struct { type_name, fields } => {
                 let fields = fields.borrow();
                 write!(f, "{} {{", type_name)?;
@@ -236,4 +270,4 @@ impl fmt::Display for Value {
             }
         }
     }
-  }
+        }
