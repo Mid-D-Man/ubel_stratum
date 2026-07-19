@@ -158,6 +158,22 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
                 Some(TypeKind::Task(inner))
             }
 
+            // ── Built-in collection types: `List<T>`, `Dictionary<K,V>`,
+            // `Set<T>`, `Queue<T>`, `Stack<T>` ─────────────────────────────
+            // These lex as dedicated keyword tokens (KwList etc.), not
+            // TokenType::Ident, so they never reach the Ident arm below —
+            // that arm's call to try_collection_type() only ever fires for
+            // list/dict/etc. written some other way they can't actually be
+            // lexed. Without this arm, `List<T>` cannot be used as a type
+            // annotation at all (only as an expression-position
+            // constructor, `List.new()`) — see docs/MEMORY_MODEL.md.
+            TokenType::KwList | TokenType::KwDictionary | TokenType::KwSet
+            | TokenType::KwQueue | TokenType::KwStack => {
+                let name = self.cursor.peek().to_string();
+                self.cursor.advance();
+                self.try_collection_type(&name)
+            }
+
             // ── Named / Primitive / Collection / Generic ──────────────────────
             TokenType::Ident(name) => {
                 let name = name.clone();
@@ -502,6 +518,14 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
             | TokenType::LeftParen
             | TokenType::Fn
             | TokenType::Task
+            // Built-in collection types — see the matching arm in
+            // parse_type_base for why these need listing separately from
+            // TokenType::Ident.
+            | TokenType::KwList
+            | TokenType::KwDictionary
+            | TokenType::KwSet
+            | TokenType::KwQueue
+            | TokenType::KwStack
         )
     }
 
@@ -542,4 +566,4 @@ pub(crate) fn parse_type_annotation_opt_inner<'ast, 'tok>(
     } else {
         None
     }
-        }
+                }
