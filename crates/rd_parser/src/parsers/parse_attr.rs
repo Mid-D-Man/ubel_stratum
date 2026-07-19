@@ -249,27 +249,29 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
             // Boolean: `true` / `false`
             TokenType::True => { self.cursor.advance(); Some(AttrArg::Bool(true)) }
             TokenType::False => { self.cursor.advance(); Some(AttrArg::Bool(false)) }
-            // Identifier: bare, key=value, or nested(...)
-            TokenType::Ident(name) => {
-                let name = name.clone();
-                self.cursor.advance();
-                let name = self.intern(&name);
-
-                if self.cursor.eat(&TokenType::Equal) {
-                    // key = value
-                    let value = self.parse_attr_value()?;
-                    Some(AttrArg::Named { key: name, value })
-                } else if self.cursor.is_at(&TokenType::LeftParen) {
-                    // nested(args)
-                    let inner = self.parse_attr_arg_list(name, None)?;
-                    Some(AttrArg::Nested { name, args: inner })
-                } else {
-                    Some(AttrArg::Ident(name))
-                }
-            }
+            // Identifier: bare, key=value, or nested(...). Routed through
+            // eat_ident() (rather than matching TokenType::Ident directly)
+            // so keyword-shaped identifiers are accepted too — in
+            // particular `high`/`mid`/`low` for `@tier(mid)`, which lex as
+            // TokenType::High/Mid/Low, not TokenType::Ident. See
+            // eat_ident()'s own doc comment and docs/MEMORY_MODEL.md.
             _ => {
-                self.expected(&["attribute argument"]);
-                None
+                if let Some((name, _span)) = self.eat_ident() {
+                    if self.cursor.eat(&TokenType::Equal) {
+                        // key = value
+                        let value = self.parse_attr_value()?;
+                        Some(AttrArg::Named { key: name, value })
+                    } else if self.cursor.is_at(&TokenType::LeftParen) {
+                        // nested(args)
+                        let inner = self.parse_attr_arg_list(name, None)?;
+                        Some(AttrArg::Nested { name, args: inner })
+                    } else {
+                        Some(AttrArg::Ident(name))
+                    }
+                } else {
+                    self.expected(&["attribute argument"]);
+                    None
+                }
             }
         }
     }
