@@ -9,11 +9,14 @@
 use crate::ast::arena::AstArena;
 use crate::ast::common::{Span, TierAnnotation, Visibility};
 use crate::ast::declarations::{FunctionDecl, StructDecl};
-use crate::ast::expressions::{Expr, ExprKind};
+use crate::ast::expressions::{Arg, Expr, ExprKind};
 use crate::ast::literals::Literal;
 use crate::ast::root::{Program, Item};
-use crate::ast::statements::{Block, Stmt, StmtKind, BindingTarget};
+use crate::ast::statements::{
+    AllocatorKind, Block, SizeExpr, SizeUnit, Stmt, StmtKind, BindingTarget,
+};
 use crate::sema;
+use crate::sema::type_table::SemaType;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -53,6 +56,40 @@ fn assert_ok(arena: &AstArena, prog: &Program<'_>) {
 fn expr_stmt<'a>(arena: &'a AstArena, kind: ExprKind<'a>) -> Stmt<'a> {
     let e = arena.alloc(Expr { kind, span: Z });
     Stmt { kind: StmtKind::Expr(e), span: Z }
+}
+
+/// Like `make_fn`, but with an explicit tier — needed for `with arena(...)`
+/// tests, since `with arena` is only legal inside `@tier(mid)`.
+fn make_fn_tiered<'a>(
+    arena: &'a AstArena, name: &str, tier: TierAnnotation, body: Block<'a>,
+) -> FunctionDecl<'a> {
+    FunctionDecl {
+        tier,
+        attributes:      &[],
+        visibility:      Visibility::default(),
+        is_async:        false,
+        name:            arena.alloc_str(name),
+        lifetime_params: &[],
+        generic_params:  &[],
+        params:          &[],
+        return_type:     None,
+        body,
+        span:            Z,
+    }
+}
+
+/// Build `<ns>.new()` as a Call expression — e.g.
+/// `builtin_ctor_call(&arena, "List", CALL_SPAN)` for `List.new()`.
+/// Only the outer Call gets `call_span`; the callee/target sub-expressions
+/// keep span `Z`, since the test only ever looks up `call_span`.
+fn builtin_ctor_call<'a>(arena: &'a AstArena, ns: &str, call_span: Span) -> &'a Expr<'a> {
+    let target = arena.alloc(Expr { kind: ExprKind::Ident(arena.alloc_str(ns)), span: Z });
+    let callee = arena.alloc(Expr {
+        kind: ExprKind::Field { target, field: arena.alloc_str("new") },
+        span: Z,
+    });
+    let args: &[Arg] = &[];
+    arena.alloc(Expr { kind: ExprKind::Call { callee, args }, span: call_span })
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -223,4 +260,168 @@ fn test_sema_many_fns_ok() {
         .map(|n| Item::Function(make_fn(&arena, n, Block::empty(Z))))
         .collect();
     assert_ok(&arena, &prog_with(&arena, &fns));
-        }
+}
+
+// ── Gap 1: builtin constructor calls + arena coloring ──────────────────────
+//
+// Before this fix, `List.new()` etc. were parsed as
+// Call { callee: Field { target: Ident(ns), field: "new" } }, and the
+// generic Field arm has no field table yet — it always inferred Unknown,
+// which also meant these calls silently skipped arena tagging inside a
+// `with arena(...)` block (only array/tuple/dict/struct literals were
+// tagged). See docs/MEMORY_MODEL.md §5.
+
+#[test]
+fn test_sema_list_new_outside_arena_is_plain_list() {
+    // fn foo() { List.new() }  — no `with arena` in scope: must stay a
+    // plain SemaType::List, NOT wrapped in ArenaRef. Negative-case guard —
+    // constructor calls should only be arena-tagged when they're actually
+    // inside a `with arena(...)` block.
+    let arena = AstArena::new();
+    const CALL_SPAN: Span = Span { start: 1, end: 1, line: 0, column: 0 };
+
+    let call  = builtin_ctor_call(&arena, "List", CALL_SPAN);
+    let stmts = arena.alloc_slice_copy(&[Stmt { kind: StmtKind::Expr(call), span: Z }]);
+    let f     = make_fn(&arena, "foo", Block { stmts, span: Z });
+
+    let prog = prog_with(&arena, &[Item::Function(f)]);
+    let ctx  = sema::analyse(&prog, &arena, String::new())
+        .expect("sema should succeed for a plain List.new() call");
+
+    let ty_id = ctx.expr_type(CALL_SPAN).expect("List.new() should have an inferred type");
+    match ctx.types.get(ty_id) {
+        SemaType::List(_) => {} // expected
+        other => panic!("expected plain SemaType::List outside any arena, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_sema_list_new_in_arena_is_arena_ref() {
+    // @tier(mid) fn foo() { with arena(1MB) { List.new() } }
+    // Inside the with-arena block, List.new() must come back wrapped in
+    // ArenaRef, exactly like an array literal already does.
+    let arena = AstArena::new();
+    const CALL_SPAN: Span = Span { start: 2, end: 2, line: 0, column: 0 };
+
+    let call        = builtin_ctor_call(&arena, "List", CALL_SPAN);
+    let inner_stmts = arena.alloc_slice_copy(&[Stmt { kind: StmtKind::Expr(call), span: Z }]);
+    let inner_block = arena.alloc(Block { stmts: inner_stmts, span: Z });
+    let with_stmt   = Stmt {
+        kind: StmtKind::With {
+            allocator: AllocatorKind::Arena(SizeExpr::WithUnit { value: 1, unit: SizeUnit::MB }),
+            body: inner_block,
+        },
+        span: Z,
+    };
+    let stmts = arena.alloc_slice_copy(&[with_stmt]);
+    let f     = make_fn_tiered(&arena, "foo", TierAnnotation::Mid, Block { stmts, span: Z });
+
+    let prog = prog_with(&arena, &[Item::Function(f)]);
+    let ctx  = sema::analyse(&prog, &arena, String::new())
+        .expect("sema should succeed for a well-formed @tier(mid) with-arena block");
+
+    let ty_id = ctx.expr_type(CALL_SPAN).expect("List.new() should have an inferred type");
+    match ctx.types.get(ty_id) {
+        SemaType::ArenaRef { inner, .. } => match ctx.types.get(*inner) {
+            SemaType::List(_) => {} // expected
+            other => panic!("expected ArenaRef<List<_>>, inner was {:?}", other),
+        },
+        other => panic!("expected List.new() inside `with arena` to be ArenaRef-wrapped, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_sema_dictionary_new_in_arena_is_arena_ref() {
+    let arena = AstArena::new();
+    const CALL_SPAN: Span = Span { start: 3, end: 3, line: 0, column: 0 };
+
+    let call        = builtin_ctor_call(&arena, "Dictionary", CALL_SPAN);
+    let inner_stmts = arena.alloc_slice_copy(&[Stmt { kind: StmtKind::Expr(call), span: Z }]);
+    let inner_block = arena.alloc(Block { stmts: inner_stmts, span: Z });
+    let with_stmt   = Stmt {
+        kind: StmtKind::With {
+            allocator: AllocatorKind::Arena(SizeExpr::WithUnit { value: 1, unit: SizeUnit::MB }),
+            body: inner_block,
+        },
+        span: Z,
+    };
+    let stmts = arena.alloc_slice_copy(&[with_stmt]);
+    let f     = make_fn_tiered(&arena, "foo", TierAnnotation::Mid, Block { stmts, span: Z });
+
+    let prog = prog_with(&arena, &[Item::Function(f)]);
+    let ctx  = sema::analyse(&prog, &arena, String::new())
+        .expect("sema should succeed for a well-formed @tier(mid) with-arena block");
+
+    let ty_id = ctx.expr_type(CALL_SPAN).expect("Dictionary.new() should have an inferred type");
+    match ctx.types.get(ty_id) {
+        SemaType::ArenaRef { inner, .. } => match ctx.types.get(*inner) {
+            SemaType::Dictionary(_, _) => {} // expected
+            other => panic!("expected ArenaRef<Dictionary<_,_>>, inner was {:?}", other),
+        },
+        other => panic!("expected Dictionary.new() inside `with arena` to be ArenaRef-wrapped, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_sema_queue_new_in_arena_is_arena_ref() {
+    let arena = AstArena::new();
+    const CALL_SPAN: Span = Span { start: 4, end: 4, line: 0, column: 0 };
+
+    let call        = builtin_ctor_call(&arena, "Queue", CALL_SPAN);
+    let inner_stmts = arena.alloc_slice_copy(&[Stmt { kind: StmtKind::Expr(call), span: Z }]);
+    let inner_block = arena.alloc(Block { stmts: inner_stmts, span: Z });
+    let with_stmt   = Stmt {
+        kind: StmtKind::With {
+            allocator: AllocatorKind::Arena(SizeExpr::WithUnit { value: 1, unit: SizeUnit::MB }),
+            body: inner_block,
+        },
+        span: Z,
+    };
+    let stmts = arena.alloc_slice_copy(&[with_stmt]);
+    let f     = make_fn_tiered(&arena, "foo", TierAnnotation::Mid, Block { stmts, span: Z });
+
+    let prog = prog_with(&arena, &[Item::Function(f)]);
+    let ctx  = sema::analyse(&prog, &arena, String::new())
+        .expect("sema should succeed for a well-formed @tier(mid) with-arena block");
+
+    let ty_id = ctx.expr_type(CALL_SPAN).expect("Queue.new() should have an inferred type");
+    match ctx.types.get(ty_id) {
+        SemaType::ArenaRef { inner, .. } => match ctx.types.get(*inner) {
+            SemaType::Queue(_) => {} // expected
+            other => panic!("expected ArenaRef<Queue<_>>, inner was {:?}", other),
+        },
+        other => panic!("expected Queue.new() inside `with arena` to be ArenaRef-wrapped, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_sema_stack_new_in_arena_is_arena_ref() {
+    let arena = AstArena::new();
+    const CALL_SPAN: Span = Span { start: 5, end: 5, line: 0, column: 0 };
+
+    let call        = builtin_ctor_call(&arena, "Stack", CALL_SPAN);
+    let inner_stmts = arena.alloc_slice_copy(&[Stmt { kind: StmtKind::Expr(call), span: Z }]);
+    let inner_block = arena.alloc(Block { stmts: inner_stmts, span: Z });
+    let with_stmt   = Stmt {
+        kind: StmtKind::With {
+            allocator: AllocatorKind::Arena(SizeExpr::WithUnit { value: 1, unit: SizeUnit::MB }),
+            body: inner_block,
+        },
+        span: Z,
+    };
+    let stmts = arena.alloc_slice_copy(&[with_stmt]);
+    let f     = make_fn_tiered(&arena, "foo", TierAnnotation::Mid, Block { stmts, span: Z });
+
+    let prog = prog_with(&arena, &[Item::Function(f)]);
+    let ctx  = sema::analyse(&prog, &arena, String::new())
+        .expect("sema should succeed for a well-formed @tier(mid) with-arena block");
+
+    let ty_id = ctx.expr_type(CALL_SPAN).expect("Stack.new() should have an inferred type");
+    match ctx.types.get(ty_id) {
+        SemaType::ArenaRef { inner, .. } => match ctx.types.get(*inner) {
+            SemaType::Stack(_) => {} // expected
+            other => panic!("expected ArenaRef<Stack<_>>, inner was {:?}", other),
+        },
+        other => panic!("expected Stack.new() inside `with arena` to be ArenaRef-wrapped, got {:?}", other),
+    }
+}
