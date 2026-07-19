@@ -175,6 +175,33 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
                 self.cursor.advance();
                 Some((self.intern(&name), span))
             }
+            // Same reasoning as above, for the tier-system keywords. This
+            // is what makes `@tier(mid)` parseable at all: `tier` lexes as
+            // TokenType::Tier (needed as the attribute name), and
+            // `high`/`mid`/`low` lex as TokenType::High/Mid/Low (needed as
+            // the attribute's bare-identifier argument in
+            // parse_attr.rs::parse_generic_attr_arg). Neither is
+            // TokenType::Ident, so without this, `@tier(...)` cannot be
+            // written in source at all — see docs/MEMORY_MODEL.md.
+            TokenType::Tier | TokenType::High | TokenType::Mid | TokenType::Low => {
+                let name = self.cursor.peek().to_string();
+                let span = self.cursor.current_span();
+                self.cursor.advance();
+                Some((self.intern(&name), span))
+            }
+            // Same reasoning again, for the `with`-statement allocator
+            // keywords. parse_stmt.rs::parse_allocator_kind resolves
+            // `arena` / `pool` / `gc` / `heap` via eat_ident() too — all
+            // four lex as dedicated tokens, not TokenType::Ident, so
+            // without this, no `with arena(...)` / `with pool<T>(n)` /
+            // `with gc` / `with heap` statement can be written in source
+            // at all, regardless of tier.
+            TokenType::Arena | TokenType::Pool | TokenType::Gc | TokenType::Heap => {
+                let name = self.cursor.peek().to_string();
+                let span = self.cursor.current_span();
+                self.cursor.advance();
+                Some((self.intern(&name), span))
+            }
             _ => None,
         }
     }
@@ -284,4 +311,4 @@ pub(crate) mod cap {
     pub const ENUM_VARIANTS:  usize = 8;
     pub const LINQ_CLAUSES:   usize = 4;
     pub const PATH_SEGS:      usize = 3;
-            }
+}
