@@ -107,35 +107,47 @@ sections because §6 and §8 depend on it.
 
 ## 5. Construction-Site Tagging — GAP #1
 
-⚠️ **GAP.** `maybe_arena_ref` — the function that wraps a freshly-constructed
-value's type in `ArenaRef` when inference is currently inside a
-`with arena(...)` block — is only called from four places in
-`type_infer.rs`: array-literal, tuple-literal, dict-literal, and
-struct-literal inference.
+✅ **IMPLEMENTED.** `maybe_arena_ref` — the function that wraps a
+freshly-constructed value's type in `ArenaRef` when inference is currently
+inside a `with arena(...)` block — was originally only called from four
+places in `type_infer.rs`: array-literal, tuple-literal, dict-literal, and
+struct-literal inference. It was never called from the `Call`-expression
+inference path, so `List.new()` and friends type-checked as `Unknown` and
+silently skipped arena tagging entirely (see history below for the original
+writeup).
 
-**It is never called from the `Call`-expression inference path.** Concretely,
-this means today:
+**Fixed via `InferCtx::builtin_constructor_type`**, a small helper matching
+on the namespace name (`"List"`, `"Dictionary"`, `"Queue"`, `"Stack"` —
+mirrors `constructors.rs` / `BUILTIN_NAMESPACES` exactly) that produces the
+correct fresh `SemaType` for each constructor. The `ExprKind::Call` arm now
+recognizes the `Field { target: Ident(ns), field: "new" }` shape, calls this
+helper, and — if it matches — returns `maybe_arena_ref(ctor_ty)` instead of
+falling through to the generic (still-`Unknown`-producing) call path.
+General field/method resolution is untouched; this is narrowly scoped to
+recognized constructor calls only.
 
 ```
 with arena(1MB) {
-    let a = [1, 2, 3]      // ✅ tagged ArenaRef — literal path
-    let b = List.new()     // ❌ NOT tagged — call path, silently HIGH-shaped
+    let a = [1, 2, 3]      // ✅ tagged ArenaRef — literal path (already worked)
+    let b = List.new()     // ✅ tagged ArenaRef — call path (this fix)
 }
+let c = List.new()          // ✅ stays a plain List — no arena in scope
 ```
 
-`b` above type-checks as if it were an ordinary GC'd list. This directly
-collides with the `.new().with_capacity(n)` constructor convention (see
-`BUILTINS_RULES.md` §2) — MID-tier code cannot produce a correctly-tagged
-collection through the intended constructor syntax, only through bracket
-literals, which don't exist for every collection shape (there's no dict/queue/
-stack "literal" syntax at all).
+**Verified**, not just claimed: `cargo check --lib` clean (zero new warnings),
+full `cargo test --lib -p ubel_stratum` — 54/54 passing, including 5 new
+tests added to `sema/tests.rs` (`test_sema_list_new_in_arena_is_arena_ref`
+and siblings for `Dictionary`/`Queue`/`Stack`, plus a negative case
+confirming `List.new()` stays untagged outside any arena). This was also the
+first test coverage arena coloring had at all — previously zero tests
+touched `ArenaRef`, `maybe_arena_ref`, or any constructor call.
 
-**🔭 PROPOSED rule going forward:** any call expression that resolves to a
-known builtin collection constructor (`List.new`, `Dictionary.new`,
-`Queue.new`, `Stack.new`, future `Pool.new`, and their `.with_*()` chain
-continuations) must be arena-tagged identically to a literal when evaluated
-inside a `with arena(...)` block. This is the next concrete implementation
-task — tracked as **Gap 1** in the working plan.
+**Still open, deliberately out of scope for this fix:** the `.with_capacity()`
+/ `.growable()` chain convention from `BUILTINS_RULES.md` §2 doesn't exist
+yet as actual instance methods — those will hit the *same* "no field table"
+problem this fix worked around for `.new()` specifically, but for arbitrary
+instance method calls on an already-typed receiver. That's a separate,
+larger piece of work (general method resolution), not folded into this fix.
 
 ---
 
@@ -273,9 +285,11 @@ against once Gaps 1–2 and §8's method-tier filtering are in place.
 
 ## 11. Implementation Order
 
-1. **Gap 1** (§5) — wire constructor calls through `maybe_arena_ref`.
+1. ✅ **Gap 1** (§5) — wire constructor calls through `maybe_arena_ref`. Done,
+   verified via `cargo test --lib` (54/54 passing).
 2. **Gap 2** (§6) — implement general `ArenaRefEscapesBoundary` emission
    (assignment / field storage / closure capture), compared by `ArenaId`.
+   **Next up.**
 3. **§8** — tier filter on instance method dispatch; arena-consistent
    allocation for result-producing methods.
 4. **§9** — explicit LOW-tier rejection for collection construction.
