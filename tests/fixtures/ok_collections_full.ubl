@@ -1,0 +1,111 @@
+// tests/fixtures/ok_collections_full.ubl
+// Self-verifying coverage of every currently-registered instance method
+// on List, Dictionary, Queue, Stack, Tuple, and String, plus their
+// constructors. Each behavior is checked with assert() rather than just
+// printed, so a regression fails this fixture at the interpret stage with
+// a precise message instead of silently changing printed output.
+//
+// Known constraints (see ok_collections_high.ubl / project notes):
+//  - Dictionary has no insert/lookup instance method yet, so it can only
+//    be exercised empty here.
+//  - Tuple currently only has .len() registered.
+//  - Only ONE interpolated string ($"...") is used in the whole file —
+//    a second one anywhere later currently breaks the lexer.
+//
+// Expected: zero errors, all assertions pass.
+
+fn main() void {
+    // ── List ──────────────────────────────────────────────────────────
+    let items = List.new()
+    assert(items.is_empty(), "list: new list should be empty")
+    assert(items.len() == 0, "list: new list len should be 0")
+
+    items.push(10)
+    items.push(20)
+    items.push(30)
+    assert(items.len() == 3, "list: len after 3 pushes")
+    assert(!items.is_empty(), "list: not empty after push")
+    assert(items.first() == 10, "list: first")
+    assert(items.last() == 30, "list: last")
+    assert(items.contains(20), "list: contains 20")
+    assert(!items.contains(99), "list: does not contain 99")
+
+    let popped = items.pop()
+    assert(popped == 30, "list: pop returns last pushed")
+    assert(items.len() == 2, "list: len after pop")
+
+    items.reverse()
+    assert(items.first() == 20, "list: first after reverse")
+    assert(items.last() == 10, "list: last after reverse")
+
+    // ── Dictionary ────────────────────────────────────────────────────
+    let ages = Dictionary.new()
+    assert(ages.is_empty(), "dict: new dict should be empty")
+    assert(ages.len() == 0, "dict: new dict len should be 0")
+    assert(ages.keys().is_empty(), "dict: new dict keys should be empty")
+    assert(ages.values().is_empty(), "dict: new dict values should be empty")
+    assert(!ages.contains_key("alice"), "dict: empty dict has no keys")
+
+    // ── Queue (FIFO) ──────────────────────────────────────────────────
+    let line = Queue.new()
+    assert(line.is_empty(), "queue: new queue should be empty")
+
+    line.enqueue(1)
+    line.enqueue(2)
+    line.enqueue(3)
+    assert(line.len() == 3, "queue: len after 3 enqueues")
+    assert(line.peek() == 1, "queue: peek shows front (FIFO)")
+    assert(line.contains(2), "queue: contains 2")
+    assert(!line.contains(99), "queue: does not contain 99")
+
+    let served = line.dequeue()
+    assert(served == 1, "queue: dequeue returns front (FIFO order)")
+    assert(line.len() == 2, "queue: len after dequeue")
+
+    line.clear()
+    assert(line.is_empty(), "queue: empty after clear")
+
+    // ── Stack (LIFO) ──────────────────────────────────────────────────
+    let history = Stack.new()
+    assert(history.is_empty(), "stack: new stack should be empty")
+
+    history.push("a")
+    history.push("b")
+    history.push("c")
+    assert(history.len() == 3, "stack: len after 3 pushes")
+    assert(history.peek() == "c", "stack: peek shows top (LIFO)")
+    assert(history.contains("b"), "stack: contains b")
+    assert(!history.contains("z"), "stack: does not contain z")
+
+    let top = history.pop()
+    assert(top == "c", "stack: pop returns top (LIFO order)")
+    assert(history.len() == 2, "stack: len after pop")
+
+    history.clear()
+    assert(history.is_empty(), "stack: empty after clear")
+
+    // ── Tuple ─────────────────────────────────────────────────────────
+    let point = (1, "two", true)
+    assert(point.len() == 3, "tuple: len")
+
+    // ── String ────────────────────────────────────────────────────────
+    let text = "  Hello, World  "
+    assert(!text.is_empty(), "string: not empty")
+    assert(text.len() > 0, "string: len > 0")
+    assert(text.trim() == "Hello, World", "string: trim removes surrounding whitespace")
+    assert(text.trim_start() == "Hello, World  ", "string: trim_start")
+    assert(text.trim_end() == "  Hello, World", "string: trim_end")
+    assert(text.to_upper() == "  HELLO, WORLD  ", "string: to_upper")
+    assert(text.to_lower() == "  hello, world  ", "string: to_lower")
+    assert(text.contains("World"), "string: contains substring")
+    assert(text.trim().starts_with("Hello"), "string: starts_with")
+    assert(text.trim().ends_with("World"), "string: ends_with")
+    assert(text.replace("World", "Ubel") == "  Hello, Ubel  ", "string: replace")
+
+    let parts = "a,b,c".split(",")
+    assert(parts.len() == 3, "string: split produces 3 parts")
+    assert(parts.first() == "a", "string: split first part")
+    assert(parts.last() == "c", "string: split last part")
+
+    println($"all collection assertions passed: list={items.len()}, dict={ages.len()}, queue={line.len()}, stack={history.len()}, tuple={point.len()}, split_parts={parts.len()}")
+}
