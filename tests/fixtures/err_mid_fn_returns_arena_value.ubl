@@ -1,0 +1,27 @@
+// tests/fixtures/err_mid_fn_returns_arena_value.ubl
+// A @tier(mid) function declares List<int> as its return type, but the
+// value actually returned from inside `with arena(...)` is an
+// ArenaRef<List<int>> — tagged, scoped to that block, gone the moment the
+// function returns. The caller has no way to know that.
+//
+// This is rejected today, but via the ordinary TypeMismatch check
+// (declared List<int> vs. actual &arena List<int>), NOT via tier_check's
+// dedicated MidReturnContainsArenaRef rule. That rule checks the
+// function's *declared* return type for an ArenaRef marker — but there is
+// no surface syntax for writing "ArenaRef" in a type annotation at all,
+// so as currently implemented MidReturnContainsArenaRef can never
+// actually fire; TypeMismatch is what's doing the real enforcement here.
+// See docs/MEMORY_MODEL.md.
+//
+// Expected: sema FAIL (TypeMismatch).
+
+@tier(mid)
+fn make_list() List<int> {
+    with arena(64KB) {
+        return [1, 2, 3]
+    }
+}
+
+fn main() void {
+    let x = make_list()
+}
