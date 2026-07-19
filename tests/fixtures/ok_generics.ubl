@@ -1,0 +1,27 @@
+// tests/fixtures/ok_generics.ubl
+// A generic struct and a generic function, each instantiated with a
+// concrete type. Tests GenericParams on both StructDecl and FunctionDecl.
+// Expected: zero errors.
+
+struct Box<T> {
+    value: T
+
+    pub fn new(v: T) Box<T> {
+        return Box { value = v }
+    }
+
+    pub fn unwrap(self) T {
+        return self.value
+    }
+}
+
+fn identity<T>(x: T) T {
+    return x
+}
+
+fn main() void {
+    let boxed = Box.new(42)
+    let n = boxed.unwrap()
+    let s = identity("hello")
+    println($"boxed value={n}, identity result={s}")
+}

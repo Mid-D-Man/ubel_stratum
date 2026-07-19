@@ -1,0 +1,11 @@
+// tests/fixtures/err_arena_outside_mid_tier.ubl
+// `with arena(...)` used inside a default-tier (HIGH) function. Arena
+// allocation requires @tier(mid) — this should be rejected by tier_check's
+// ArenaInWrongTier rule.
+// Expected: sema FAIL.
+
+fn main() void {
+    with arena(64KB) {
+        let scratch = [1, 2, 3]
+    }
+}

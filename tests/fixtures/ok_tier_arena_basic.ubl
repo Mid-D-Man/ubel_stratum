@@ -1,0 +1,21 @@
+// tests/fixtures/ok_tier_arena_basic.ubl
+// A @tier(mid) function using `with arena(...) { }` to do local work, then
+// returning a plain (non-arena) value back out to HIGH-tier code. This is
+// the legitimate arena-usage shape: nothing arena-tagged crosses the
+// `with arena` block's boundary.
+// Expected: zero errors.
+
+@tier(mid)
+fn sum_first_n(n: int) int {
+    let total = 0
+    with arena(64KB) {
+        let scratch = [1, 2, 3, 4, 5]
+        total = scratch.len()
+    }
+    return total + n
+}
+
+fn main() void {
+    let result = sum_first_n(10)
+    println($"result={result}")
+}

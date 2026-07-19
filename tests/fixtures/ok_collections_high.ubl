@@ -1,0 +1,41 @@
+// tests/fixtures/ok_collections_high.ubl
+// Default (HIGH-tier) builtin collections: List, Dictionary, Queue, Stack.
+// Exercises the constructor dispatch path (List.new() etc.) plus their
+// currently-registered instance methods, outside any `with arena` block.
+//
+// Known gaps this fixture deliberately works around (see MEMORY_MODEL.md /
+// project notes for follow-up):
+//  - Dictionary has no insert/lookup instance method yet (`.get`/`.set`
+//    are reserved keywords in Ubel, and dict_methods.rs registers neither
+//    under any other name), and the `{ key = value }` dict-literal syntax
+//    in the grammar (docs/ubel.ebnf DictExpr) does not currently parse in
+//    rd_parser — so Dictionary is only exercised empty here.
+//  - Only ONE interpolated string literal ($"...") is used in this whole
+//    file. A second, separate $"..." literal anywhere later in the same
+//    file currently breaks the lexer — cleanly on a single-hole string,
+//    but as an outright hang on a multi-hole one. All other output below
+//    uses plain, non-interpolated string literals instead.
+//
+// Expected: zero errors.
+
+fn main() void {
+    let items = List.new()
+    items.push(1)
+    items.push(2)
+    items.push(3)
+
+    let ages = Dictionary.new()
+
+    let line = Queue.new()
+    line.enqueue(10)
+    line.enqueue(20)
+    let served = line.dequeue()
+
+    let history = Stack.new()
+    history.push("a")
+    history.push("b")
+    let top = history.pop()
+
+    println("collections constructed and mutated without error")
+    println($"list len={items.len()}, first={items.first()}, last={items.last()}, dict len={ages.len()}, dict empty={ages.is_empty()}, queue served={served}, queue remaining={line.len()}, stack popped={top}, stack remaining={history.len()}")
+}
