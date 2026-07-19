@@ -149,6 +149,46 @@ impl<'a> InferCtx<'a> {
         }
     }
 
+    /// Type produced by `<Namespace>.new()` for the builtin collection
+    /// constructors (`crates/core/src/builtins/constructors.rs`). `None`
+    /// for anything not in that list — including builtin namespaces with
+    /// no constructor member, like `Math` — so callers fall through to
+    /// generic call inference.
+    ///
+    /// This exists so `List.new()` / `Dictionary.new()` / `Queue.new()` /
+    /// `Stack.new()` get a real collection type *and* participate in arena
+    /// coloring via `maybe_arena_ref`, the same way array/tuple/dict/struct
+    /// literals already do. Without it, these calls fall through the
+    /// generic `Field`/`Call` path, which has no field table yet (see that
+    /// arm's own TODO) and always infers `Unknown` — silently skipping
+    /// arena tagging inside a `with arena(...)` block. See
+    /// `docs/MEMORY_MODEL.md` §5 ("Gap 1").
+    ///
+    /// Keep this in sync with `constructors.rs` and `BUILTIN_NAMESPACES` if
+    /// a new collection constructor is added (e.g. a future `Pool.new()`).
+    fn builtin_constructor_type(&mut self, namespace: &str) -> Option<TypeId> {
+        match namespace {
+            "List" => {
+                let elem = self.fresh_var();
+                Some(self.ctx.types.intern(SemaType::List(elem)))
+            }
+            "Dictionary" => {
+                let k = self.fresh_var();
+                let v = self.fresh_var();
+                Some(self.ctx.types.insert(SemaType::Dictionary(k, v)))
+            }
+            "Queue" => {
+                let elem = self.fresh_var();
+                Some(self.ctx.types.insert(SemaType::Queue(elem)))
+            }
+            "Stack" => {
+                let elem = self.fresh_var();
+                Some(self.ctx.types.insert(SemaType::Stack(elem)))
+            }
+            _ => None,
+        }
+    }
+
     // ── AST type → SemaType ───────────────────────────────────────
 
     /// Convert a syntactic `Type<'ast>` node into a TypeId.
@@ -718,6 +758,26 @@ impl<'a> InferCtx<'a> {
                         ArgKind::Named { value, .. } => { self.infer_expr(value); }
                     }
                 }
+
+                // GAP 1 FIX — `<Collection>.new()` (e.g. `List.new()`) is
+                // parsed as Call { callee: Field { target: Ident(ns), field:
+                // "new" } }. The generic Field arm below has no field table
+                // yet and always returns Unknown, so without this check
+                // every builtin constructor call would type as Unknown and
+                // silently skip arena coloring. Narrowly scoped to the
+                // known constructor namespaces in builtin_constructor_type;
+                // general field/method resolution is untouched. See
+                // docs/MEMORY_MODEL.md §5.
+                if let ExprKind::Field { target, field } = callee.kind {
+                    if field == "new" {
+                        if let ExprKind::Ident(ns) = target.kind {
+                            if let Some(ctor_ty) = self.builtin_constructor_type(ns) {
+                                return self.maybe_arena_ref(ctor_ty);
+                            }
+                        }
+                    }
+                }
+
                 self.call_return_type(callee_ty, expr.span)
             }
 
@@ -1060,4 +1120,4 @@ impl<'a> InferCtx<'a> {
         if id == TypeId::ERROR { return "<error>".into(); }
         self.ctx.types.get(id).display(&self.ctx.types)
     }
-        }
+    }
