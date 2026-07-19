@@ -55,7 +55,16 @@ jobs:
           mkdir -p results
           for f in tests/fixtures/*.ubl; do
             name=$(basename "$f" .ubl)
-            ./target/debug/examples/diagnose "$f" > "results/${name}.txt" 2>&1 || true
+            # timeout guard: a malformed fixture (e.g. more than one
+            # interpolated string literal in one file — known lexer issue,
+            # see docs/MEMORY_MODEL.md) can hang the lexer indefinitely.
+            # Without this, one bad fixture stalls the whole job instead
+            # of just showing up as a FAIL in that fixture's own report.
+            timeout 30s ./target/debug/examples/diagnose "$f" > "results/${name}.txt" 2>&1
+            rc=$?
+            if [ $rc -eq 124 ]; then
+              echo "status: TIMEOUT (30s) — see docs/MEMORY_MODEL.md, interpolated-string lexer hang" >> "results/${name}.txt"
+            fi
           done
           ls -la results/
 
