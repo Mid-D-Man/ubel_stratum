@@ -801,24 +801,19 @@ fn eval_method_call(
         }
 
         // ── Built-in Dict methods ──────────────────────────────────
-        Value::Dict(rc) => match method_name {
-            "len"      => return Ok(Value::Int(rc.borrow().len() as i64)),
-            "is_empty" => return Ok(Value::Bool(rc.borrow().is_empty())),
-            "contains_key" => {
-                let key = args.first().ok_or_else(|| Signal::Panic("contains_key() needs 1 arg".into()))?;
-                let found = rc.borrow().iter().any(|(k, _)| k.equals(key));
-                return Ok(Value::Bool(found));
+        Value::Dict(rc) => {
+            use crate::builtins::instance::dict_methods as m;
+            match method_name {
+                "len"          => return Ok(m::len(rc)),
+                "is_empty"     => return Ok(m::is_empty(rc)),
+                "contains_key" => return m::contains_key(rc, args),
+                "keys"         => return Ok(m::keys(rc)),
+                "values"       => return Ok(m::values(rc)),
+                "insert"       => return m::insert(rc, args),
+                "at"           => return m::at(rc, args),
+                _ => {}
             }
-            "keys" => {
-                let keys: Vec<Value> = rc.borrow().iter().map(|(k, _)| k.clone()).collect();
-                return Ok(Value::List(Rc::new(RefCell::new(keys))));
-            }
-            "values" => {
-                let vals: Vec<Value> = rc.borrow().iter().map(|(_, v)| v.clone()).collect();
-                return Ok(Value::List(Rc::new(RefCell::new(vals))));
-            }
-            _ => {}
-        },
+        }
 
         // ── Built-in Tuple methods ─────────────────────────────────
         Value::Tuple(elems) => match method_name {
@@ -975,4 +970,4 @@ fn compare_values(a: &Value, b: &Value) -> Option<std::cmp::Ordering> {
         (Value::Bool(x),   Value::Bool(y))   => Some(x.cmp(y)),
         _ => None,
     }
-                        }
+    }
