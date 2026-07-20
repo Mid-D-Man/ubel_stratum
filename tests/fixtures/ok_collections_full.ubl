@@ -5,12 +5,14 @@
 // printed, so a regression fails this fixture at the interpret stage with
 // a precise message instead of silently changing printed output.
 //
-// Known constraints (see ok_collections_high.ubl / project notes):
-//  - Dictionary has no insert/lookup instance method yet, so it can only
-//    be exercised empty here.
+// Known constraints:
+//  - Dictionary.insert(key, value) / .at(key) are now implemented. The
+//    `{ key = value, ... }` dict-literal syntax in the grammar does not
+//    yet parse in rd_parser — multi-entry literals hit a parse error. Use
+//    Dictionary.new() + .insert() for all dict construction in fixtures.
 //  - Tuple currently only has .len() registered.
 //  - Only ONE interpolated string ($"...") is used in the whole file —
-//    a second one anywhere later currently breaks the lexer.
+//    a second one anywhere later currently breaks the lexer (known gap).
 //
 // Expected: zero errors, all assertions pass.
 
@@ -39,12 +41,37 @@ fn main() void {
     assert(items.last() == 10, "list: last after reverse")
 
     // ── Dictionary ────────────────────────────────────────────────────
+    // Note: `get`/`set` are reserved keywords in Ubel. The insert/lookup
+    // pair is named `insert`/`at` instead — `at` matches C++ map::at and
+    // returns null for missing keys (consistent with Queue::dequeue /
+    // Stack::pop returning null on empty, rather than panicking).
     let ages = Dictionary.new()
     assert(ages.is_empty(), "dict: new dict should be empty")
     assert(ages.len() == 0, "dict: new dict len should be 0")
     assert(ages.keys().is_empty(), "dict: new dict keys should be empty")
     assert(ages.values().is_empty(), "dict: new dict values should be empty")
     assert(!ages.contains_key("alice"), "dict: empty dict has no keys")
+
+    ages.insert("alice", 30)
+    ages.insert("bob", 25)
+    assert(ages.len() == 2, "dict: len after 2 inserts")
+    assert(!ages.is_empty(), "dict: not empty after insert")
+    assert(ages.contains_key("alice"), "dict: contains_key alice")
+    assert(!ages.contains_key("carol"), "dict: does not contain carol")
+    assert(ages.at("alice") == 30, "dict: at() returns alice value")
+    assert(ages.at("bob") == 25, "dict: at() returns bob value")
+    assert(ages.at("missing") == null, "dict: at() returns null for missing key")
+
+    ages.insert("alice", 31)
+    assert(ages.len() == 2, "dict: insert on existing key overwrites, does not grow")
+    assert(ages.at("alice") == 31, "dict: overwritten value read back correctly")
+
+    let ks = ages.keys()
+    let vs = ages.values()
+    assert(ks.len() == 2, "dict: keys() len matches dict len")
+    assert(vs.len() == 2, "dict: values() len matches dict len")
+    assert(ks.contains("bob"), "dict: keys() contains bob")
+    assert(vs.contains(31), "dict: values() contains updated value")
 
     // ── Queue (FIFO) ──────────────────────────────────────────────────
     let line = Queue.new()
@@ -107,5 +134,5 @@ fn main() void {
     assert(parts.first() == "a", "string: split first part")
     assert(parts.last() == "c", "string: split last part")
 
-    println($"all collection assertions passed: list={items.len()}, dict={ages.len()}, queue={line.len()}, stack={history.len()}, tuple={point.len()}, split_parts={parts.len()}")
+    println($"all assertions passed: list={items.len()}, dict={ages.len()} (alice={ages.at("alice")}), queue={line.len()}, stack={history.len()}, tuple={point.len()}, string_parts={parts.len()}")
 }
