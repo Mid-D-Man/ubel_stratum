@@ -1,0 +1,32 @@
+// tests/fixtures/ok_dict_literals.ubl
+// The `{ key = value, ... }` dict-literal syntax from the grammar
+// (docs/ubel.ebnf DictExpr), covering single-entry, multi-entry, and
+// bool-valued literals. Depends on Dictionary.insert()/.at() (see
+// ok_collections_full.ubl) to verify contents.
+//
+// This previously failed to parse at all — parse_dict's key parsing used
+// the general expression parser (min_bp=0), and assignment `=` is a valid
+// infix operator in that grammar, so `"a" = 1` greedily parsed as one
+// Assign expression before parse_dict's own expect(Equal) ever ran. Fixed
+// by parsing the key at a binding power above assignment's. See
+// docs/MEMORY_MODEL.md.
+//
+// Expected: zero errors, all assertions pass.
+
+fn main() void {
+    let single = { "a" = 1 }
+    assert(single.len() == 1, "single-entry dict literal len")
+    assert(single.at("a") == 1, "single-entry dict literal value")
+
+    let multi = { "width" = 1920, "height" = 1080, "depth" = 32 }
+    assert(multi.len() == 3, "multi-entry dict literal len")
+    assert(multi.at("width") == 1920, "multi width")
+    assert(multi.at("height") == 1080, "multi height")
+    assert(multi.at("depth") == 32, "multi depth")
+
+    let flags = { "fullscreen" = true, "vsync" = false }
+    assert(flags.at("fullscreen") == true, "bool-valued dict literal")
+    assert(flags.at("vsync") == false, "bool-valued dict literal 2")
+
+    println($"dict literals ok: single_len={single.len()}, multi_len={multi.len()}, flags_len={flags.len()}")
+}
