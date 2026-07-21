@@ -21,6 +21,15 @@
     --interp:      #7E9270; /* interpret — lichen/verdigris */
     --fail:        #C24B3F;
     --skip:        #55504A;
+    /* Ubel source syntax highlighting — Nord-derived (nordtheme.com),
+       blue-dominant with red/yellow accents. Numbers reuse --tok above
+       rather than a 5th imported color, so it still reads as native to
+       this palette rather than a bolted-on import. */
+    --ubl-keyword: #81a1c1; /* Nord9  frost blue   — fn, let, if, return, ... */
+    --ubl-type:    #8fbcbb; /* Nord8  frost teal   — int, string, List, ...   */
+    --ubl-tier:    #bf616a; /* Nord11 aurora red   — tier/high/mid/low/arena/pool/gc/heap */
+    --ubl-string:  #ebcb8b; /* Nord13 aurora yellow */
+    --ubl-comment: #6b7a99; /* muted blue-gray */
     --font-display: 'Fraunces', Georgia, serif;
     --font-body:    -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     --font-mono:    'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
@@ -220,6 +229,12 @@
     word-break: break-word;
     color: var(--text);
   }
+  .ubl-keyword { color: var(--ubl-keyword); }
+  .ubl-type    { color: var(--ubl-type); }
+  .ubl-tier    { color: var(--ubl-tier); font-weight: 600; }
+  .ubl-string  { color: var(--ubl-string); }
+  .ubl-number  { color: var(--tok); }
+  .ubl-comment { color: var(--ubl-comment); font-style: italic; }
   .empty-note {
     color: var(--text-muted);
     font-family: var(--font-mono);
@@ -434,13 +449,70 @@ function renderTabs() {
   });
 }
 
+// ── Ubel source syntax highlighting ─────────────────────────────────────────
+// Minimal, dependency-free — no CDN, no build step. Only applied to the
+// 'source' tab; token/parse/sema/interpret dumps are Rust debug output,
+// not Ubel source, and stay plain text.
+const UBL_KEYWORDS = new Set([
+  'fn','let','mut','const','if','elif','else','match','where','for','in',
+  'while','loop','break','continue','return','summon','from','as','package',
+  'async','await','Task','try','catch','fail','struct','enum','trait','impl',
+  'pub','edge','unsafe','with','defer','and','or','not','true','false','null',
+  'self','get','set','extend','type','extract','using','lifetime',
+]);
+const UBL_TIER_KEYWORDS = new Set(['tier','high','mid','low','arena','pool','gc','heap']);
+const UBL_TYPE_KEYWORDS = new Set([
+  'int','uint','long','ulong','short','ushort','byte','ubyte',
+  'float','double','bool','char','string','void',
+  'i8','i16','i32','i64','u8','u16','u32','u64','f32','f64','isize','usize',
+  'List','Dictionary','Set','Queue','Stack',
+]);
+const UBL_TOKEN_RE = new RegExp([
+  '(?<comment>//[^\\n]*)',
+  '(?<dqstring>\\$?"(?:\\\\.|[^"\\\\])*")',
+  '(?<sqstring>\'(?:\\\\.|[^\'\\\\])*\')',
+  '(?<number>\\b\\d[\\d_]*(?:\\.\\d[\\d_]*)?(?:[eE][+-]?\\d+)?[fFlLuU]?)',
+  '(?<ident>\\b[A-Za-z_][A-Za-z0-9_]*\\b)',
+].join('|'), 'g');
+
+function ublEscapeHtml(s) {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function highlightUbel(source) {
+  let out = '';
+  let last = 0;
+  for (const m of source.matchAll(UBL_TOKEN_RE)) {
+    if (m.index > last) out += ublEscapeHtml(source.slice(last, m.index));
+    const text = m[0];
+    const g = m.groups;
+    let cls = null;
+    if (g.comment) cls = 'ubl-comment';
+    else if (g.dqstring || g.sqstring) cls = 'ubl-string';
+    else if (g.number) cls = 'ubl-number';
+    else if (g.ident) {
+      if (UBL_TIER_KEYWORDS.has(text)) cls = 'ubl-tier';
+      else if (UBL_KEYWORDS.has(text)) cls = 'ubl-keyword';
+      else if (UBL_TYPE_KEYWORDS.has(text)) cls = 'ubl-type';
+    }
+    out += cls ? `<span class="${cls}">${ublEscapeHtml(text)}</span>` : ublEscapeHtml(text);
+    last = m.index + text.length;
+  }
+  if (last < source.length) out += ublEscapeHtml(source.slice(last));
+  return out;
+}
+
 function renderPanelBody() {
   const body = document.getElementById('panel-body');
   const f = REPORT.fixtures[ACTIVE_FIXTURE];
   if (!f) { body.innerHTML = '<div class="empty-note">Select a fixture on the left.</div>'; return; }
   const content = f[ACTIVE_TAB] || '(empty)';
   const pre = document.createElement('pre');
-  pre.textContent = content;
+  if (ACTIVE_TAB === 'source') {
+    pre.innerHTML = highlightUbel(content);
+  } else {
+    pre.textContent = content;
+  }
   body.innerHTML = '';
   body.appendChild(pre);
 }
@@ -525,4 +597,4 @@ async function init() {
 init();
 </script>
 </body>
-</html>
+  </html>
