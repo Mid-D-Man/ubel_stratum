@@ -359,7 +359,19 @@ fn parse_dict<'ast, 'tok>(p: &mut Parser<'ast, 'tok>, lo: LSpan) -> Option<&'ast
     let mut entries: Vec<DictEntry<'ast>> = Vec::with_capacity(p.estimates.call_args);
     while !p.cursor.is_at(&TokenType::RightBrace) && !p.cursor.is_eof() {
         let elo = p.span();
-        let key = parse_expr(p)?;
+        // min_bp = 3, not the usual 0 (i.e. not the public parse_expr(p)).
+        // Assignment `=` is a valid infix operator in the general
+        // expression grammar — parsing the key with min_bp=0 would let it
+        // greedily consume `key = value` as one Assign expression before
+        // control ever reached the explicit expect(Equal) below, which is
+        // exactly what made single- and multi-entry dict literals fail to
+        // parse before this fix (see docs/MEMORY_MODEL.md). Note this
+        // file's own infix_bp table gives assignment (l_bp=2, r_bp=1) —
+        // reversed from the header comment's documented "L=1 R=2" for
+        // right-associativity — so min_bp needs to be 3, one above
+        // assignment's *actual* l_bp of 2, not 2. Range (l_bp=3) and
+        // everything looser still works fine in key position.
+        let key = parse_bp(p, 3)?;
         if let Err(e) = p.cursor.expect(&TokenType::Equal) { p.emit(crate::error::from_cursor(e, ParseContext::Expr)); break; }
         let value = parse_expr(p)?;
         entries.push(DictEntry { key, value, span: elo.merge(&value.span) });
@@ -713,4 +725,4 @@ fn to_assign_op(tt: &TokenType) -> Option<AssignOp> {
         TokenType::RightShiftEqual => Some(AssignOp::ShrAssign),
         _ => None,
     }
-                }
+            }
