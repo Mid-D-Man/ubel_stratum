@@ -1,0 +1,28 @@
+// tests/fixtures/err_arena_escapes_nested_mismatch.ubl
+// GAP 2 — Escape Boundary Enforcement (docs/MEMORY_MODEL.md §6 / §3).
+//
+// Both `outer_list` and the reassigned value are "MID tier" and both
+// come from a `with arena(...)` block — but they are TWO DIFFERENT,
+// non-interchangeable arenas (ArenaId(1) vs ArenaId(2), per §3).
+// `outer_list` is declared under the outer arena; reassigning it from
+// inside the nested arena hands it a value that dies when the INNER
+// block ends, while `outer_list` itself lives until the OUTER block
+// ends. This is exactly the scenario MEMORY_MODEL.md §3 calls out by
+// name, and is why arena-membership checks must always compare the
+// *specific* ArenaId, never just "is/isn't tagged ArenaRef."
+//
+// Expected: sema FAIL (ArenaRefEscapesBoundary).
+
+@tier(mid)
+fn nested() void {
+    with arena(64KB) {
+        let mut outer_list = List.new()
+        with arena(64KB) {
+            outer_list = List.new()
+        }
+    }
+}
+
+fn main() void {
+    nested()
+}

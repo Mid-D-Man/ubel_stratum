@@ -1,0 +1,27 @@
+// tests/fixtures/err_arena_escapes_closure_capture.ubl
+// GAP 2 — Escape Boundary Enforcement (docs/MEMORY_MODEL.md §6), bullet 3.
+//
+// `saved` is declared OUTSIDE any arena, holding a plain (untagged)
+// closure. Reassigning it from inside a `with arena(...)` block to a
+// NEW closure built inside that block hands it a lambda that is
+// conservatively arena-tagged (see the module doc comment on
+// `ExprKind::Lambda` in type_infer.rs) — lexical scoping means a
+// closure referencing `scratch` could only be built inside `scratch`'s
+// own block in the first place. Once the block ends, `saved` would
+// hold a dangling closure. This must be rejected the same way a plain
+// value escape is.
+//
+// Expected: sema FAIL (ArenaRefEscapesBoundary).
+
+@tier(mid)
+fn leaky() void {
+    let mut saved = fn() { return 0 }
+    with arena(64KB) {
+        let scratch = [1, 2, 3]
+        saved = fn() { return scratch.len() }
+    }
+}
+
+fn main() void {
+    leaky()
+}

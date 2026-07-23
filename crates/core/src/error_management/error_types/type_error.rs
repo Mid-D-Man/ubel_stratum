@@ -84,8 +84,13 @@ pub enum TypeError {
         span:   Span,
     },
 
-    /// A value that carries an arena lifetime was returned from a
-    /// cross-tier function and would outlive the arena.
+    /// A value that carries an arena lifetime crossed a boundary where
+    /// it would outlive its arena: assigned to a binding whose home
+    /// arena doesn't match (including a binding declared outside any
+    /// arena at all), stored into a struct field or indexed slot on a
+    /// receiver from a different-or-no arena, captured by a closure that
+    /// then escapes the block, or returned across a tier boundary whose
+    /// declared type can't express the tag. See MEMORY_MODEL.md §6.
     ArenaRefEscapesBoundary {
         /// The type that contains the arena reference.
         escaped_type: String,
@@ -186,7 +191,8 @@ impl TypeError {
 
             TypeError::ArenaRefEscapesBoundary { escaped_type, .. } =>
                 format!(
-                    "Value of type `{}` contains an arena reference and cannot cross the tier boundary",
+                    "Value of type `{}` is scoped to a `with arena(...)` block and cannot \
+                     outlive it — check the binding, struct field, or closure it's flowing into",
                     escaped_type
                 ),
 
@@ -230,7 +236,10 @@ impl TypeError {
                 Some("Add `@tier(high)` annotation, or remove `async`".to_string()),
 
             TypeError::ArenaRefEscapesBoundary { .. } =>
-                Some("Use the callback pattern: pass a closure to the MID function and return a GC-owned value from inside it".to_string()),
+                Some("Copy the data out into a plain (non-arena) value before it leaves the \
+                      `with arena(...)` block, or restructure with the callback pattern: pass a \
+                      closure in and return a GC-owned value from inside it, instead of returning \
+                      or storing the arena-scoped value directly".to_string()),
 
             TypeError::IllegalTierCall { caller_tier: TierAnnotation::High, .. } =>
                 Some("HIGH tier may only call MID-tier functions directly. Wrap the LOW-tier logic in a MID-tier function".to_string()),

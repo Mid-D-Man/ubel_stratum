@@ -1,0 +1,24 @@
+// tests/fixtures/ok_arena_same_arena_reassign.ubl
+// GAP 2 — regression test for the `structurally_compatible` fix.
+//
+// Before Gap 2, `structurally_compatible` had no arm at all for two
+// `ArenaRef`s, so reassigning a binding to a SECOND value built in the
+// SAME arena block would spuriously fail with a generic TypeMismatch
+// (ArenaRef{1, List<int>} vs ArenaRef{1, List<int>} were never
+// recognized as compatible, even with identical ArenaIds). This is a
+// completely safe, ordinary pattern — both values live and die
+// together with the same arena — so it must pass cleanly.
+//
+// Expected: sema ok, full pipeline ok.
+
+@tier(mid)
+fn reuse() void {
+    with arena(64KB) {
+        let mut items = List.new()
+        items = List.new()
+    }
+}
+
+fn main() void {
+    reuse()
+}

@@ -9,8 +9,37 @@
 //!
 //! Arena coloring is woven into 2b. Entering a `with arena(…)` block
 //! pushes a fresh ArenaId; every constructed value inside gets stamped
-//! SemaType::ArenaRef. Whether that's *allowed* at a given site is
-//! tier_check's job — we only tag provenance here.
+//! SemaType::ArenaRef.
+//!
+//! ## Gap 2 — escape boundary enforcement (docs/MEMORY_MODEL.md §6)
+//!
+//! Whether an ArenaRef is *allowed* to flow to a given site is also
+//! enforced here, not in tier_check — Pass 2 already tracks live arena
+//! scope via `arena_stack`/`maybe_arena_ref`, so this is where the
+//! answer is cheapest to compute, right as each site is inferred:
+//!
+//! - **Assignment** — `check_assign_arena_escape`, called from the
+//!   `ExprKind::Assign` arm, compares the *specific* `ArenaId` (never
+//!   just tagged/untagged — see §3) a value carries against the target's
+//!   home arena: an `Ident`'s original declared type, or a `Field`/
+//!   `Index` target's receiver/container's own tag.
+//! - **Struct field / indexed storage** — the same function; no struct
+//!   field can ever be declared `ArenaRef` (no surface syntax for it),
+//!   so a receiver that isn't itself tagged has a home arena of `None`.
+//! - **Closure capture** — a lambda built inside a `with arena(…)` block
+//!   is conservatively `maybe_arena_ref`-tagged too, the same as any
+//!   other constructed value. Lexical scoping guarantees a lambda can
+//!   only reference an arena-scoped local from inside that local's own
+//!   block, so this over-approximates (a closure that captures nothing
+//!   arena-related still gets tagged) but never under-approximates —
+//!   once tagged, the lambda value rides the same assignment/return
+//!   checks as any other arena-scoped value, no separate free-variable
+//!   capture analysis needed.
+//! - **Return position** was already caught before Gap 2, incidentally,
+//!   via a generic `TypeMismatch` in `unify` (declared return type vs.
+//!   actual `ArenaRef`-tagged value). `unify` now recognizes this
+//!   specific shape and reports the more precise `ArenaRefEscapesBoundary`
+//!   instead — see `arena_mismatch_side`.
 //!
 //! # Known rough edges (not airtight yet)
 //! - No occurs-check in unification.
@@ -147,6 +176,31 @@ impl<'a> InferCtx<'a> {
             }),
             None => inner_ty,
         }
+    }
+
+    /// GAP 2 — resolve `ty` and return `Some(arena)` only if its
+    /// *outermost* layer is `SemaType::ArenaRef`. This is deliberately
+    /// shallow (unlike `SemaType::contains_arena_ref`, which recurses):
+    /// it answers "is this specific reference itself bound to an arena",
+    /// which is what determines a binding's or receiver's *own* home
+    /// arena for escape comparisons — not "does this type contain an
+    /// arena reference somewhere inside it."
+    fn top_level_arena(&mut self, ty: TypeId) -> Option<ArenaId> {
+        let resolved = self.apply(ty);
+        match self.ctx.types.get(resolved) {
+            SemaType::ArenaRef { arena, .. } => Some(*arena),
+            _ => None,
+        }
+    }
+
+    /// GAP 2 — report `ty` as a value that has crossed an arena boundary
+    /// it shouldn't have.
+    fn arena_escape(&mut self, ty: TypeId, span: Span) {
+        let escaped_type = self.display_type(ty);
+        self.errors.add_type_error(TypeError::ArenaRefEscapesBoundary {
+            escaped_type,
+            span,
+        });
     }
 
     /// Type produced by `<Namespace>.new()` for the builtin collection
@@ -699,6 +753,69 @@ impl<'a> InferCtx<'a> {
         ty
     }
 
+    /// GAP 2 — detect an `ArenaRef` value flowing into a binding, struct
+    /// field, or indexed slot whose own home arena (if any) doesn't
+    /// match. Returns `true` if an escape was detected and reported (the
+    /// caller should skip the generic `unify` to avoid a duplicate,
+    /// less-specific diagnostic on the same expression).
+    ///
+    /// "Home arena" per target shape:
+    ///   - `Ident`  — the ArenaId (if any) the binding's *original*
+    ///     `def_type` carries. Reassignment never mutates `def_types`
+    ///     (only the unifier's substitution table changes), so re-reading
+    ///     it here always reflects the declaration site, not the current
+    ///     statement — exactly the "which arena does this binding belong
+    ///     to" question we need.
+    ///   - `Field { target: receiver, .. }` — the receiver's own
+    ///     top-level ArenaId, if the receiver itself is arena-tagged
+    ///     (i.e. the whole struct instance lives in that arena, so
+    ///     storing a same-arena value into one of its fields is safe).
+    ///     No struct field can be *declared* `ArenaRef` (no surface
+    ///     syntax exists for it), so an untagged receiver's home arena
+    ///     is always `None` — any arena-tagged value assigned into a
+    ///     field on it is unconditionally an escape.
+    ///   - `Index { target: container, .. }` — same idea, using the
+    ///     indexed container's own top-level ArenaId.
+    ///   - anything else (assignment through `Try`/`OptionalChain`, etc.)
+    ///     — skipped. Rare enough in practice not to risk a false
+    ///     positive from a shape this function doesn't model yet.
+    ///
+    /// Deliberately conservative: this only compares *top-level* tags,
+    /// and for `Ident` targets it flags a mismatch even on the very
+    /// first assignment to an untyped, not-yet-arena-tagged binding
+    /// (e.g. an untyped function parameter). Proving that case safe in
+    /// general requires liveness analysis this pass doesn't do — see
+    /// docs/MEMORY_MODEL.md §6 for the reasoning; over-flagging a
+    /// borderline-safe pattern is the right default for a memory-safety
+    /// check, the same way a real borrow checker sometimes does.
+    fn check_assign_arena_escape<'ast>(
+        &mut self,
+        target: &Expr<'ast>,
+        target_ty: TypeId,
+        value_ty: TypeId,
+        span: Span,
+    ) -> bool {
+        let Some(value_arena) = self.top_level_arena(value_ty) else { return false; };
+
+        let home_arena: Option<ArenaId> = match &target.kind {
+            ExprKind::Ident(_) => self.top_level_arena(target_ty),
+            ExprKind::Field { target: receiver, .. } => {
+                let receiver_ty = self.ctx.expr_type(receiver.span).unwrap_or(target_ty);
+                self.top_level_arena(receiver_ty)
+            }
+            ExprKind::Index { target: container, .. } => {
+                let container_ty = self.ctx.expr_type(container.span).unwrap_or(target_ty);
+                self.top_level_arena(container_ty)
+            }
+            _ => return false,
+        };
+
+        if home_arena == Some(value_arena) { return false; }
+
+        self.arena_escape(value_ty, span);
+        true
+    }
+
     fn infer_expr_inner<'ast>(&mut self, expr: &Expr<'ast>) -> TypeId {
         match &expr.kind {
             ExprKind::Lit(lit) => self.infer_literal(lit),
@@ -725,7 +842,16 @@ impl<'a> InferCtx<'a> {
             ExprKind::Assign { target, value, .. } => {
                 let target_ty = self.infer_expr(target);
                 let value_ty  = self.infer_expr(value);
-                self.unify(target_ty, value_ty, expr.span);
+                // GAP 2 — check for an arena escape first. If the assign
+                // itself is the escape, report that specifically and skip
+                // the generic structural unify below: since ArenaRef pairs
+                // with mismatched arenas are never structurally compatible
+                // (see `structurally_compatible`), unify would otherwise
+                // immediately pile a second, less useful TypeMismatch on
+                // top of the same problem.
+                if !self.check_assign_arena_escape(target, target_ty, value_ty, expr.span) {
+                    self.unify(target_ty, value_ty, expr.span);
+                }
                 self.void_ty()
             }
 
@@ -879,11 +1005,22 @@ impl<'a> InferCtx<'a> {
                 self.current_return   = prev_ret;
                 self.current_fallible = prev_fallible;
                 let ret_resolved = self.apply(ret_var);
-                self.ctx.types.insert(SemaType::Function {
+                let fn_ty = self.ctx.types.insert(SemaType::Function {
                     params:      param_tys,
                     return_type: ret_resolved,
                     is_fallible: false,
-                })
+                });
+                // GAP 2 — closure capture. A lambda built inside a
+                // `with arena(…)` block may capture arena-scoped locals
+                // from the enclosing scope; lexical scoping guarantees
+                // any such capture can only happen from inside that same
+                // block. Tag every lambda constructed here the same way
+                // array/tuple/dict/struct literals already are, so that
+                // if *this lambda value* is later assigned outward,
+                // returned, or stored in a struct field, the existing
+                // escape checks catch it — no separate free-variable
+                // capture analysis required. See module doc comment.
+                self.maybe_arena_ref(fn_ty)
             }
 
             ExprKind::Block(b) => self.infer_block(b),
@@ -1076,12 +1213,35 @@ impl<'a> InferCtx<'a> {
 
         if self.structurally_compatible(a, b) { return; }
 
+        // GAP 2 — an ArenaRef meeting an incompatible context (a
+        // different arena, or a context with no arena at all — e.g. a
+        // MID-tier function's declared return type, which can never
+        // itself express ArenaRef) is specifically an arena escape, not
+        // a generic shape mismatch. Prefer the dedicated diagnostic
+        // whenever either side carries the tag.
+        if let Some(escaped) = self.arena_mismatch_side(a, b) {
+            self.arena_escape(escaped, span);
+            return;
+        }
+
         self.errors.add_type_error(TypeError::TypeMismatch {
             expected:   self.display_type(a),
             found:      self.display_type(b),
             span,
             because_of: None,
         });
+    }
+
+    /// GAP 2 — if either resolved type is `SemaType::ArenaRef`, return
+    /// that side's `TypeId` (preferring `b`, conventionally the "actual"
+    /// / "found" side in an `expected, found` unify call, which reads
+    /// better in the "Value of type `X` ... cannot cross" message).
+    /// Returns `None` when neither side is arena-tagged, i.e. this truly
+    /// is an unrelated shape mismatch.
+    fn arena_mismatch_side(&mut self, a: TypeId, b: TypeId) -> Option<TypeId> {
+        let a_is_arena = matches!(self.ctx.types.get(a), SemaType::ArenaRef { .. });
+        let b_is_arena = matches!(self.ctx.types.get(b), SemaType::ArenaRef { .. });
+        if b_is_arena { Some(b) } else if a_is_arena { Some(a) } else { None }
     }
 
     /// Returns true if two concrete types are structurally compatible,
@@ -1100,6 +1260,18 @@ impl<'a> InferCtx<'a> {
                 (SemaType::Task(ia),     SemaType::Task(ib))     => Some((*ia, *ib)),
                 (SemaType::Slice(ia),    SemaType::Slice(ib))    => Some((*ia, *ib)),
                 (SemaType::GcRef(ia),    SemaType::GcRef(ib))    => Some((*ia, *ib)),
+                // GAP 2 — two ArenaRefs are only structurally compatible
+                // when they carry the *same* ArenaId (MEMORY_MODEL.md §3:
+                // arena membership must always be compared by specific
+                // id, never just "is/isn't tagged ArenaRef"). A mismatch
+                // here is a real escape, not an ordinary shape mismatch —
+                // `unify`'s caller reports it via `arena_mismatch_side`
+                // rather than falling through to a generic TypeMismatch.
+                (SemaType::ArenaRef { arena: aa, inner: ia, .. },
+                 SemaType::ArenaRef { arena: ab, inner: ib, .. }) => {
+                    if aa != ab { return false; }
+                    Some((*ia, *ib))
+                }
                 (SemaType::Named { def: da, .. }, SemaType::Named { def: db, .. }) => {
                     return da == db;
                 }

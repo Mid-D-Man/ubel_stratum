@@ -4,16 +4,20 @@
 // ArenaRef<List<int>> — tagged, scoped to that block, gone the moment the
 // function returns. The caller has no way to know that.
 //
-// This is rejected today, but via the ordinary TypeMismatch check
-// (declared List<int> vs. actual &arena List<int>), NOT via tier_check's
-// dedicated MidReturnContainsArenaRef rule. That rule checks the
-// function's *declared* return type for an ArenaRef marker — but there is
-// no surface syntax for writing "ArenaRef" in a type annotation at all,
+// This is rejected today via `unify`'s dedicated arena-mismatch path
+// (Gap 2, docs/MEMORY_MODEL.md §6) — NOT via tier_check's
+// MidReturnContainsArenaRef rule. That rule checks the function's
+// *declared* return type for an ArenaRef marker — but there is no
+// surface syntax for writing "ArenaRef" in a type annotation at all,
 // so as currently implemented MidReturnContainsArenaRef can never
-// actually fire; TypeMismatch is what's doing the real enforcement here.
-// See docs/MEMORY_MODEL.md.
+// actually fire. Before Gap 2 this fixture failed too, but only via a
+// generic TypeMismatch (declared List<int> vs. actual &arena List<int>)
+// that happened to reject the right programs for the wrong reason;
+// `unify` now recognizes an ArenaRef on either side specifically and
+// reports the more precise, more helpful ArenaRefEscapesBoundary
+// instead. See docs/MEMORY_MODEL.md §6.
 //
-// Expected: sema FAIL (TypeMismatch).
+// Expected: sema FAIL (ArenaRefEscapesBoundary).
 
 @tier(mid)
 fn make_list() List<int> {

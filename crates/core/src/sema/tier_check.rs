@@ -3,9 +3,18 @@
 //!
 //! Runs after name_resolution (Pass 1) and type_infer (Pass 2).
 //! All identifier uses already have DefIds; all expressions already have TypeIds.
-//! This pass simply enforces the tier rules by walking the AST and consulting
-//! both the symbol table (for callee tiers) and the type table
-//! (for ArenaRef escape detection).
+//! This pass simply enforces the tier rules by walking the AST and
+//! consulting the symbol table (for callee tiers).
+//!
+//! ArenaRef escape detection (assignment / struct-field / indexed
+//! storage / closure capture — MEMORY_MODEL.md §6, "Gap 2") is *not*
+//! done here. It's enforced eagerly in type_infer.rs's Pass 2 instead,
+//! at the point each `Assign` expression (and each `unify` call) is
+//! processed — Pass 2 already tracks live arena scope via
+//! `arena_stack`/`maybe_arena_ref`, so re-deriving that here in a
+//! second AST walk would just be duplicated bookkeeping for the same
+//! answer. See `InferCtx::check_assign_arena_escape` and
+//! `InferCtx::arena_mismatch_side`.
 //!
 //! # Rules enforced
 //!

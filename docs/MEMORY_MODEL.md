@@ -12,7 +12,9 @@
 > - ⚠️ **GAP** — designed/expected but not enforced yet; a known hole.
 > - 🔭 **PROPOSED** — a rule we are adopting going forward; no code exists for it yet.
 >
-> Reflects repo state as of commit `6d65dcb` (fresh clone). Re-verify before
+> Reflects repo state as of commit `6d65dcb` (fresh clone) **plus this
+> session's Gap 2 changes to `type_infer.rs`/`tier_check.rs`/`tests.rs`,
+> not yet pushed as of this writing.** Re-verify against `git log` before
 > relying on any ✅ claim in this doc after significant sema changes.
 
 ---
@@ -153,34 +155,123 @@ larger piece of work (general method resolution), not folded into this fix.
 
 ## 6. Escape Boundary Enforcement — GAP #2
 
-⚠️ **GAP, and the more serious one.** `ArenaRefEscapesBoundary` is a fully
-defined error variant — `Display` impl, span handling, everything — but is
-**never constructed anywhere in the codebase.**
+✅ **IMPLEMENTED.** `ArenaRefEscapesBoundary` was a fully defined error
+variant — `Display` impl, span handling, everything — but was never
+constructed anywhere in the codebase. Only one escape path was caught at
+all, and only by accident:
 
-Only one escape path is currently caught:
+- Return position was rejected, but via a generic `TypeMismatch` (declared
+  `List<int>` vs. actual `&arena List<int>`) — the *dedicated*
+  `MidReturnContainsArenaRef` rule checks the function's **declared**
+  return type for an `ArenaRef` marker, and there is no surface syntax for
+  writing `ArenaRef` in a type annotation at all, so that rule can
+  structurally never fire. `TypeMismatch` was doing the real work, for the
+  wrong stated reason.
 
-- ✅ **Return position** — `check_mid_return_type` rejects a `@tier(mid)`
-  function returning a type containing `ArenaRef` (`MidReturnContainsArenaRef`).
+Three more escape paths caught nothing at all:
 
-Three more escape paths currently catch nothing:
+- Assignment to an outer-scope binding
+- Storage into a struct field on a struct that isn't itself arena-scoped
+- Capture by a closure that can outlive the block
 
-- ❌ **Assignment to an outer-scope binding**
-  ```
-  let outer;
-  with arena(1MB) {
-      outer = [1, 2, 3];   // uncaught — outer now dangles once the arena drops
-  }
-  ```
-- ❌ **Storage into a struct field on a struct that isn't itself arena-scoped**
-- ❌ **Capture by a closure that can outlive the block**
+**Fixed entirely in `type_infer.rs`'s Pass 2** — not in `tier_check.rs`,
+even though that file's own header comment used to claim the job. Pass 2
+already tracks live arena scope via `arena_stack`/`maybe_arena_ref`, so
+that's where the answer is cheapest to compute, right as each site is
+inferred:
 
-**🔭 PROPOSED rule:** extend the same enforcement that already exists for
-return position to all three of the above, comparing the specific `ArenaId`
-(per §3) rather than a boolean "in an arena or not." This is **Gap 2**, and
-it's the change that actually makes MID tier memory-safe rather than merely
-type-decorated — it should follow immediately after Gap 1, since Gap 1 makes
-constructor calls taggable at all, and Gap 2 is what stops the tag from being
-meaningless.
+- **`InferCtx::check_assign_arena_escape`**, called from the `Assign`
+  expression arm, computes each side's **specific** `ArenaId` (never just
+  "tagged or not" — see §3) and compares them:
+  - `Ident` target — the arena (if any) baked into the binding's
+    *original* declared type. Reassignment never mutates `def_types`, so
+    re-reading it always reflects the declaration site.
+  - `Field { target: receiver, .. }` target — the receiver's own
+    top-level `ArenaId`, if the receiver itself is arena-tagged (storing a
+    same-arena value into one of its own fields is safe — both die
+    together). No struct field can be *declared* `ArenaRef` (no surface
+    syntax exists for it), so an untagged receiver's home arena is always
+    `None`, making any arena-tagged value assigned into one of its fields
+    unconditionally an escape.
+  - `Index { target: container, .. }` target — same idea, using the
+    indexed container's own top-level `ArenaId`.
+- **`structurally_compatible`** gained a same-arena-required
+  `ArenaRef`↔`ArenaRef` arm. This was also a real, previously-undetected
+  bug in its own right: with no arm for the pair at all, two `ArenaRef`s
+  with the **identical** `ArenaId` were never recognized as compatible
+  either, so ordinary, safe same-arena reassignment
+  (`with arena(1MB) { let mut x = List.new(); x = List.new() }`) would
+  have spuriously failed with a generic `TypeMismatch` the moment anyone
+  wrote it.
+- **`unify`** now prefers `ArenaRefEscapesBoundary` over the generic
+  `TypeMismatch` fallback whenever either side of a failed unification
+  carries the tag — this is what upgrades the return-position diagnostic
+  "for free," with no changes needed to `tier_check.rs` at all.
+- **Closures** — every lambda built inside a `with arena(...)` block is
+  now conservatively `maybe_arena_ref`-tagged too, the same as any other
+  constructed value. Lexical scoping guarantees a lambda can only
+  reference an arena-scoped local from inside that local's own block, so
+  this over-approximates (a closure that captures nothing arena-related
+  still gets tagged) but never under-approximates — once tagged, the
+  lambda value rides the exact same assignment/field/return checks as any
+  other arena-scoped value. No separate free-variable capture analysis
+  was needed.
+
+```
+let mut outer = List.new()          // ❌ was uncaught, now rejected
+with arena(1MB) {
+    outer = List.new()              // ArenaRefEscapesBoundary
+}
+
+with arena(1MB) {                   // ArenaId(1)
+    let mut a = List.new()
+    with arena(1MB) {               // ArenaId(2) — distinct arena
+        a = List.new()              // ❌ was uncaught, now rejected
+    }                                // (compared by specific id, per §3 —
+}                                    //  both are "tagged", but not the same one)
+
+with arena(1MB) {
+    let mut a = List.new()
+    a = List.new()                  // ✅ same arena both times — legal,
+}                                    //    and no longer spuriously rejected
+                                     //    by the structurally_compatible fix
+
+struct Holder { data: List<int> }
+let holder = Holder { data = List.new() }
+with arena(1MB) {
+    holder.data = List.new()        // ❌ was uncaught, now rejected
+}
+```
+
+**Verified**, not just claimed: `cargo check --lib` clean, full
+`cargo test --lib -p ubel_stratum` — 56/56 passing (54 prior + 2 new:
+`test_sema_arena_escape_outer_binding_rejected` and
+`test_sema_arena_same_arena_reassign_ok`, the latter a regression guard
+for the `structurally_compatible` fix specifically). Four new end-to-end
+fixtures added and confirmed failing sema exactly as intended
+(`err_arena_escapes_outer_binding.ubl`, `err_arena_escapes_struct_field.ubl`,
+`err_arena_escapes_nested_mismatch.ubl`, `err_arena_escapes_closure_capture.ubl`),
+plus one new fixture confirming the legitimate same-arena case still
+passes end to end (`ok_arena_same_arena_reassign.ubl`). All 19
+pre-existing fixtures re-verified unaffected.
+`err_mid_fn_returns_arena_value.ubl`'s header comment updated — it now
+documents (and the fixture confirms) that it fails via the dedicated
+`ArenaRefEscapesBoundary`, not the old accidental `TypeMismatch`.
+
+**Still open, deliberately out of scope for this fix:** the escape check
+is deliberately conservative rather than precise — it has no liveness
+analysis, so it can flag a pattern that's arguably safe if the escaped
+value is provably never read again (see the code comment on
+`check_assign_arena_escape` for the specific untyped-parameter case this
+affects). Over-flagging a borderline-safe pattern is the right default
+for a memory-safety check; a real borrow checker makes the same tradeoff.
+Passing an arena-tagged value as an ordinary function **argument** is
+still unenforced — not one of the three escape paths this gap targeted,
+and there's a separate, pre-existing gap that call arguments aren't
+type-checked against declared parameter types at all yet (see §12/open
+gaps list in the handover notes), so there's currently no mechanism by
+which an argument's tag could propagate into the callee's own reasoning
+regardless.
 
 ---
 
@@ -287,11 +378,12 @@ against once Gaps 1–2 and §8's method-tier filtering are in place.
 
 1. ✅ **Gap 1** (§5) — wire constructor calls through `maybe_arena_ref`. Done,
    verified via `cargo test --lib` (54/54 passing).
-2. **Gap 2** (§6) — implement general `ArenaRefEscapesBoundary` emission
-   (assignment / field storage / closure capture), compared by `ArenaId`.
-   **Next up.**
+2. ✅ **Gap 2** (§6) — general `ArenaRefEscapesBoundary` emission
+   (assignment / field / indexed storage / closure capture), compared by
+   `ArenaId`. Done, verified via `cargo test --lib` (56/56 passing) plus
+   5 new end-to-end fixtures.
 3. **§8** — tier filter on instance method dispatch; arena-consistent
-   allocation for result-producing methods.
+   allocation for result-producing methods. **Next up.**
 4. **§9** — explicit LOW-tier rejection for collection construction.
 5. **Only then** — design and implement `Pool<T>` (§10) on a tier contract
    that's actually trustworthy underneath it.

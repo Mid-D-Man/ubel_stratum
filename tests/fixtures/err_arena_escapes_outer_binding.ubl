@@ -1,0 +1,21 @@
+// tests/fixtures/err_arena_escapes_outer_binding.ubl
+// GAP 2 — Escape Boundary Enforcement (docs/MEMORY_MODEL.md §6), bullet 1.
+//
+// `outer` is declared and given its type OUTSIDE any `with arena(...)`
+// block (a plain, untagged List<int>). Reassigning it from inside a
+// nested arena block hands it a value tagged to that arena — once the
+// block ends, `outer` would dangle. This must be rejected.
+//
+// Expected: sema FAIL (ArenaRefEscapesBoundary).
+
+@tier(mid)
+fn leaky() void {
+    let mut outer = List.new()
+    with arena(64KB) {
+        outer = List.new()
+    }
+}
+
+fn main() void {
+    leaky()
+}

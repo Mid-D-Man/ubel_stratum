@@ -1,0 +1,29 @@
+// tests/fixtures/err_arena_escapes_struct_field.ubl
+// GAP 2 — Escape Boundary Enforcement (docs/MEMORY_MODEL.md §6), bullet 2.
+//
+// `holder` is a struct instance constructed OUTSIDE any arena — it is
+// not itself arena-tagged, so it has no home arena at all. Storing an
+// arena-tagged value into one of its fields from inside a nested
+// `with arena(...)` block would leave that field dangling once the
+// block ends. This must be rejected, regardless of what the field's
+// own declared type is (there is no surface syntax to declare a field
+// `ArenaRef`, so any arena-tagged value flowing into a field on an
+// untagged receiver is unconditionally an escape).
+//
+// Expected: sema FAIL (ArenaRefEscapesBoundary).
+
+struct Holder {
+    data: List<int>
+}
+
+@tier(mid)
+fn leaky() void {
+    let holder = Holder { data = List.new() }
+    with arena(64KB) {
+        holder.data = List.new()
+    }
+}
+
+fn main() void {
+    leaky()
+}
