@@ -1,0 +1,43 @@
+// .mdix/replacements/replacements.mdix
+// =============================================================================
+// Gap 2 -- Escape Boundary Enforcement (docs/MEMORY_MODEL.md, Section 6)
+//
+// One archive, 11 files, every one of them a full-file drop-in at its real
+// repo path -- no patch ops, no ambiguity. gap2-escape-boundary.tar.gz has
+// every entry nested at least one directory deep (crates/..., docs/...,
+// tests/...), so every candidate resolves via the direct nested-path rule
+// (target_root + its own path inside the archive) -- no overrides:: needed,
+// no basename collisions possible even though `tests.rs` also exists at
+// crates/core/src/interpreter/eval/tests.rs elsewhere in this repo.
+//
+// Contents of the archive:
+//   crates/core/src/sema/type_infer.rs                             (full file)
+//   crates/core/src/sema/tests.rs                                  (full file)
+//   crates/core/src/sema/tier_check.rs                             (full file — header comment only)
+//   crates/core/src/error_management/error_types/type_error.rs     (full file)
+//   docs/MEMORY_MODEL.md                                           (full file)
+//   tests/fixtures/err_arena_escapes_outer_binding.ubl              (new)
+//   tests/fixtures/err_arena_escapes_struct_field.ubl               (new)
+//   tests/fixtures/err_arena_escapes_nested_mismatch.ubl            (new)
+//   tests/fixtures/err_arena_escapes_closure_capture.ubl            (new)
+//   tests/fixtures/ok_arena_same_arena_reassign.ubl                 (new)
+//   tests/fixtures/err_mid_fn_returns_arena_value.ubl               (full file — comment update only)
+//
+// Verified against a fresh clone at commit 68abe2d before packing this:
+// cargo check --lib clean, cargo test --lib -p ubel_stratum 56/56 passing,
+// all 25 tests/fixtures/*.ubl behaving exactly as intended via the
+// `diagnose` example. See MEMORY_MODEL.md Section 6 for the full writeup.
+//
+// Always --dry-run --diff first.
+// =============================================================================
+
+@CONFIG(
+  version    -> "1.0.0"
+  author     -> "Mid-D-Man"
+  features   -> "data"
+  debug_mode -> "off"
+)
+
+@DATA(
+  target_root = "."
+)
