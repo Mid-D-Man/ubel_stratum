@@ -1,0 +1,57 @@
+// .mdix/replacements/replacements.mdix
+// =============================================================================
+// Two deliverables, one bundle: the diagnostics overhaul (unified renderer,
+// error codes, fold markers, a real lexer column-tracking bug fix) AND the
+// naming conventions doc, rewritten from scratch against the actual EBNF
+// after the previous draft used invalid syntax throughout (-> return arrows,
+// reserved collection names as user types, illegal import aliasing).
+// docs/DIAGNOSTICS_RULES.md and docs/NAMING_CONVENTIONS.md are the full
+// writeups; everything below is just the file manifest.
+//
+// One archive, 13 files, every one nested at its real repo path -- no
+// overrides:: needed, no basename collisions possible.
+//
+// Contents of the archive:
+//   crates/core/src/error_management/mod.rs                          (full file)
+//   crates/core/src/error_management/render.rs                       (NEW -- the renderer)
+//   crates/core/src/error_management/error_manager.rs                (full file)
+//   crates/core/src/error_management/logger.rs                       (full file)
+//   crates/core/src/error_management/error_types/lexical_error.rs    (full file)
+//   crates/core/src/error_management/error_types/parse_error.rs      (full file)
+//   crates/core/src/error_management/error_types/name_error.rs       (full file)
+//   crates/core/src/error_management/error_types/type_error.rs       (full file)
+//   crates/core/src/lexer/logos_lexer.rs                             (full file -- column bug fix)
+//   crates/parser/src/main.rs                                        (full file -- emoji removed)
+//   crates/rd_parser/examples/diagnose.rs                            (full file -- wired to render())
+//   docs/DIAGNOSTICS_RULES.md                                        (NEW -- house style + registry)
+//   docs/NAMING_CONVENTIONS.md                                       (NEW -- MUST/SHOULD naming rules)
+//
+// ONE FILE NEEDS MANUAL DELETION -- the replacements engine creates and
+// overwrites, it does not delete. crates/core/src/error_management/diagnostics.rs
+// is now dead (DiagnosticFormatter, fully superseded by render.rs) and must be
+// deleted by hand via the GitHub web UI after this bundle is applied. mod.rs in
+// this archive already stops referencing it, so the repo will not compile
+// until that one file is gone.
+//
+// Verified against a fresh clone before packing this: cargo check --lib
+// clean, cargo test --lib -p ubel_stratum 58/58 passing (56 prior + 2 new
+// render.rs tests), all 25 tests/fixtures/*.ubl behaving exactly as before
+// (this bundle changes how errors are PRINTED and how accurately spans are
+// TRACKED, not which fixtures pass or fail sema). NAMING_CONVENTIONS.md's
+// every code snippet was individually checked against
+// others/ubel_stratum.ebnf and cross-referenced against real fixtures in
+// tests/fixtures/ -- see its own §0.1/§0.2 for specifics.
+//
+// Always --dry-run --diff first.
+// =============================================================================
+
+@CONFIG(
+  version    -> "1.0.0"
+  author     -> "Mid-D-Man"
+  features   -> "data"
+  debug_mode -> "off"
+)
+
+@DATA(
+  target_root = "."
+)
