@@ -138,3 +138,21 @@ impl fmt::Display for LexicalError {
 }
 
 impl std::error::Error for LexicalError {}
+
+impl crate::error_management::render::Diagnosable for LexicalError {
+    // See docs/DIAGNOSTICS_RULES.md, "Error Code Registry" — LEX-0xx.
+    fn code(&self) -> &'static str {
+        match self {
+            LexicalError::UnexpectedChar { .. }           => "LEX-001",
+            LexicalError::UnterminatedString { .. }       => "LEX-002",
+            LexicalError::UnterminatedBlockComment { .. } => "LEX-003",
+            LexicalError::InvalidNumber { .. }            => "LEX-004",
+            LexicalError::InvalidEscape { .. }             => "LEX-005",
+            LexicalError::InvalidInterpolation { .. }      => "LEX-006",
+            LexicalError::InvalidCharLiteral { .. }        => "LEX-007",
+        }
+    }
+    fn span(&self) -> Span { self.span() }
+    fn message(&self) -> String { self.message() }
+    fn suggestion(&self) -> Option<String> { self.suggestion() }
+}

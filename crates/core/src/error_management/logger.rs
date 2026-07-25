@@ -1,7 +1,6 @@
 //! Custom logger with formatting and enable/disable
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::fmt;
 
 static LOGGER_ENABLED: AtomicBool = AtomicBool::new(true);
 
@@ -57,28 +56,5 @@ impl Logger {
         };
 
         eprintln!("{}[{}]\x1b[0m {}", color, prefix, message);
-    }
-
-    pub fn formatted_error(error: &impl fmt::Display, span: &crate::lexer::Span, source: &str) {
-        if !Self::is_enabled() {
-            return;
-        }
-
-        // Extract source line
-        let lines: Vec<&str> = source.lines().collect();
-        let line_text = if span.line > 0 && span.line <= lines.len() {
-            lines[span.line - 1]
-        } else {
-            ""
-        };
-
-        eprintln!("\x1b[31m[ERROR]\x1b[0m {}", error);
-        eprintln!("  \x1b[36m--> {}:{}\x1b[0m", span.line, span.column);
-        eprintln!("   |");
-        eprintln!("{:3} | {}", span.line, line_text);
-        eprintln!("   | {}{}",
-                  " ".repeat(span.column.saturating_sub(1)),
-                  "\x1b[31m^\x1b[0m"
-        );
     }
 }

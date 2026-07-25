@@ -73,11 +73,11 @@ fn cmd_lex(file: PathBuf, verbose: bool) -> i32 {
                 for (i, t) in tokens.iter().enumerate() { println!("{i:4} | {t:?}"); }
                 println!("{:-<80}", "");
             } else {
-                error_management::Logger::info(&format!("✅ {} tokens", tokens.len()));
+                error_management::Logger::info(&format!("{} tokens", tokens.len()));
             }
             0
         }
-        Err(em) => { error_management::Logger::error("❌ lex failed:"); em.report_all(); 1 }
+        Err(em) => { error_management::Logger::error("lex failed:"); em.report_all(); 1 }
     }
 }
 
@@ -85,12 +85,12 @@ fn cmd_parse(file: PathBuf) -> i32 {
     let src    = match read(&file) { Ok(s) => s, Err(c) => return c };
     let tokens = match lexer::tokenize(&src) {
         Ok(t)   => t,
-        Err(em) => { error_management::Logger::error("❌ lex failed:"); em.report_all(); return 1; }
+        Err(em) => { error_management::Logger::error("lex failed:"); em.report_all(); return 1; }
     };
     let arena = ast::arena::AstArena::with_capacity(256 * 1024);
     match parse(&arena, tokens, src) {
-        Ok(p)   => { error_management::Logger::info(&format!("✅ {} items", p.items.len())); 0 }
-        Err(em) => { error_management::Logger::error("❌ parse failed:"); em.report_all(); 1 }
+        Ok(p)   => { error_management::Logger::info(&format!("{} items", p.items.len())); 0 }
+        Err(em) => { error_management::Logger::error("parse failed:"); em.report_all(); 1 }
     }
 }
 
@@ -98,16 +98,16 @@ fn cmd_check(file: PathBuf) -> i32 {
     let src    = match read(&file) { Ok(s) => s, Err(c) => return c };
     let tokens = match lexer::tokenize(&src) {
         Ok(t)   => t,
-        Err(em) => { error_management::Logger::error("❌ lex failed:"); em.report_all(); return 1; }
+        Err(em) => { error_management::Logger::error("lex failed:"); em.report_all(); return 1; }
     };
     let arena   = ast::arena::AstArena::with_capacity(256 * 1024);
     let program = match parse(&arena, tokens, src.clone()) {
         Ok(p)   => p,
-        Err(em) => { error_management::Logger::error("❌ parse failed:"); em.report_all(); return 1; }
+        Err(em) => { error_management::Logger::error("parse failed:"); em.report_all(); return 1; }
     };
     match sema::analyse(&program, &arena, src) {
-        Ok(_)   => { error_management::Logger::info("✅ check passed"); 0 }
-        Err(em) => { error_management::Logger::error("❌ check failed:"); em.report_all(); 1 }
+        Ok(_)   => { error_management::Logger::info("check passed"); 0 }
+        Err(em) => { error_management::Logger::error("check failed:"); em.report_all(); 1 }
     }
 }
 
@@ -115,15 +115,15 @@ fn cmd_run(file: PathBuf, _args: Vec<String>) -> i32 {
     let src    = match read(&file) { Ok(s) => s, Err(c) => return c };
     let tokens = match lexer::tokenize(&src) {
         Ok(t)   => t,
-        Err(em) => { error_management::Logger::error("❌ lex failed:"); em.report_all(); return 1; }
+        Err(em) => { error_management::Logger::error("lex failed:"); em.report_all(); return 1; }
     };
     let arena   = ast::arena::AstArena::with_capacity(256 * 1024);
     let program = match parse(&arena, tokens, src.clone()) {
         Ok(p)   => p,
-        Err(em) => { error_management::Logger::error("❌ parse failed:"); em.report_all(); return 1; }
+        Err(em) => { error_management::Logger::error("parse failed:"); em.report_all(); return 1; }
     };
     if let Err(em) = sema::analyse(&program, &arena, src) {
-        error_management::Logger::error("❌ type errors:");
+        error_management::Logger::error("type errors:");
         em.report_all();
         return 1;
     }

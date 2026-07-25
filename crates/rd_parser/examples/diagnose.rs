@@ -55,9 +55,14 @@ fn main() {
             }
             t
         }
-        Err(e) => {
+        Err(mut errs) => {
             println!("status: LEX ERROR");
-            println!("  {:?}", e);
+            use ubel_stratum::error_management::Diagnosable;
+            let diags: Vec<_> = errs.take_lexical_errors()
+                .iter()
+                .map(|e| e.to_diagnostic())
+                .collect();
+            print!("{}", ubel_stratum::error_management::render_all(&diags, &source));
             print_summary(true, false, None, None, None);
             return;
         }
@@ -74,9 +79,12 @@ fn main() {
         }
         Err(mut errs) => {
             println!("status: PARSE ERROR");
-            for e in errs.take_parse_errors() {
-                println!("  {:?}", e);
-            }
+            use ubel_stratum::error_management::Diagnosable;
+            let diags: Vec<_> = errs.take_parse_errors()
+                .iter()
+                .map(|e| e.to_diagnostic())
+                .collect();
+            print!("{}", ubel_stratum::error_management::render_all(&diags, &source));
             print_summary(false, true, None, None, None);
             return;
         }
@@ -95,12 +103,13 @@ fn main() {
     };
     if let Err(mut errs) = sema_result {
         println!("status: SEMA ERROR");
-        for e in errs.take_name_errors() {
-            println!("  name:  {:?}", e);
-        }
-        for e in errs.take_type_errors() {
-            println!("  type:  {:?}", e);
-        }
+        use ubel_stratum::error_management::Diagnosable;
+        let mut diags: Vec<_> = errs.take_name_errors()
+            .iter()
+            .map(|e| e.to_diagnostic())
+            .collect();
+        diags.extend(errs.take_type_errors().iter().map(|e| e.to_diagnostic()));
+        print!("{}", ubel_stratum::error_management::render_all(&diags, &source));
     }
     if !sema_ok {
         print_summary(false, false, Some(false), None, None);

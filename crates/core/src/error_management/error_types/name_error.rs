@@ -64,17 +64,17 @@ impl NameError {
     pub fn message(&self) -> String {
         match self {
             NameError::UndefinedName { name, .. } =>
-                format!("Undefined name `{}`", name),
+                format!("undefined name `{}`", name),
 
             NameError::DuplicateDefinition { name, .. } =>
                 format!("`{}` is already defined in this scope", name),
 
             NameError::UnresolvedImport { path, .. } =>
-                format!("Cannot resolve import path `{}`", path),
+                format!("cannot resolve import path `{}`", path),
 
             NameError::UnresolvedPathSegment { full_path, unresolved_at, resolved_so_far, .. } =>
                 format!(
-                    "No member `{}` in `{}` (while resolving `{}`)",
+                    "no member `{}` in `{}` (while resolving `{}`)",
                     unresolved_at, resolved_so_far, full_path
                 ),
 
@@ -82,23 +82,17 @@ impl NameError {
                 "`self` can only be used inside a method body".to_string(),
 
             NameError::UnresolvedTypeParam { name, .. } =>
-                format!("Unknown type parameter `{}`", name),
+                format!("unknown type parameter `{}`", name),
         }
     }
 
     pub fn suggestion(&self) -> Option<String> {
         match self {
             NameError::UndefinedName { did_you_mean: Some(s), .. } =>
-                Some(format!("Did you mean `{}`?", s)),
-
-            NameError::DuplicateDefinition { first_defined, .. } =>
-                Some(format!(
-                    "First defined at line {}, column {}",
-                    first_defined.line, first_defined.column
-                )),
+                Some(format!("did you mean `{}`?", s)),
 
             NameError::SelfOutsideMethod { .. } =>
-                Some("Move this code into a method that takes `self` as a parameter".to_string()),
+                Some("move this code into a method that takes `self` as a parameter".to_string()),
 
             _ => None,
         }
@@ -112,3 +106,28 @@ impl fmt::Display for NameError {
 }
 
 impl std::error::Error for NameError {}
+
+impl crate::error_management::render::Diagnosable for NameError {
+    // See docs/DIAGNOSTICS_RULES.md, "Error Code Registry" — NAME-0xx.
+    fn code(&self) -> &'static str {
+        match self {
+            NameError::UndefinedName { .. }         => "NAME-001",
+            NameError::DuplicateDefinition { .. }    => "NAME-002",
+            NameError::UnresolvedImport { .. }       => "NAME-003",
+            NameError::UnresolvedPathSegment { .. }  => "NAME-004",
+            NameError::SelfOutsideMethod { .. }      => "NAME-005",
+            NameError::UnresolvedTypeParam { .. }    => "NAME-006",
+        }
+    }
+    fn span(&self) -> Span { self.span() }
+    fn message(&self) -> String { self.message() }
+    fn suggestion(&self) -> Option<String> { self.suggestion() }
+
+    fn secondary_spans(&self) -> Vec<(Span, String)> {
+        match self {
+            NameError::DuplicateDefinition { first_defined, .. } =>
+                vec![(*first_defined, "first defined here".to_string())],
+            _ => Vec::new(),
+        }
+    }
+}

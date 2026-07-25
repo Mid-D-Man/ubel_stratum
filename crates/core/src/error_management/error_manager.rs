@@ -4,6 +4,7 @@ use crate::error_management::error_types::{
     LexicalError, ParseError, NameError, TypeError,
 };
 use crate::error_management::logger::Logger;
+use crate::error_management::Diagnosable;
 
 /// Central error accumulator for the entire compiler pipeline.
 ///
@@ -115,83 +116,25 @@ impl ErrorManager {
 
     /// Print every accumulated error grouped by phase.
     pub fn report_all(&self) {
-        self.report_section(
-            "lexical",
-            self.lexical_errors.len(),
-            self.lexical_errors.iter().map(|e| ReportEntry {
-                span:       e.span(),
-                message:    e.message(),
-                suggestion: e.suggestion(),
-            }),
-        );
-
-        self.report_section(
-            "parse",
-            self.parse_errors.len(),
-            self.parse_errors.iter().map(|e| ReportEntry {
-                span:       e.span(),
-                message:    e.message(),
-                suggestion: e.suggestion(),
-            }),
-        );
-
-        self.report_section(
-            "name resolution",
-            self.name_errors.len(),
-            self.name_errors.iter().map(|e| ReportEntry {
-                span:       e.span(),
-                message:    e.message(),
-                suggestion: e.suggestion(),
-            }),
-        );
-
-        self.report_section(
-            "type",
-            self.type_errors.len(),
-            self.type_errors.iter().map(|e| ReportEntry {
-                span:       e.span(),
-                message:    e.message(),
-                suggestion: e.suggestion(),
-            }),
-        );
+        self.report_section("lexical", &self.lexical_errors);
+        self.report_section("parse", &self.parse_errors);
+        self.report_section("name resolution", &self.name_errors);
+        self.report_section("type", &self.type_errors);
     }
 
-    fn report_section<'a>(
+    fn report_section<E: Diagnosable>(
         &self,
         phase: &str,
-        count: usize,
-        entries: impl Iterator<Item = ReportEntry>,
+        errors: &[E],
     ) {
-        if count == 0 { return; }
+        if errors.is_empty() { return; }
 
-        Logger::error(&format!("\n{} {} error(s):", count, phase));
+        Logger::error(&format!("\n{} {} error(s):", errors.len(), phase));
 
-        let lines: Vec<&str> = self.source.lines().collect();
-        let entries: Vec<_> = entries.collect();
-
-        for (i, entry) in entries.iter().enumerate() {
-            let span = &entry.span;
-            let line_text = if span.line > 0 && span.line <= lines.len() {
-                lines[span.line - 1]
-            } else {
-                ""
-            };
-
-            eprintln!("\x1b[31merror:\x1b[0m {}", entry.message);
-            eprintln!("  \x1b[36m--> {}:{}\x1b[0m", span.line, span.column);
-            eprintln!("   |");
-            eprintln!("{:3} | {}", span.line, line_text);
-            eprintln!(
-                "   | {}{}\n",
-                " ".repeat(span.column.saturating_sub(1)),
-                "\x1b[31m^\x1b[0m"
-            );
-
-            if let Some(suggestion) = &entry.suggestion {
-                eprintln!("   \x1b[33m= help:\x1b[0m {}", suggestion);
-            }
-
-            if i < entries.len() - 1 { eprintln!(); }
+        for (i, error) in errors.iter().enumerate() {
+            let diag = error.to_diagnostic();
+            eprint!("{}", crate::error_management::render(&diag, &self.source));
+            if i < errors.len() - 1 { eprintln!(); }
         }
     }
 
@@ -199,12 +142,4 @@ impl ErrorManager {
     pub fn take_errors(&mut self) -> Vec<LexicalError> {
         std::mem::take(&mut self.lexical_errors)
     }
-}
-
-// ── Internal report helper ─────────────────────────────────────────
-
-struct ReportEntry {
-    span:       crate::lexer::Span,
-    message:    String,
-    suggestion: Option<String>,
 }

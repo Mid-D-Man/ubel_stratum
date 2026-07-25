@@ -145,16 +145,16 @@ impl TypeError {
     pub fn message(&self) -> String {
         match self {
             TypeError::TypeMismatch { expected, found, .. } =>
-                format!("Type mismatch: expected `{}`, found `{}`", expected, found),
+                format!("type mismatch: expected `{}`, found `{}`", expected, found),
 
             TypeError::ArgumentCountMismatch { expected, found, .. } =>
-                format!("Expected {} argument(s), found {}", expected, found),
+                format!("expected {} argument(s), found {}", expected, found),
 
             TypeError::NoSuchField { field, on_type, .. } =>
-                format!("Type `{}` has no field `{}`", on_type, field),
+                format!("type `{}` has no field `{}`", on_type, field),
 
             TypeError::NoSuchMethod { method, on_type, .. } =>
-                format!("Type `{}` has no method `{}`", on_type, method),
+                format!("type `{}` has no method `{}`", on_type, method),
 
             TypeError::TryOnNonFallible { found, .. } =>
                 format!("`?` requires a fallible type (`T!`), found `{}`", found),
@@ -163,7 +163,7 @@ impl TypeError {
                 format!("`await` requires `Task<T>`, found `{}`", found),
 
             TypeError::CannotInferType { .. } =>
-                "Cannot infer type — add an explicit type annotation".to_string(),
+                "cannot infer type — add an explicit type annotation".to_string(),
 
             TypeError::GenericArgCountMismatch { type_name, expected, found, .. } =>
                 format!(
@@ -185,13 +185,13 @@ impl TypeError {
 
             TypeError::AsyncFunctionNotHigh { actual, .. } =>
                 format!(
-                    "Async functions must be `@tier(high)`; this function is `@tier({})`",
+                    "async functions must be `@tier(high)`; this function is `@tier({})`",
                     tier_name(*actual)
                 ),
 
             TypeError::ArenaRefEscapesBoundary { escaped_type, .. } =>
                 format!(
-                    "Value of type `{}` is scoped to a `with arena(...)` block and cannot \
+                    "value of type `{}` is scoped to a `with arena(...)` block and cannot \
                      outlive it — check the binding, struct field, or closure it's flowing into",
                     escaped_type
                 ),
@@ -204,7 +204,7 @@ impl TypeError {
 
             TypeError::MidReturnContainsArenaRef { return_type, .. } =>
                 format!(
-                    "Return type `{}` contains an arena-lifetime reference; \
+                    "return type `{}` contains an arena-lifetime reference; \
                      this makes the function uncallable from `@tier(high)`",
                     return_type
                 ),
@@ -220,32 +220,29 @@ impl TypeError {
 
     pub fn suggestion(&self) -> Option<String> {
         match self {
-            TypeError::TypeMismatch { because_of: Some(span), .. } =>
-                Some(format!("Type was established at line {}", span.line)),
-
             TypeError::CannotInferType { suggestion: Some(s), .. } =>
                 Some(s.clone()),
 
             TypeError::ArenaInWrongTier { .. } =>
-                Some("Annotate this function with `@tier(mid)` or remove the arena block".to_string()),
+                Some("annotate this function with `@tier(mid)` or remove the arena block".to_string()),
 
             TypeError::AwaitInWrongTier { .. } =>
-                Some("Annotate this function with `@tier(high)` or remove the `await`".to_string()),
+                Some("annotate this function with `@tier(high)` or remove the `await`".to_string()),
 
             TypeError::AsyncFunctionNotHigh { .. } =>
-                Some("Add `@tier(high)` annotation, or remove `async`".to_string()),
+                Some("add `@tier(high)` annotation, or remove `async`".to_string()),
 
             TypeError::ArenaRefEscapesBoundary { .. } =>
-                Some("Copy the data out into a plain (non-arena) value before it leaves the \
+                Some("copy the data out into a plain (non-arena) value before it leaves the \
                       `with arena(...)` block, or restructure with the callback pattern: pass a \
                       closure in and return a GC-owned value from inside it, instead of returning \
                       or storing the arena-scoped value directly".to_string()),
 
             TypeError::IllegalTierCall { caller_tier: TierAnnotation::High, .. } =>
-                Some("HIGH tier may only call MID-tier functions directly. Wrap the LOW-tier logic in a MID-tier function".to_string()),
+                Some("HIGH tier may only call MID-tier functions directly — wrap the LOW-tier logic in a MID-tier function".to_string()),
 
             TypeError::LinqInWrongTier { .. } =>
-                Some("Move the LINQ query into a `@tier(high)` function, or use `.where()` / `.map()` method chains instead (which work in all tiers)".to_string()),
+                Some("move the LINQ query into a `@tier(high)` function, or use `.where()` / `.map()` method chains instead (which work in all tiers)".to_string()),
 
             _ => None,
         }
@@ -267,3 +264,45 @@ impl fmt::Display for TypeError {
 }
 
 impl std::error::Error for TypeError {}
+
+impl crate::error_management::render::Diagnosable for TypeError {
+    // See docs/DIAGNOSTICS_RULES.md, "Error Code Registry". Ordinary
+    // type-checking variants get TYPE-1xx; tier/arena enforcement gets
+    // TYPE-2xx, a deliberately separate number range (not just a
+    // different starting point within one flat list) so that if
+    // TypeError is ever physically split into two enums — it already
+    // reads as two families, per the `// ── Type mismatch ──` /
+    // `// ── Tier violations ──` banners above — the TYPE-2xx group can
+    // become TIER-xxx with the numeric tail unchanged, and nothing
+    // anyone has grepped for goes stale.
+    fn code(&self) -> &'static str {
+        match self {
+            TypeError::TypeMismatch { .. }              => "TYPE-101",
+            TypeError::ArgumentCountMismatch { .. }     => "TYPE-102",
+            TypeError::NoSuchField { .. }                => "TYPE-103",
+            TypeError::NoSuchMethod { .. }               => "TYPE-104",
+            TypeError::TryOnNonFallible { .. }           => "TYPE-105",
+            TypeError::AwaitOnNonTask { .. }             => "TYPE-106",
+            TypeError::CannotInferType { .. }            => "TYPE-107",
+            TypeError::GenericArgCountMismatch { .. }    => "TYPE-108",
+            TypeError::ArenaInWrongTier { .. }           => "TYPE-201",
+            TypeError::AwaitInWrongTier { .. }           => "TYPE-202",
+            TypeError::AsyncFunctionNotHigh { .. }       => "TYPE-203",
+            TypeError::ArenaRefEscapesBoundary { .. }    => "TYPE-204",
+            TypeError::IllegalTierCall { .. }            => "TYPE-205",
+            TypeError::MidReturnContainsArenaRef { .. }  => "TYPE-206",
+            TypeError::LinqInWrongTier { .. }            => "TYPE-207",
+        }
+    }
+    fn span(&self) -> Span { self.span() }
+    fn message(&self) -> String { self.message() }
+    fn suggestion(&self) -> Option<String> { self.suggestion() }
+
+    fn secondary_spans(&self) -> Vec<(Span, String)> {
+        match self {
+            TypeError::TypeMismatch { because_of: Some(span), .. } =>
+                vec![(*span, "expected type was established here".to_string())],
+            _ => Vec::new(),
+        }
+    }
+}

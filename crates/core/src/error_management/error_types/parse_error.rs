@@ -135,7 +135,7 @@ impl ParseError {
             ParseError::UnexpectedToken { found, expected, context, .. } => {
                 let exp = expected.join(", ");
                 format!(
-                    "unexpected `{:?}` while parsing {}, expected: {}",
+                    "unexpected `{}` while parsing {}, expected: {}",
                     found, context.as_str(), exp
                 )
             }
@@ -169,7 +169,7 @@ impl ParseError {
         match self {
             ParseError::UnexpectedToken { found, expected, .. } => {
                 if expected.len() == 1 {
-                    Some(format!("try replacing `{:?}` with {}", found, expected[0]))
+                    Some(format!("try replacing `{}` with {}", found, expected[0]))
                 } else {
                     None
                 }
@@ -193,3 +193,19 @@ impl fmt::Display for ParseError {
 }
 
 impl std::error::Error for ParseError {}
+
+impl crate::error_management::render::Diagnosable for ParseError {
+    // See docs/DIAGNOSTICS_RULES.md, "Error Code Registry" — PARSE-0xx.
+    fn code(&self) -> &'static str {
+        match self {
+            ParseError::UnexpectedToken { .. }   => "PARSE-001",
+            ParseError::UnexpectedEof { .. }     => "PARSE-002",
+            ParseError::UnclosedDelimiter { .. } => "PARSE-003",
+            ParseError::IllegalInContext { .. }  => "PARSE-004",
+            ParseError::Raw { .. }               => "PARSE-005",
+        }
+    }
+    fn span(&self) -> Span { self.span() }
+    fn message(&self) -> String { self.message() }
+    fn suggestion(&self) -> Option<String> { self.suggestion() }
+}

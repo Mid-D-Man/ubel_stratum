@@ -6,8 +6,21 @@ use crate::error_management::{ErrorManager, error_types::LexicalError};
 use crate::lexer::{keywords, string_parser::StringParser, comment_parser::CommentParser};
 
 #[derive(Logos, Debug, Clone, PartialEq)]
-#[logos(skip r"[ \t]+")]
 enum LogosToken {
+    // ── Whitespace ───────────────────────────────────────────────
+    // NOT a `#[logos(skip ...)]` directive. A `skip` match is consumed
+    // by the lexer generator with no callback at all, so `update_position`
+    // never runs for it — every token's *reported* column then silently
+    // undercounts by however many spaces/tabs were skipped since the
+    // last real token, compounding across a whole line. A single-line
+    // fixture with one level of indentation could be off by 6+ columns
+    // before this fix (see docs/DIAGNOSTICS_RULES.md, "Known limitation:
+    // pre-fix column drift" for the worked example). Handling it as an
+    // ordinary regex token — discarded in `handle_logos_token` right
+    // alongside `Newline`/`LineComment`, but still run through
+    // `update_position` first — keeps `self.column` honest.
+    #[regex(r"[ \t]+")] Whitespace,
+
     // ── Keywords ─────────────────────────────────────────────────
     #[token("fn")]       Fn,
     #[token("let")]      Let,
@@ -343,7 +356,7 @@ impl<'a> LogosLexer<'a> {
                 }
                 return;
             }
-            LogosToken::LineComment | LogosToken::Newline => {
+            LogosToken::LineComment | LogosToken::Newline | LogosToken::Whitespace => {
                 self.update_position(&lexeme);
                 return;
             }
