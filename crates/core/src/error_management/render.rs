@@ -19,22 +19,31 @@
 //!
 //! # Fold markers
 //!
-//! Three ASCII markers exist purely so a dumb line-scanner (a regex, an
-//! editor extension, grep) can carve up a rendered diagnostic without
-//! needing a real parser — this matters today because `diagnose.rs`'s
-//! output is plain captured text, and matters later because it's the
-//! same shape an LSP client will eventually want to fold in an editor:
+//! Every fold region has an explicit, symmetric open AND close marker —
+//! nothing is inferred from an implicit "this line's shape means the
+//! region started here." That's deliberate: a dumb line-scanner (a
+//! regex, an editor extension, grep) can then carve up a rendered
+//! diagnostic, at ANY nesting depth, by matching open/close pairs alone,
+//! with no indentation-sniffing and no real parser — this matters today
+//! because `diagnose.rs`'s output is plain captured text, and matters
+//! later because it's the same shape an LSP client will eventually want
+//! to fold in an editor:
 //!
-//!   - `^error\[` / `^warning\[` — the ONE line every diagnostic starts
-//!     with. No separate "begin" marker needed; this is already unique.
-//!   - `~>` — prefixes every *supplementary* line: a `note` (points at
-//!     a secondary span, e.g. "first defined here") or a `help`
-//!     (a plain-text suggestion, no span). These are exactly the lines
-//!     an editor should let you collapse to see just the primary error
-//!     — everything under `-->`/`^^^^` is the one fact you can't fold
-//!     away, everything under `~>` is context you can.
-//!   - `^<<<$` — closes the diagnostic. Pairs with the `error[`/
-//!     `warning[` line to bound a fold region for the whole thing.
+//!   - **`>>>` / `<<<`** — wraps the WHOLE diagnostic. `>>>` starts the
+//!     `error[CODE]: message` line itself; `<<<` is the diagnostic's
+//!     last line, alone.
+//!   - **`~>` / `<~`** — wraps each individual *supplementary* block: a
+//!     `note` (points at a secondary span, e.g. "first defined here")
+//!     or a `help` (a plain-text suggestion, no span). Every `~>` has
+//!     exactly one matching `<~` closing it, even a one-line `help`
+//!     with no nested span block of its own — no "sometimes symmetric"
+//!     special case to remember.
+//!
+//! The one thing that's deliberately NOT wrapped in its own marker pair
+//! is the primary span block (`-->`/`|`/`^^^^`, right after the `>>>
+//! error[...]` line) — that's the one fact a fold-aware reader should
+//! never be able to collapse away, only the `~>`/`<~` "extra context"
+//! blocks are meant to fold independently of it and of each other.
 //!
 //! When real LSP support lands, `Diagnostic` here maps close to 1:1
 //! onto LSP's own `Diagnostic` type (`code`, `message`, `range` from
@@ -123,7 +132,7 @@ pub fn render(diag: &Diagnostic, source: &str) -> String {
     let mut out = String::new();
 
     out.push_str(&format!(
-        "error[{}]: {}\n",
+        ">>> error[{}]: {}\n",
         diag.code, diag.message
     ));
     render_span_block(
@@ -139,12 +148,14 @@ pub fn render(diag: &Diagnostic, source: &str) -> String {
         out.push_str(label);
         out.push('\n');
         render_span_block(&mut out, &lines, *span, None, 4);
+        out.push_str("  <~\n");
     }
 
     if let Some(suggestion) = &diag.suggestion {
         out.push_str("  ~> help: ");
         out.push_str(suggestion);
         out.push('\n');
+        out.push_str("  <~\n");
     }
 
     out.push_str("<<<\n");
@@ -249,11 +260,14 @@ mod tests {
         let out = render(&diag, source);
 
         // Anchors a fold-aware tool needs, exactly as documented in the
-        // module doc comment: unique start, `~>` on every supplementary
-        // line, unique end.
-        assert!(out.starts_with("error[TYPE-101]: type mismatch"));
-        assert_eq!(out.lines().filter(|l| l.trim_start().starts_with("~>")).count(), 2);
+        // module doc comment: symmetric >>> / <<< wraps the whole
+        // diagnostic, symmetric ~> / <~ wraps each supplementary block.
+        assert!(out.starts_with(">>> error[TYPE-101]: type mismatch"));
         assert!(out.trim_end().ends_with("<<<"));
+        let opens  = out.lines().filter(|l| l.trim_start().starts_with("~>")).count();
+        let closes = out.lines().filter(|l| l.trim() == "<~").count();
+        assert_eq!(opens, 2, "expected one ~> per secondary span plus one for help");
+        assert_eq!(opens, closes, "every ~> must have exactly one matching <~");
 
         // Primary block is indented one level, secondary block one
         // level deeper — this is the exact bug a hand-picked-string

@@ -35,7 +35,7 @@ Every diagnostic renders as this shape. This is real, current output —
 not a mockup — captured from `err_duplicate_def.ubl`:
 
 ```
-error[NAME-002]: `x` is already defined in this scope
+>>> error[NAME-002]: `x` is already defined in this scope
   --> 7:5
     |
   7 |     let x = 2    // ERROR: `x` is already defined in this scope
@@ -45,6 +45,7 @@ error[NAME-002]: `x` is already defined in this scope
       |
     6 |     let x = 1
       |     ^^^^^^^^^
+  <~
 <<<
 ```
 
@@ -52,13 +53,14 @@ Line by line:
 
 | Line | What it is |
 |---|---|
-| `error[CODE]: message` | Always the first line. `CODE` is a stable, greppable identifier (§4). `message` is one sentence, lowercase after the colon, no trailing period (§2). |
+| `>>> error[CODE]: message` | Always the first line. `CODE` is a stable, greppable identifier (§4). `message` is one sentence, lowercase after the colon, no trailing period (§2). `>>>` opens the whole-diagnostic fold region — see §5. |
 | `  --> line:col` | The primary location. Two-space indent, always. |
 | `    \| ` / `  N \| <source>` | The gutter and the exact source line the span is on. Gutter width tracks the line number's own digit count (`104 \|` is wider than `7 \|`) — this is the one place a hand-rolled fixed-width gutter breaks, so don't reintroduce one. |
 | `    \| ^^^^^^^^` | The underline. **Full width of the span, not one character** — this is the whole reason `render.rs` exists instead of the three things it replaced. |
-| `  ~> note: ...` | A secondary span with its own nested `-->`/gutter/underline block, indented one level deeper. Optional — only errors that reference another location use it (right now: `NameError::DuplicateDefinition`, `TypeError::TypeMismatch` when `because_of` is set). |
-| `  ~> help: ...` | A plain-text suggestion, no location. Optional. |
-| `<<<` | Closes the diagnostic. Always the last line. See §5. |
+| `  ~> note: ...` | Opens a secondary-span block with its own nested `-->`/gutter/underline, indented one level deeper. Optional — only errors that reference another location use it (right now: `NameError::DuplicateDefinition`, `TypeError::TypeMismatch` when `because_of` is set). |
+| `  <~` | Closes the `~>` block directly above it. Every `~>` has exactly one matching `<~`, even a one-line `help` with no nested span. |
+| `  ~> help: ...` | Opens a plain-text suggestion block, no location. Optional. Also closed by its own `  <~`. |
+| `<<<` | Closes the whole diagnostic. Pairs with the opening `>>>`. Always the last line. See §5. |
 
 ---
 
@@ -224,29 +226,36 @@ actually printed.
 
 ## 5. Fold markers
 
-Three ASCII markers exist so a dumb line-scanner — a regex, an editor
-extension, `grep` — can carve up a rendered diagnostic without a real
-parser. This matters today because every consumer (the pipeline
-dashboard, this very document's worked example) is working from
-captured plain text, and it matters later because it's the same shape
-an LSP client will eventually want to fold in an editor:
+Every fold region has an explicit, symmetric open AND close marker —
+nothing is inferred from an implicit "this line's shape means the
+region started here." A dumb line-scanner — a regex, an editor
+extension, `grep` — can then carve up a rendered diagnostic at *any*
+nesting depth by matching open/close pairs alone, no
+indentation-sniffing, no real parser needed. This matters today
+because every consumer (the pipeline dashboard, this very document's
+worked example) is working from captured plain text, and it matters
+later because it's the same shape an LSP client will eventually want
+to fold in an editor:
 
-- **`^error\[` / `^warning\[`** — the line every diagnostic starts
-  with. Already unique; no separate "begin" marker needed.
-- **`~>`** — prefixes every *supplementary* line: a `note` (points at
-  a secondary span) or a `help` (plain suggestion, no span). These are
-  exactly the lines an editor should let you collapse to see just the
-  primary error — everything under the primary `-->`/`^^^^` block is
-  the one fact you can't fold away; everything under `~>` is context
-  you can.
-- **`^<<<$`** — closes the diagnostic. Pairs with the `error[`/
-  `warning[` line to bound a fold region for the whole thing.
+- **`>>>` / `<<<`** — wraps the whole diagnostic. `>>>` opens the
+  `error[CODE]: message` line itself; `<<<` is the diagnostic's last
+  line, alone, closing it.
+- **`~>` / `<~`** — wraps each individual *supplementary* block: a
+  `note` (points at a secondary span) or a `help` (plain suggestion,
+  no span). Every `~>` has exactly one matching `<~`, even a one-line
+  `help` with no nested span block of its own — no "sometimes
+  symmetric" exception to remember or special-case in a parser.
+
+The one thing deliberately **not** wrapped in its own marker pair is
+the primary span block (`-->`/`^^^^`, right after the `>>> error[...]`
+line) — that's the one fact a fold-aware reader should never be able
+to collapse away. Only the `~>`/`<~` blocks are meant to fold
+independently of it and of each other.
 
 No warning severity exists yet (every current error type is, well, an
 error), so `warning[...]` is aspirational — but the marker scheme
-already accounts for it: the fold region regex is `^(error|warning)\[`
-to `^<<<$` either way, nothing about `~>`/`<<<` needs to change when
-warnings are added.
+already accounts for it: `>>> warning[...]` / `<<<` works identically,
+nothing about `~>`/`<~` needs to change when warnings are added.
 
 When real LSP support lands, `Diagnostic` (the struct `render()`
 consumes) maps close to 1:1 onto LSP's own `Diagnostic` type — `code`,
