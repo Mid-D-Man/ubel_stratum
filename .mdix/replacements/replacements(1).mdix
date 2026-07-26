@@ -1,0 +1,10 @@
+// Brought to u by MidManStudio
+
+@CONFIG(
+  version  -> "1.0.0",
+  features -> "data"
+)
+
+@DATA(
+  target_root = "."
+)
