@@ -61,6 +61,9 @@ fn main() {
                 for e in errs.take_type_errors() {
                     println!("                    type:  {:?}", e);
                 }
+                for e in errs.take_tier_errors() {
+                    println!("                    tier:  {:?}", e);
+                }
                 continue;
             }
         };

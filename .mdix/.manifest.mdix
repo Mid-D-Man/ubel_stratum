@@ -1,17 +1,17 @@
 @CONFIG(
   version    -> "1.0.0"
-  generated  -> "2026-07-10T20:30:40Z"
+  generated  -> "2026-07-26T23:08:44Z"
   debug_mode -> "off"
 )
 
 @DATA(
   template      = ".mdix/patches/patch.mdix"
-  template_hash = "9a684da90a4b"
-  last_run      = "2026-07-10T20:30:40Z"
+  template_hash = "3ec640b99eca"
+  last_run      = "2026-07-26T23:08:44Z"
   new_this_run  = 0
   overridden    = 0
   skipped       = 0
-  deleted       = 0
+  deleted       = 6
   renamed       = 0
   moved         = 0
   updated       = 0

@@ -109,6 +109,7 @@ fn main() {
             .map(|e| e.to_diagnostic())
             .collect();
         diags.extend(errs.take_type_errors().iter().map(|e| e.to_diagnostic()));
+        diags.extend(errs.take_tier_errors().iter().map(|e| e.to_diagnostic()));
         print!("{}", ubel_stratum::error_management::render_all(&diags, &source));
     }
     if !sema_ok {
