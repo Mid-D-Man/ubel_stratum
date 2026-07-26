@@ -1,0 +1,23 @@
+// Brought to u by MidManStudio
+// Gap 9 reorg: error_types/ -> errors/{lexical,parse,naming,types,tier},
+// diagnose.rs/pipeline.rs tier-error drain fix, stale replacements cleanup.
+
+@CONFIG(
+  version  -> "1.0.0",
+  features -> "data"
+)
+
+@DATA(
+  delete_files::
+    { path = "crates/core/src/error_management/error_types/lexical_error.rs" }
+    { path = "crates/core/src/error_management/error_types/mod.rs" }
+    { path = "crates/core/src/error_management/error_types/name_error.rs" }
+    { path = "crates/core/src/error_management/error_types/parse_error.rs" }
+    { path = "crates/core/src/error_management/error_types/type_error.rs" }
+    { path = "crates/core/src/error_management/diagnostics.rs" }
+    { path = ".mdix/replacements/diagnostics-and-naming.tar.gz" }
+
+  patch_files::
+    { path = "crates/rd_parser/examples/diagnose.rs", op = "insert_after", anchor = "diags.extend(errs.take_type_errors().iter().map(|e| e.to_diagnostic()));", content = "        diags.extend(errs.take_tier_errors().iter().map(|e| e.to_diagnostic()));\n" }
+    { path = "crates/rd_parser/examples/pipeline.rs", op = "replace_text", anchor = "                for e in errs.take_type_errors() {\n                    println!(\"                    type:  {:?}\", e);\n                }\n", content = "                for e in errs.take_type_errors() {\n                    println!(\"                    type:  {:?}\", e);\n                }\n                for e in errs.take_tier_errors() {\n                    println!(\"                    tier:  {:?}\", e);\n                }\n" }
+)
