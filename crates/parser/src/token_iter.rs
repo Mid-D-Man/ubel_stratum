@@ -4,7 +4,7 @@
 //!
 //! Each item is `(start_byte, token_kind, end_byte)`.
 
-use crate::error_management::error_types::ParseError;
+use crate::error_management::errors::ParseError;
 use crate::lexer::{Token, TokenType};
 
 pub struct TokenIter<'a> {

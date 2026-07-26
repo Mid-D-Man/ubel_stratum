@@ -17,7 +17,7 @@ use ubel_stratum::{
         arena::BumpVec,
         common::{AttrArg, AttrValue, Attribute, TierAnnotation},
     },
-    error_management::error_types::ParseContext,
+    error_management::errors::ParseContext,
     lexer::TokenType,
 };
 

@@ -1,7 +1,7 @@
 // src/error_management/error_manager.rs
 
-use crate::error_management::error_types::{
-    LexicalError, ParseError, NameError, TypeError,
+use crate::error_management::errors::{
+    LexicalError, ParseError, NameError, TypeError, TierError,
 };
 use crate::error_management::logger::Logger;
 use crate::error_management::Diagnosable;
@@ -16,13 +16,15 @@ use crate::error_management::Diagnosable;
 ///   1. Lex    → `add_lexical_error`
 ///   2. Parse  → `add_parse_error`
 ///   3. Resolve → `add_name_error`
-///   4. TypeCheck + TierCheck → `add_type_error`
+///   4. TypeCheck → `add_type_error`
+///   5. TierCheck → `add_tier_error`
 #[derive(Debug)]
 pub struct ErrorManager {
     lexical_errors: Vec<LexicalError>,
     parse_errors:   Vec<ParseError>,
     name_errors:    Vec<NameError>,
     type_errors:    Vec<TypeError>,
+    tier_errors:    Vec<TierError>,
     source:         String,
     max_errors:     usize,
 }
@@ -34,6 +36,7 @@ impl ErrorManager {
             parse_errors:   Vec::new(),
             name_errors:    Vec::new(),
             type_errors:    Vec::new(),
+            tier_errors:    Vec::new(),
             source,
             max_errors: 100,
         }
@@ -95,6 +98,20 @@ impl ErrorManager {
         std::mem::take(&mut self.type_errors)
     }
 
+    // ── Tier / arena-boundary checking ──────────────────────────────
+
+    pub fn add_tier_error(&mut self, error: TierError) {
+        if self.total_errors() < self.max_errors {
+            self.tier_errors.push(error);
+        }
+    }
+
+    pub fn tier_error_count(&self) -> usize { self.tier_errors.len() }
+
+    pub fn take_tier_errors(&mut self) -> Vec<TierError> {
+        std::mem::take(&mut self.tier_errors)
+    }
+
     // ── Combined ─────────────────────────────────────────────────
 
     pub fn has_errors(&self) -> bool {
@@ -102,6 +119,7 @@ impl ErrorManager {
             || !self.parse_errors.is_empty()
             || !self.name_errors.is_empty()
             || !self.type_errors.is_empty()
+            || !self.tier_errors.is_empty()
     }
 
     pub fn total_errors(&self) -> usize {
@@ -109,6 +127,7 @@ impl ErrorManager {
             + self.parse_errors.len()
             + self.name_errors.len()
             + self.type_errors.len()
+            + self.tier_errors.len()
     }
 
     /// Backwards-compatible alias used by older call sites.
@@ -120,6 +139,7 @@ impl ErrorManager {
         self.report_section("parse", &self.parse_errors);
         self.report_section("name resolution", &self.name_errors);
         self.report_section("type", &self.type_errors);
+        self.report_section("tier", &self.tier_errors);
     }
 
     fn report_section<E: Diagnosable>(

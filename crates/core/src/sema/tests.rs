@@ -15,7 +15,7 @@ use crate::ast::root::{Program, Item};
 use crate::ast::statements::{
     AllocatorKind, Block, SizeExpr, SizeUnit, Stmt, StmtKind, BindingTarget,
 };
-use crate::error_management::error_types::TypeError;
+use crate::error_management::errors::TierError;
 use crate::sema;
 use crate::sema::type_table::SemaType;
 
@@ -495,10 +495,10 @@ fn test_sema_arena_escape_outer_binding_rejected() {
     match sema::analyse(&prog, &arena, String::new()) {
         Ok(_) => panic!("expected sema to reject an arena value escaping to an outer binding"),
         Err(mut errors) => {
-            let type_errs = errors.take_type_errors();
+            let tier_errs = errors.take_tier_errors();
             assert!(
-                type_errs.iter().any(|e| matches!(e, TypeError::ArenaRefEscapesBoundary { .. })),
-                "expected ArenaRefEscapesBoundary, got {:?}", type_errs
+                tier_errs.iter().any(|e| matches!(e, TierError::ArenaRefEscapesBoundary { .. })),
+                "expected ArenaRefEscapesBoundary, got {:?}", tier_errs
             );
         }
     }

@@ -41,7 +41,7 @@ use ubel_stratum::ast::expressions::Expr;
 use ubel_stratum::ast::root::Program;
 use ubel_stratum::error_management::{
     ErrorManager,
-    error_types::{ParseError, ParseContext},
+    errors::{ParseError, ParseContext},
 };
 use ubel_stratum::lexer::{Span, Token, TokenType};
 

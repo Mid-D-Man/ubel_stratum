@@ -67,7 +67,7 @@ Line by line:
 ## 2. Message-writing rules
 
 These apply to every `message()` and `suggestion()`/`~> help:` body in
-`error_types/`.
+`errors/`.
 
 1. **Lowercase after the colon**, matching rustc: `error: unexpected
    token`, not `error: Unexpected token`. Three of the four error type
@@ -151,12 +151,13 @@ Format: `<PHASE>-<NNN>`. Stable once assigned — never renumber an
 existing code, even if the variant's wording changes. If a variant is
 removed, retire its code; don't reassign the number to something else.
 
-`TypeError` deliberately splits into two number ranges instead of one
-flat `TYPE-0xx` — see §7, this is intentional groundwork for the
-proposed folder split, not an accident of two people numbering things
-differently.
+`TypeError` used to carry two number ranges in one enum (`TYPE-1xx`
+ordinary type checking, `TYPE-2xx` tier & arena enforcement) as
+groundwork for a later physical split — see §9. That split is done:
+`TYPE-2xx` moved out entirely and now lives as its own `TIER-0xx`
+family in `TierError`.
 
-### LEX-0xx — `error_types/lexical_error.rs`
+### LEX-0xx — `errors/lexical/mod.rs`
 
 | Code | Variant |
 |---|---|
@@ -168,7 +169,7 @@ differently.
 | LEX-006 | InvalidInterpolation |
 | LEX-007 | InvalidCharLiteral |
 
-### PARSE-0xx — `error_types/parse_error.rs`
+### PARSE-0xx — `errors/parse/mod.rs`
 
 | Code | Variant |
 |---|---|
@@ -178,7 +179,7 @@ differently.
 | PARSE-004 | IllegalInContext |
 | PARSE-005 | Raw |
 
-### NAME-0xx — `error_types/name_error.rs`
+### NAME-0xx — `errors/naming/mod.rs`
 
 | Code | Variant |
 |---|---|
@@ -189,7 +190,7 @@ differently.
 | NAME-005 | SelfOutsideMethod |
 | NAME-006 | UnresolvedTypeParam |
 
-### TYPE-1xx — ordinary type checking, `error_types/type_error.rs`
+### TYPE-1xx — ordinary type checking, `errors/types/mod.rs`
 
 | Code | Variant |
 |---|---|
@@ -202,25 +203,90 @@ differently.
 | TYPE-107 | CannotInferType |
 | TYPE-108 | GenericArgCountMismatch |
 
-### TYPE-2xx — tier & arena enforcement, `error_types/type_error.rs`
+### TIER-0xx — tier & arena enforcement, `errors/tier/mod.rs`
 
 | Code | Variant |
 |---|---|
-| TYPE-201 | ArenaInWrongTier |
-| TYPE-202 | AwaitInWrongTier |
-| TYPE-203 | AsyncFunctionNotHigh |
-| TYPE-204 | ArenaRefEscapesBoundary |
-| TYPE-205 | IllegalTierCall |
-| TYPE-206 | MidReturnContainsArenaRef |
-| TYPE-207 | LinqInWrongTier |
+| TIER-001 | ArenaInWrongTier |
+| TIER-002 | AwaitInWrongTier |
+| TIER-003 | AsyncFunctionNotHigh |
+| TIER-004 | ArenaRefEscapesBoundary |
+| TIER-005 | IllegalTierCall |
+| TIER-006 | MidReturnContainsArenaRef |
+| TIER-007 | LinqInWrongTier |
 
-**Adding a new variant:** append at the end of its range (don't
-renumber to keep things "tidy" — see above), add the `code()` match
-arm, and add a row to this table in the same change. A variant without
-a code doesn't compile (`Diagnosable::code` has no default) — the
+Physically split out of `TypeError` — see §9. Variant names and
+meaning are unchanged from their `TYPE-2xx` days; only the enum and
+the code prefix moved. The numeric tail was *not* kept stable across
+the move (`TYPE-201` did not become `TIER-201`) — the whole range got
+a fresh prefix and renumbered from 1, since these seven no longer
+share a namespace with `TYPE-1xx`. See §9 for why that's still
+consistent with "never renumber an existing code" above.
+
+**Adding a new variant:** append at the end of its class's range
+(don't renumber to keep things "tidy" — see above), add the `code()`
+match arm, add a row to the relevant table above, and add an entry to
+the full reference below — all in the same change. A variant without a
+code doesn't compile (`Diagnosable::code` has no default) — the
 registry can't silently drift out of sync with the enum the way the
 old inline suggestion text used to drift from what `report_section`
-actually printed.
+actually printed. What *can* still drift silently: a brand-new error
+*class* not being drained by every place that walks `ErrorManager`'s
+output — see §9's case study, this reorg found exactly that gap.
+
+### Full reference — message, suggestion, severity
+
+Compact stand-in for what a per-code `rustc --explain`-style page
+would say. Appended here in the same change that adds the variant,
+same discipline as the tables above. Severity is always *Error*
+today — `Diagnosable` has no warning tier yet, so this column is a
+placeholder for if/when one gets added, not a claim that warnings
+currently exist. This is deliberately lighter-weight than the ~33 full
+worked-example pages proposed in §9 — those are still a separate,
+larger effort, not started.
+
+**LEX-0xx**
+- `LEX-001` `UnexpectedChar` — *Error*. "Unexpected character '{ch}'". Suggestion only when the lexer has a specific guess for what was meant; otherwise none.
+- `LEX-002` `UnterminatedString` — *Error*. "Unterminated {kind} string literal" (Normal/Interpolated/Verbatim/InterpolatedVerbatim). Suggestion: add the missing closing quote.
+- `LEX-003` `UnterminatedBlockComment` — *Error*. "Unterminated block comment (nesting level: N)". Suggestion: add closing `*/`.
+- `LEX-004` `InvalidNumber` — *Error*. "Invalid number literal 'text': reason". Suggestion is heuristic: extra `..` → remove it; bare `0x`/`0b` → add digits; otherwise none.
+- `LEX-005` `InvalidEscape` — *Error*. "Invalid escape sequence 'seq'". Suggestion lists the valid escape sequences.
+- `LEX-006` `InvalidInterpolation` — *Error*. Message and suggestion both passed through verbatim from the interpolation parser.
+- `LEX-007` `InvalidCharLiteral` — *Error*. "Invalid character literal 'content': reason". Suggestion: a char literal must contain exactly one character.
+
+**PARSE-0xx**
+- `PARSE-001` `UnexpectedToken` — *Error*. "unexpected `found` while parsing context, expected: ...". Suggestion only when exactly one token was expected ("try replacing `found` with expected").
+- `PARSE-002` `UnexpectedEof` — *Error*. "unexpected end of file while parsing context, expected: ...". No suggestion.
+- `PARSE-003` `UnclosedDelimiter` — *Error*. "unclosed `delim` — found `x` instead" or "...reached end of file" if nothing closed it. Suggestion: add the matching closing delimiter.
+- `PARSE-004` `IllegalInContext` — *Error*. "`what` is not allowed here: reason". Suggestion passed through verbatim when the caller supplies one.
+- `PARSE-005` `Raw` — *Error*. Message passed through verbatim, no suggestion. Escape hatch for parser errors that don't fit the other four shapes.
+
+**NAME-0xx**
+- `NAME-001` `UndefinedName` — *Error*. "undefined name `x`". Suggestion: "did you mean `y`?" when a close match was found, otherwise none.
+- `NAME-002` `DuplicateDefinition` — *Error*. "`x` is already defined in this scope". No suggestion.
+- `NAME-003` `UnresolvedImport` — *Error*. "cannot resolve import path `x`". No suggestion.
+- `NAME-004` `UnresolvedPathSegment` — *Error*. "no member `seg` in `resolved-so-far` (while resolving `full-path`)". No suggestion.
+- `NAME-005` `SelfOutsideMethod` — *Error*. "`self` can only be used inside a method body". Suggestion: move the code into a method that takes `self`.
+- `NAME-006` `UnresolvedTypeParam` — *Error*. "unknown type parameter `x`". No suggestion.
+
+**TYPE-1xx**
+- `TYPE-101` `TypeMismatch` — *Error*. "type mismatch: expected `x`, found `y`". No suggestion; carries a secondary span at where the expected type was established, when known.
+- `TYPE-102` `ArgumentCountMismatch` — *Error*. "expected N argument(s), found M". No suggestion.
+- `TYPE-103` `NoSuchField` — *Error*. "type `T` has no field `f`". No suggestion.
+- `TYPE-104` `NoSuchMethod` — *Error*. "type `T` has no method `m`". No suggestion.
+- `TYPE-105` `TryOnNonFallible` — *Error*. "`?` requires a fallible type (`T!`), found `x`". No suggestion.
+- `TYPE-106` `AwaitOnNonTask` — *Error*. "`await` requires `Task<T>`, found `x`". No suggestion.
+- `TYPE-107` `CannotInferType` — *Error*. "cannot infer type — add an explicit type annotation". Suggestion passed through verbatim when the caller supplies one.
+- `TYPE-108` `GenericArgCountMismatch` — *Error*. "`T` expects N type argument(s), found M". No suggestion.
+
+**TIER-0xx**
+- `TIER-001` `ArenaInWrongTier` — *Error*. "`with arena` is only valid in `@tier(mid)`; this function is `@tier(x)`". Suggestion: annotate with `@tier(mid)` or remove the arena block.
+- `TIER-002` `AwaitInWrongTier` — *Error*. "`await` is only valid in `@tier(high)`; this function is `@tier(x)`". Suggestion: annotate with `@tier(high)` or remove the `await`.
+- `TIER-003` `AsyncFunctionNotHigh` — *Error*. "async functions must be `@tier(high)`; this function is `@tier(x)`". Suggestion: add `@tier(high)` or remove `async`.
+- `TIER-004` `ArenaRefEscapesBoundary` — *Error*. "value of type `T` is scoped to a `with arena(...)` block and cannot outlive it". Suggestion: copy the data out before the block ends, or restructure with the callback pattern instead of returning/storing the arena-scoped value directly.
+- `TIER-005` `IllegalTierCall` — *Error*. "`@tier(caller)` code cannot call `@tier(callee)` function `name`". Suggestion (HIGH-caller case only): wrap the LOW-tier logic in a MID-tier function.
+- `TIER-006` `MidReturnContainsArenaRef` — *Error*. "return type `T` contains an arena-lifetime reference; this makes the function uncallable from `@tier(high)`". No suggestion.
+- `TIER-007` `LinqInWrongTier` — *Error*. "LINQ query expressions are only valid in `@tier(high)`; this function is `@tier(x)`". Suggestion: move the query into a `@tier(high)` function, or use `.where()`/`.map()` chains instead.
 
 ---
 
@@ -351,14 +417,15 @@ this same treatment, not `skip`.
 
 ---
 
-## 9. Proposed: physical folder reorganization (not yet implemented)
+## 9. Physical folder reorganization
 
-Everything above this section is implemented and in the repo today.
-This section is a proposal, written down so it can be reviewed and
-revised before anyone spends an afternoon executing it — not a plan
-already underway.
+**Status: implemented.** What follows was originally written as a
+proposal for review before anyone spent an afternoon executing it.
+It's kept here as the record of what was decided and why — the
+"before" state stays for context, and three corrections against the
+original proposal are called out inline, same spirit as §8.
 
-### What exists today
+### What existed before this reorg
 
 ```
 error_management/
@@ -372,58 +439,98 @@ error_management/
     └── type_error.rs     (TYPE-1xx ordinary + TYPE-2xx tier/arena, one enum)
 ```
 
-This is already organized by *phase*, which is why the Error Code
-Registry (§4) numbers by phase too. What it's not yet organized by is
+This was already organized by *phase*, which is why the Error Code
+Registry (§4) numbers by phase too. What it wasn't organized by is
 *class within a phase* — "errors about dynamic naming" and "errors
-about imports" are both just cases inside one flat `NameError` enum,
-for instance.
+about imports" were both just cases inside one flat `NameError` enum,
+for instance. Per-class reference docs (see point 3 below) would need
+that finer split to have a natural home; they still don't exist, so
+the finer split hasn't been exercised yet either.
 
-### The proposed shape
+### The actual shape
 
 ```
 error_management/
+├── error_manager.rs      (same path; gained a tier_errors bucket)
+├── logger.rs             (untouched)
+├── render.rs             (untouched)
 └── errors/
-    ├── lexical/
-    │   ├── mod.rs         (enum LexicalError — unchanged variants/codes)
-    │   └── numbers.rs     (reference doc: every LEX-004 sub-case + example + fix)
-    ├── parse/
-    │   └── mod.rs
-    ├── naming/                              <- renamed from name_error.rs
-    │   ├── mod.rs          (enum NameError — unchanged variants/codes)
-    │   ├── undefined.rs    (reference doc: NAME-001)
-    │   └── duplicate.rs    (reference doc: NAME-002)
-    ├── types/
-    │   └── mod.rs          (TYPE-1xx variants only)
-    └── tier/                                <- physically split out of TypeError
-        └── mod.rs          (TYPE-2xx variants, renumbered TIER-xxx — see below)
+    ├── mod.rs             (aggregator: pub mod + re-exports, all five)
+    ├── lexical/mod.rs      (enum LexicalError — unchanged variants/codes)
+    ├── parse/mod.rs        (enum ParseError — unchanged variants/codes)
+    ├── naming/mod.rs         <- renamed from name_error.rs
+    │                          (enum NameError — unchanged variants/codes)
+    ├── types/mod.rs         (TYPE-1xx variants only)
+    └── tier/mod.rs           <- physically split out of TypeError
+                              (TYPE-2xx variants, renumbered TIER-0xx)
 ```
 
-Key decisions this proposal makes, for review rather than silent
-execution:
+Corrections against the original proposal, found during execution:
 
-1. **Enum variants and their codes stay put during the move.** Moving
-   `NameError` from `error_types/name_error.rs` to `errors/naming/mod.rs`
-   is a `mod` path change, not a rewrite — every existing call site
-   (`name_resolution.rs`, etc.) keeps working unchanged as long as the
-   type name and its public API don't change, which they wouldn't.
-2. **The one real reshaping is TypeError → TypeError + TierError.**
-   This is the one place where physically splitting also means
-   splitting the *enum*, because TYPE-2xx already reads as its own
-   family (§4) — the split is renumbering `TYPE-201..207` to
-   `TIER-001..007`, keeping the *tail* stable per §4's own promise,
-   and touching every call site that currently writes
-   `TypeError::ArenaRefEscapesBoundary` (`type_infer.rs`, `tier_check.rs`)
-   to write `TierError::RefEscapesBoundary` instead. This is the one
-   part of the reorg with real blast radius — everywhere else is a
-   file move.
-3. **Per-class reference docs (`numbers.rs`, `undefined.rs`, etc.) are
-   new content, not moved content** — one markdown-in-Rust-doc-comment
-   page per error class, each with a "here's code that triggers this"
-   snippet and "here's the fix" walkthrough, in the spirit of rustc's
-   `--explain E0382`. Writing all ~33 of these is a separate, large
-   effort that should happen *after* the structure above is confirmed,
-   not before — no point writing NAME-001's reference page against a
-   folder layout that might still change.
+1. **Variant names were kept exactly as they were, not shortened.**
+   The proposal suggested `TierError::RefEscapesBoundary` (dropping
+   the redundant "Arena"). What actually shipped is
+   `TierError::ArenaRefEscapesBoundary`, unchanged from its
+   `TypeError` days — every other variant in `TierError` already
+   names its condition without an "Arena" prefix problem
+   (`AwaitInWrongTier`, `IllegalTierCall`, ...), so shortening only
+   this one variant for a redundant prefix its siblings don't share
+   would have been inconsistent for no real gain. `tier/mod.rs`'s own
+   module doc records this.
+2. **The numeric tail was not "kept stable" the way the original
+   wording implied.** `TYPE-201..207` became `TIER-001..007`
+   (renumbered from 1), not `TYPE-201` → `TIER-201`. §4's "never
+   renumber an existing code" rule is about not renumbering *after* a
+   code is genuinely settled and grepped-for externally — nothing had
+   shipped with a `TYPE-2xx` code outside this repo, so starting the
+   new `TIER-0xx` family at 001 was the cleaner outcome, and it's
+   what's actually in `tier/mod.rs` today.
+3. **`diagnose.rs` and `pipeline.rs` silently dropped every tier
+   diagnostic** until this was caught mid-session and fixed.
+   `ErrorManager` correctly grew a `take_tier_errors()` bucket
+   alongside `take_type_errors()`, and `tests.rs` correctly drained
+   it — but both example binaries that walk error output only called
+   `take_name_errors()` / `take_type_errors()`, so a real sema failure
+   (correctly reported as `status: SEMA ERROR`) rendered *no*
+   diagnostic text underneath it at all. Nothing failed to compile —
+   `take_type_errors()` is a perfectly valid call on its own, so the
+   type checker had no way to flag the missing `take_tier_errors()`
+   call. Same shape as §8's bug: correct-looking, confidently-printed
+   output hiding a real gap underneath. Fix was one line in each file;
+   the lesson is now point 4 of "adding a new error class" below.
 
-This section intentionally stops at "proposal." Confirm the shape
-above (or amend it) before anyone starts moving files.
+Per-class reference docs (`numbers.rs`, `undefined.rs`, etc. from the
+original proposal) were **not** written as part of this pass — see
+"Full reference" in §4 for the lighter stand-in that was built
+instead, and the note below on why the full version stays deferred.
+
+### Adding a new error class
+
+The checklist in §4 ("Adding a new variant") is for extending an
+*existing* class. Adding a whole new one — a `RuntimeError` for the
+interpreter, say — is a different, slightly bigger list. Not needed
+in practice yet, but worth writing down now that there's a real
+second example (`TierError`) to generalize from:
+
+1. New file: `errors/<name>/mod.rs`. Own enum, own `impl` with
+   `span()`/`message()`/`suggestion()`, own `Display`, own
+   `impl Diagnosable` with a fresh code prefix (pick the next unused
+   short phase tag — `LEX`/`PARSE`/`NAME`/`TYPE`/`TIER` are taken).
+2. `errors/mod.rs`: add `pub mod <name>;` and re-export the enum.
+3. `ErrorManager` (`error_manager.rs`): add the `Vec<NewError>` field,
+   `add_<name>_error`, `<name>_error_count`, `take_<name>_errors`, and
+   wire it into `has_errors`, `total_errors`, and `report_all`'s
+   section list — `TierError`'s addition is the template to copy.
+4. **Grep every existing `take_<class>_errors()` call site**
+   (`diagnose.rs`, `pipeline.rs`, `tests.rs`, and anywhere else that
+   walks an error result) and add the new one. This is the step point
+   3 above proves gets missed if it isn't a deliberate checklist item
+   — nothing forces it at compile time.
+5. §4: add the code table row and a "Full reference" entry in the
+   same change.
+
+Whether/when to build the deferred full per-class reference pages
+(rustc `--explain`-style, one full worked example per code) is still
+an open call — the folder-layout blocker that deferred them is gone
+now, but writing ~33 of them is real, separate effort from anything
+in this pass.

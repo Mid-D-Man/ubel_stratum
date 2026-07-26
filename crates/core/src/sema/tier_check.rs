@@ -39,7 +39,7 @@ use crate::ast::expressions::{
 };
 use crate::ast::root::{Item, Program};
 use crate::ast::statements::{AllocatorKind, Block, Stmt, StmtKind};
-use crate::error_management::{ErrorManager, error_types::TypeError};
+use crate::error_management::{ErrorManager, errors::TierError};
 use crate::sema::sema_context::SemaContext;
 use crate::sema::symbol_table::{DefId, DefKind};
 use crate::sema::type_table::SemaType;
@@ -100,7 +100,7 @@ impl<'a> TierChecker<'a> {
     fn check_function<'ast>(&mut self, f: &FunctionDecl<'ast>) {
         // Rule: async functions must be HIGH tier.
         if f.is_async && f.tier != TierAnnotation::High {
-            self.errors.add_type_error(TypeError::AsyncFunctionNotHigh {
+            self.errors.add_tier_error(TierError::AsyncFunctionNotHigh {
                 actual: f.tier,
                 span:   f.span,
             });
@@ -119,7 +119,7 @@ impl<'a> TierChecker<'a> {
 
     fn check_method<'ast>(&mut self, m: &MethodDecl<'ast>) {
         if m.is_async && m.tier != TierAnnotation::High {
-            self.errors.add_type_error(TypeError::AsyncFunctionNotHigh {
+            self.errors.add_tier_error(TierError::AsyncFunctionNotHigh {
                 actual: m.tier,
                 span:   m.span,
             });
@@ -153,7 +153,7 @@ impl<'a> TierChecker<'a> {
         // Now safe to call contains_arena_ref with a fresh borrow.
         if self.ctx.types.get(ret_ty).contains_arena_ref(&self.ctx.types) {
             let display = self.ctx.types.get(ret_ty).display(&self.ctx.types);
-            self.errors.add_type_error(TypeError::MidReturnContainsArenaRef {
+            self.errors.add_tier_error(TierError::MidReturnContainsArenaRef {
                 return_type: display,
                 span,
             });
@@ -174,7 +174,7 @@ impl<'a> TierChecker<'a> {
             StmtKind::With { allocator, body } => {
                 if let AllocatorKind::Arena(_) = allocator {
                     if self.current_tier != TierAnnotation::Mid {
-                        self.errors.add_type_error(TypeError::ArenaInWrongTier {
+                        self.errors.add_tier_error(TierError::ArenaInWrongTier {
                             actual: self.current_tier,
                             span:   stmt.span,
                         });
@@ -251,7 +251,7 @@ impl<'a> TierChecker<'a> {
             // Rule: `await` only in HIGH tier.
             ExprKind::Await(inner) => {
                 if self.current_tier != TierAnnotation::High {
-                    self.errors.add_type_error(TypeError::AwaitInWrongTier {
+                    self.errors.add_tier_error(TierError::AwaitInWrongTier {
                         actual: self.current_tier,
                         span:   expr.span,
                     });
@@ -262,7 +262,7 @@ impl<'a> TierChecker<'a> {
             // Rule: LINQ only in HIGH tier.
             ExprKind::Linq(linq) => {
                 if self.current_tier != TierAnnotation::High {
-                    self.errors.add_type_error(TypeError::LinqInWrongTier {
+                    self.errors.add_tier_error(TierError::LinqInWrongTier {
                         actual: self.current_tier,
                         span:   expr.span,
                     });
@@ -413,7 +413,7 @@ impl<'a> TierChecker<'a> {
             | (TierAnnotation::Low, TierAnnotation::Mid)
         );
         if forbidden {
-            self.errors.add_type_error(TypeError::IllegalTierCall {
+            self.errors.add_tier_error(TierError::IllegalTierCall {
                 caller_tier: caller,
                 callee_tier: callee,
                 callee_name: callee_name.to_string(),

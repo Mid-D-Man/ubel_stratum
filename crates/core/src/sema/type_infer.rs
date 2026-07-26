@@ -66,7 +66,7 @@ use crate::ast::literals::Literal;
 use crate::ast::root::{Item, Program};
 use crate::ast::statements::{BindingTarget, Block, Stmt, StmtKind};
 use crate::ast::types::{Type, TypeKind};
-use crate::error_management::{ErrorManager, error_types::TypeError};
+use crate::error_management::{ErrorManager, errors::{TypeError, TierError}};
 use crate::sema::sema_context::SemaContext;
 use crate::sema::symbol_table::DefId;
 use crate::sema::type_table::{ArenaId, SemaType, TypeId};
@@ -197,7 +197,7 @@ impl<'a> InferCtx<'a> {
     /// it shouldn't have.
     fn arena_escape(&mut self, ty: TypeId, span: Span) {
         let escaped_type = self.display_type(ty);
-        self.errors.add_type_error(TypeError::ArenaRefEscapesBoundary {
+        self.errors.add_tier_error(TierError::ArenaRefEscapesBoundary {
             escaped_type,
             span,
         });

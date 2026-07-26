@@ -1,7 +1,7 @@
 //! Block and documentation comment parsing
 
 use crate::lexer::{Token, TokenType, Span};
-use crate::error_management::error_types::LexicalError;
+use crate::error_management::errors::LexicalError;
 
 pub struct CommentParser<'a> {
     input: &'a str,

@@ -30,7 +30,7 @@ use crate::ast::declarations::{
 use crate::ast::statements::{Block, Stmt, StmtKind, UsingBinding};
 use crate::ast::expressions::{Expr, ExprKind};
 use crate::ast::patterns::{Pattern, PatternKind, DestructurePattern, DestructureElement, EnumPatternPayload};
-use crate::error_management::{ErrorManager, error_types::NameError};
+use crate::error_management::{ErrorManager, errors::NameError};
 use crate::sema::sema_context::SemaContext;
 use crate::sema::symbol_table::{DefId, DefKind, ScopeStack};
 

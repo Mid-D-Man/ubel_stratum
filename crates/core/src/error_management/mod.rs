@@ -2,7 +2,7 @@
 
 pub mod error_manager;
 pub mod logger;
-pub mod error_types;
+pub mod errors;
 pub mod render;
 
 pub use error_manager::ErrorManager;

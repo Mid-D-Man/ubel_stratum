@@ -67,9 +67,9 @@
 use crate::lexer::Span;
 
 /// A fully-resolved, phase-agnostic error ready to print. Every error
-/// type in `error_types/` converts to this via the `Diagnosable` trait
+/// type in `errors/` converts to this via the `Diagnosable` trait
 /// below — `render()` itself never matches on `LexicalError` /
-/// `ParseError` / `NameError` / `TypeError` directly.
+/// `ParseError` / `NameError` / `TypeError` / `TierError` directly.
 pub struct Diagnostic {
     pub code:          &'static str,
     pub message:       String,
@@ -84,19 +84,18 @@ pub struct Diagnostic {
     pub suggestion:    Option<String>,
 }
 
-/// Implemented by every error enum in `error_types/`. `span()`,
-/// `message()`, and `suggestion()` already existed on all four before
-/// this module; this trait just adds `code()` (required) and two
-/// optional hooks with harmless defaults, then gives every implementor
-/// `to_diagnostic()` for free.
+/// Implemented by every error enum in `errors/`. `span()`,
+/// `message()`, and `suggestion()` already existed on all of them
+/// before this module; this trait just adds `code()` (required) and
+/// two optional hooks with harmless defaults, then gives every
+/// implementor `to_diagnostic()` for free.
 pub trait Diagnosable {
     /// Stable, greppable identifier — see docs/DIAGNOSTICS_RULES.md
     /// "Error Code Registry" for the full table and the numbering
     /// scheme (`LEX-0xx` / `PARSE-0xx` / `NAME-0xx` / `TYPE-1xx` for
-    /// ordinary type errors / `TYPE-2xx` reserved for tier-and-arena
-    /// errors specifically, so that a future physical split of
-    /// `TypeError` can rename the prefix to `TIER-xxx` without
-    /// reassigning the numeric tail anyone has already grepped for).
+    /// ordinary type errors / `TIER-0xx` for tier-and-arena errors,
+    /// physically split out of `TypeError` into their own `TierError`
+    /// enum — see docs/DIAGNOSTICS_RULES.md §9).
     fn code(&self) -> &'static str;
     fn span(&self) -> Span;
     fn message(&self) -> String;

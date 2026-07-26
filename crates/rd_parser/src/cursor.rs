@@ -227,7 +227,7 @@ impl<'tok> Cursor<'tok> {
 
 /// A lightweight error produced by `Cursor::expect`.
 ///
-/// The parser lifts these into `ubel_stratum::error_management::error_types::ParseError`
+/// The parser lifts these into `ubel_stratum::error_management::errors::ParseError`
 /// via the helpers in `crate::error`.
 #[derive(Debug, Clone)]
 pub enum CursorError {

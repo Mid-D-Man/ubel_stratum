@@ -9,7 +9,7 @@
 //! without re-spelling the full struct literal every time.
 
 use ubel_stratum::{
-    error_management::error_types::{ParseContext, ParseError},
+    error_management::errors::{ParseContext, ParseError},
     lexer::{Span, Token, TokenType},
 };
 

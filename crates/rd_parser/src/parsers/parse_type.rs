@@ -15,7 +15,7 @@ use ubel_stratum::{
         common::{GenericParam, LifetimeConstraint, LifetimeParam},
         types::{FunctionType, Type, TypeKind},
     },
-    error_management::error_types::ParseContext,
+    error_management::errors::ParseContext,
     lexer::{Span, TokenType},
 };
 

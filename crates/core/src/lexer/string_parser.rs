@@ -1,7 +1,7 @@
 //! String interpolation and verbatim string parsing
 
 use crate::lexer::{Token, TokenType, Span, InterpolationPart};
-use crate::error_management::error_types::{LexicalError, StringType};
+use crate::error_management::errors::{LexicalError, StringType};
 
 pub struct StringParser<'a> {
     input: &'a str,

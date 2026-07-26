@@ -31,7 +31,7 @@ use ubel_stratum::{
         },
         literals::{InterpolationPart, Literal},
     },
-    error_management::error_types::ParseContext,
+    error_management::errors::ParseContext,
     lexer::{InterpolationPart as LexPart, Span as LSpan, TokenType},
 };
 

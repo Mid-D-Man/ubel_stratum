@@ -2,7 +2,7 @@
 
 use logos::Logos;
 use crate::lexer::{Token, TokenType, Span};
-use crate::error_management::{ErrorManager, error_types::LexicalError};
+use crate::error_management::{ErrorManager, errors::LexicalError};
 use crate::lexer::{keywords, string_parser::StringParser, comment_parser::CommentParser};
 
 #[derive(Logos, Debug, Clone, PartialEq)]

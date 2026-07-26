@@ -10,7 +10,7 @@ use ubel_stratum::{
         root::Program,
     },
     error_management::{
-        error_types::{ParseContext, ParseError},
+        errors::{ParseContext, ParseError},
         ErrorManager,
     },
     lexer::{Span, Token, TokenType},

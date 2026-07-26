@@ -31,7 +31,7 @@ use ubel_stratum::{
         },
         statements::BindingTarget,
     },
-    error_management::error_types::ParseContext,
+    error_management::errors::ParseContext,
     lexer::TokenType,
 };
 
