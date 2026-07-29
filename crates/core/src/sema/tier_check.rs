@@ -16,6 +16,14 @@
 //! answer. See `InferCtx::check_assign_arena_escape` and
 //! `InferCtx::arena_mismatch_side`.
 //!
+//! Builtin instance-method HIGH-only rejection (MEMORY_MODEL.md §8) is
+//! *also* not done here, for a related reason: it needs to resolve a
+//! receiver expression's type, and `expr_types` entries can still be
+//! raw unresolved `Var`s at record time — resolving them correctly
+//! needs the live `Unifier`/`apply()` Pass 2 has and this pass doesn't.
+//! See `InferCtx::current_tier` and the `ExprKind::Call` handling in
+//! `type_infer.rs`.
+//!
 //! # Rules enforced
 //!
 //! - `async fn` must be `@tier(high)`

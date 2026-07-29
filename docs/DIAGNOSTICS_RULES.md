@@ -214,6 +214,7 @@ family in `TierError`.
 | TIER-005 | IllegalTierCall |
 | TIER-006 | MidReturnContainsArenaRef |
 | TIER-007 | LinqInWrongTier |
+| TIER-008 | MethodInWrongTier |
 
 Physically split out of `TypeError` — see §9. Variant names and
 meaning are unchanged from their `TYPE-2xx` days; only the enum and
@@ -287,6 +288,7 @@ larger effort, not started.
 - `TIER-005` `IllegalTierCall` — *Error*. "`@tier(caller)` code cannot call `@tier(callee)` function `name`". Suggestion (HIGH-caller case only): wrap the LOW-tier logic in a MID-tier function.
 - `TIER-006` `MidReturnContainsArenaRef` — *Error*. "return type `T` contains an arena-lifetime reference; this makes the function uncallable from `@tier(high)`". No suggestion.
 - `TIER-007` `LinqInWrongTier` — *Error*. "LINQ query expressions are only valid in `@tier(high)`; this function is `@tier(x)`". Suggestion: move the query into a `@tier(high)` function, or use `.where()`/`.map()` chains instead.
+- `TIER-008` `MethodInWrongTier` — *Error*. "`.method()` is only valid in `@tier(high)`; this function is `@tier(x)`" — MEMORY_MODEL.md §8, same shape as `AwaitInWrongTier`/`LinqInWrongTier` but keyed by method name via `instance::is_high_only` rather than a dedicated keyword. Suggestion: move the call to a `@tier(high)` function, or avoid the method in `@tier(mid)`/`@tier(low)` code. Every `HIGH_ONLY` registry is empty today — real, consulted infrastructure, not currently flagging anything.
 
 ---
 

@@ -15,6 +15,26 @@ use crate::interpreter::value::{EvalResult, Signal, Value};
 pub const METHOD_NAMES: &[&str] =
     &["len", "push", "pop", "contains", "first", "last", "is_empty", "reverse"];
 
+/// No `List` method is HIGH-only today. Real, consulted registry — not
+/// a stub — see `instance::is_high_only`.
+pub const HIGH_ONLY: &[&str] = &[];
+
+/// `(return shape, arity)` for sema — see `instance::MethodReturn`.
+pub fn signature(name: &str) -> Option<(crate::builtins::instance::MethodReturn, usize)> {
+    use crate::builtins::instance::MethodReturn as R;
+    Some(match name {
+        "len"      => (R::Int, 0),
+        "push"     => (R::Void, 1),
+        "pop"      => (R::Elem, 0),
+        "contains" => (R::Bool, 1),
+        "first"    => (R::Elem, 0),
+        "last"     => (R::Elem, 0),
+        "is_empty" => (R::Bool, 0),
+        "reverse"  => (R::Void, 0),
+        _ => return None,
+    })
+}
+
 pub fn len(list: &Rc<RefCell<Vec<Value>>>) -> Value {
     Value::Int(list.borrow().len() as i64)
 }

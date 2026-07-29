@@ -9,6 +9,25 @@ use crate::interpreter::value::{EvalResult, Signal, Value};
 pub const METHOD_NAMES: &[&str] =
     &["len", "is_empty", "push", "pop", "peek", "contains", "clear"];
 
+/// No `Stack` method is HIGH-only today. Real, consulted registry — not
+/// a stub — see `instance::is_high_only`.
+pub const HIGH_ONLY: &[&str] = &[];
+
+/// `(return shape, arity)` for sema — see `instance::MethodReturn`.
+pub fn signature(name: &str) -> Option<(crate::builtins::instance::MethodReturn, usize)> {
+    use crate::builtins::instance::MethodReturn as R;
+    Some(match name {
+        "len"      => (R::Int, 0),
+        "is_empty" => (R::Bool, 0),
+        "push"     => (R::Void, 1),
+        "pop"      => (R::Elem, 0),
+        "peek"     => (R::Elem, 0),
+        "contains" => (R::Bool, 1),
+        "clear"    => (R::Void, 0),
+        _ => return None,
+    })
+}
+
 type StackInner = Rc<RefCell<Vec<Value>>>;
 
 pub fn len(s: &StackInner) -> Value { Value::Int(s.borrow().len() as i64) }

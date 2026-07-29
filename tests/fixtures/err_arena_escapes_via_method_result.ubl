@@ -1,0 +1,26 @@
+// tests/fixtures/err_arena_escapes_via_method_result.ubl
+// MEMORY_MODEL.md §8, second half — an allocation-producing instance
+// method (`Dictionary.keys()`, which builds a brand-new `List`) must
+// tag its result into the *receiver's* arena, not default to untagged/
+// GC. `d` is constructed inside `with arena(...)`, so `d.keys()`'s
+// result is arena-scoped too — assigning it to `outer`, declared
+// outside any arena, is the same escape Gap 2 already rejects for a
+// direct `List.new()`, just reached through a method call instead of a
+// constructor. Before §8 this call typed as `Unknown` and the tag was
+// silently lost, so this specific escape shape sailed through sema
+// clean.
+//
+// Expected: sema FAIL (ArenaRefEscapesBoundary).
+
+@tier(mid)
+fn leaky() void {
+    let mut outer = List.new()
+    with arena(64KB) {
+        let d = Dictionary.new()
+        outer = d.keys()
+    }
+}
+
+fn main() void {
+    leaky()
+}

@@ -52,7 +52,7 @@
 
 use std::collections::HashMap;
 
-use crate::ast::common::{BinOp, Span, UnaryOp};
+use crate::ast::common::{BinOp, Span, TierAnnotation, UnaryOp};
 use crate::ast::declarations::{
     ConstDecl, EnumDecl, ExtendDecl, FunctionDecl, ImplBlock,
     MethodDecl, Param, ParamKind, ReturnType, StructDecl, StructMember,
@@ -66,6 +66,7 @@ use crate::ast::literals::Literal;
 use crate::ast::root::{Item, Program};
 use crate::ast::statements::{BindingTarget, Block, Stmt, StmtKind};
 use crate::ast::types::{Type, TypeKind};
+use crate::builtins::instance::{self, MethodReturn, ReceiverWrap};
 use crate::error_management::{ErrorManager, errors::{TypeError, TierError}};
 use crate::sema::sema_context::SemaContext;
 use crate::sema::symbol_table::DefId;
@@ -122,6 +123,15 @@ struct InferCtx<'a> {
     current_fallible: bool,
     arena_stack:      Vec<ArenaId>,
     next_arena:       usize,
+    /// §8 — the enclosing function/method's `@tier(...)`. Needed here
+    /// (not just in tier_check.rs) because `expr_types` entries can
+    /// still be raw unresolved `Var`s at record-time — resolving a
+    /// receiver's type to check `instance::is_high_only` needs the same
+    /// live `Unifier`/`apply()` this pass already has, which tier_check
+    /// (Pass 3, no `Unifier` of its own) does not. Defaults to `High`
+    /// — the same default the whole file already uses for top-level
+    /// inference performed outside any function body.
+    current_tier:     TierAnnotation,
 }
 
 impl<'a> InferCtx<'a> {
@@ -134,6 +144,7 @@ impl<'a> InferCtx<'a> {
             current_fallible: false,
             arena_stack:      Vec::new(),
             next_arena:       0,
+            current_tier:     TierAnnotation::High,
         }
     }
 
@@ -243,7 +254,91 @@ impl<'a> InferCtx<'a> {
         }
     }
 
-    // ── AST type → SemaType ───────────────────────────────────────
+    /// §8 — turn an `instance::MethodReturn` shape into a concrete
+    /// `TypeId`, given the receiver's wrapper (for allocation-producing
+    /// methods, §8's "same arena as the receiver" rule) and its bare
+    /// composite `TypeId` (for pulling out element type(s)).
+    fn method_return_type(
+        &mut self,
+        ret:     MethodReturn,
+        wrap:    ReceiverWrap,
+        bare_ty: TypeId,
+    ) -> TypeId {
+        match ret {
+            MethodReturn::Void => self.void_ty(),
+            MethodReturn::Int  => self.int_ty(),
+            MethodReturn::Bool => self.bool_ty(),
+
+            // Already-stored value (List<T>/Queue<T>/Stack<T>'s T, or
+            // Dictionary<K,V>'s V for `at`) — already correctly tiered
+            // from whenever it was inserted, nothing new to wrap for
+            // tier purposes. Every current caller of this shape
+            // (pop/first/last/dequeue/peek/at) falls back to
+            // `Value::Null` at runtime on an empty/missing receiver
+            // (see each method's own `unwrap_or(Value::Null)` in
+            // `builtins/instance/*.rs`), so the static type has to be
+            // genuinely nullable — `Optional(elem)`, not bare `elem` —
+            // or `x.pop() == null` fails a real TypeMismatch despite
+            // being exactly the documented way to check for "empty."
+            MethodReturn::Elem => {
+                let elem = match self.ctx.types.get(bare_ty) {
+                    SemaType::List(e)
+                    | SemaType::Queue(e)
+                    | SemaType::Stack(e)       => *e,
+                    SemaType::Dictionary(_, v) => *v,
+                    _ => self.fresh_var(),
+                };
+                self.ctx.types.insert(SemaType::Optional(elem))
+            }
+
+            // The rest all construct a brand-new value — inherit the
+            // receiver's own wrapper rather than defaulting to GC.
+            MethodReturn::NewSelf => self.apply_receiver_wrap(wrap, bare_ty),
+            MethodReturn::NewListOfChar => {
+                let elem = self.ctx.types.intern(SemaType::Char);
+                let list = self.ctx.types.insert(SemaType::List(elem));
+                self.apply_receiver_wrap(wrap, list)
+            }
+            MethodReturn::NewListOfStr => {
+                let elem = self.str_ty();
+                let list = self.ctx.types.insert(SemaType::List(elem));
+                self.apply_receiver_wrap(wrap, list)
+            }
+            MethodReturn::NewListOfKey => {
+                let key = match self.ctx.types.get(bare_ty) {
+                    SemaType::Dictionary(k, _) => *k,
+                    _ => self.fresh_var(),
+                };
+                let list = self.ctx.types.insert(SemaType::List(key));
+                self.apply_receiver_wrap(wrap, list)
+            }
+            MethodReturn::NewListOfValue => {
+                let val = match self.ctx.types.get(bare_ty) {
+                    SemaType::Dictionary(_, v) => *v,
+                    _ => self.fresh_var(),
+                };
+                let list = self.ctx.types.insert(SemaType::List(val));
+                self.apply_receiver_wrap(wrap, list)
+            }
+        }
+    }
+
+    /// Re-wrap a freshly-constructed value in the same ref kind the
+    /// receiver carried. `Gc` re-wraps to nothing (bare) rather than an
+    /// explicit `SemaType::GcRef` — matching `maybe_arena_ref`'s existing
+    /// convention that "no wrapper" already means GC-tier by default; a
+    /// bare type and `GcRef(bare)` aren't currently treated as
+    /// interchangeable by `unify`, so introducing the explicit form here
+    /// would risk spurious mismatches against every other GC-default site.
+    fn apply_receiver_wrap(&mut self, wrap: ReceiverWrap, inner: TypeId) -> TypeId {
+        match wrap {
+            ReceiverWrap::Gc => inner,
+            ReceiverWrap::Arena { arena, mutable } =>
+                self.ctx.types.insert(SemaType::ArenaRef { arena, mutable, inner }),
+            ReceiverWrap::Owned { mutable } =>
+                self.ctx.types.insert(SemaType::OwnedRef { mutable, inner }),
+        }
+    }
 
     /// Convert a syntactic `Type<'ast>` node into a TypeId.
     /// Uses `match ty.kind` (not `&ty.kind`) since TypeKind is Copy,
@@ -538,9 +633,12 @@ impl<'a> InferCtx<'a> {
         let prev_ret      = self.current_return.replace(ret_ty);
         let prev_fallible = self.current_fallible;
         self.current_fallible = is_fallible;
+        let prev_tier = self.current_tier;
+        self.current_tier = f.tier;
         self.infer_block(&f.body);
         self.current_return   = prev_ret;
         self.current_fallible = prev_fallible;
+        self.current_tier     = prev_tier;
     }
 
     fn infer_method_body<'ast>(&mut self, m: &MethodDecl<'ast>) {
@@ -549,9 +647,12 @@ impl<'a> InferCtx<'a> {
         let prev_ret      = self.current_return.replace(ret_ty);
         let prev_fallible = self.current_fallible;
         self.current_fallible = is_fallible;
+        let prev_tier = self.current_tier;
+        self.current_tier = m.tier;
         self.infer_block(&m.body);
         self.current_return   = prev_ret;
         self.current_fallible = prev_fallible;
+        self.current_tier     = prev_tier;
     }
 
     fn seed_param<'ast>(&mut self, param: &Param<'ast>) {
@@ -900,6 +1001,68 @@ impl<'a> InferCtx<'a> {
                             if let Some(ctor_ty) = self.builtin_constructor_type(ns) {
                                 return self.maybe_arena_ref(ctor_ty);
                             }
+                        }
+                    }
+                }
+
+                // §8 FIX (MEMORY_MODEL.md) — builtin instance methods
+                // (`myList.push(x)`, `"s".to_upper()`, ...). The generic
+                // Field arm below has no field table (see that arm's own
+                // TODO) and always infers Unknown, so without this every
+                // builtin method call silently typed as Unknown: no
+                // NoSuchMethod check, no arg-count check, no HIGH-only
+                // rejection, and — the actual §8 gap — an
+                // allocation-producing method's result (e.g. `to_upper`,
+                // `split`, `keys`) had no receiver tier to inherit and
+                // would've defaulted to un-tagged/GC regardless of whether
+                // the receiver was arena- or owned-scoped, quietly
+                // reopening Gap 2's escape hole from the result side
+                // instead of the reference side.
+                //
+                // Narrowly scoped to `instance::resolve_receiver`'s six
+                // builtin kinds (List/Str/Dict/Tuple/Queue/Stack); anything
+                // else (user-defined struct methods, etc) falls through to
+                // `call_return_type` below, unchanged. HIGH-only rejection
+                // for a method flagged in `instance::is_high_only` lives
+                // here too, not in tier_check.rs alongside await/LINQ's
+                // otherwise-identical rule — tier_check (Pass 3) has no
+                // `Unifier` of its own, and `expr_types` entries can still
+                // be raw unresolved `Var`s at record-time, so resolving a
+                // receiver's type correctly needs the live `apply()` this
+                // pass already has.
+                if let ExprKind::Field { target, field } = callee.kind {
+                    let receiver_ty = self.ctx.expr_type(target.span)
+                        .map(|ty| self.apply(ty));
+                    if let Some(receiver_ty) = receiver_ty {
+                        if let Some((wrap, kind, bare_ty)) =
+                            instance::resolve_receiver(&self.ctx.types, receiver_ty)
+                        {
+                            let Some((ret, arity)) = instance::signature(kind, field) else {
+                                let on_type = self.display_type(receiver_ty);
+                                self.errors.add_type_error(TypeError::NoSuchMethod {
+                                    method: field.to_string(),
+                                    on_type,
+                                    span: callee.span,
+                                });
+                                return self.unknown();
+                            };
+                            if args.len() != arity {
+                                self.errors.add_type_error(TypeError::ArgumentCountMismatch {
+                                    expected: arity,
+                                    found:    args.len(),
+                                    span:     expr.span,
+                                });
+                            }
+                            if instance::is_high_only(kind, field)
+                                && self.current_tier != TierAnnotation::High
+                            {
+                                self.errors.add_tier_error(TierError::MethodInWrongTier {
+                                    method: field.to_string(),
+                                    actual: self.current_tier,
+                                    span:   expr.span,
+                                });
+                            }
+                            return self.method_return_type(ret, wrap, bare_ty);
                         }
                     }
                 }
@@ -1275,6 +1438,20 @@ impl<'a> InferCtx<'a> {
                 (SemaType::Named { def: da, .. }, SemaType::Named { def: db, .. }) => {
                     return da == db;
                 }
+                // `null` is a valid value of any `Optional<T>` — needed
+                // for `x.pop() == null` (§8's Optional(elem) shape) to
+                // type-check as the documented way to test for "empty."
+                (SemaType::Null, SemaType::Optional(_))
+                | (SemaType::Optional(_), SemaType::Null) => return true,
+                // `Optional<T>` also compares directly against a bare
+                // `T`, not just `Optional<T>`/`Null` — matches how most
+                // languages treat nullable equality (`maybeInt == 5`
+                // doesn't require wrapping the `5`). Must come after the
+                // `Null` arm above so `x.pop() == null` hits that
+                // specific, unconditional case rather than recursing
+                // into `unify(elem, Null)`, which nothing makes true.
+                (SemaType::Optional(ia), _) => Some((*ia, b)),
+                (_, SemaType::Optional(ib)) => Some((a, *ib)),
                 _ => None,
             }
         }; // immutable borrow released here

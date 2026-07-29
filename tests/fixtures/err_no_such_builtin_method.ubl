@@ -1,0 +1,14 @@
+// tests/fixtures/err_no_such_builtin_method.ubl
+// MEMORY_MODEL.md §8 — builtin instance methods are now real
+// type-checking, not silently `Unknown`. `frobnicate` doesn't exist on
+// `List` — before this reorg every builtin method call typed as
+// `Unknown` and this would have sailed through sema with no error at
+// all, only panicking at runtime.
+//
+// Expected: sema FAIL (NoSuchMethod).
+
+fn main() void {
+    let items = List.new()
+    items.push(1)
+    items.frobnicate()
+}

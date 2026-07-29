@@ -9,6 +9,31 @@ pub const METHOD_NAMES: &[&str] = &[
     "chars", "contains", "starts_with", "ends_with", "split", "replace",
 ];
 
+/// No `Str` method is HIGH-only today. Real, consulted registry — not
+/// a stub — see `instance::is_high_only`.
+pub const HIGH_ONLY: &[&str] = &[];
+
+/// `(return shape, arity)` for sema — see `instance::MethodReturn`.
+pub fn signature(name: &str) -> Option<(crate::builtins::instance::MethodReturn, usize)> {
+    use crate::builtins::instance::MethodReturn as R;
+    Some(match name {
+        "len"         => (R::Int, 0),
+        "is_empty"    => (R::Bool, 0),
+        "to_upper"    => (R::NewSelf, 0),
+        "to_lower"    => (R::NewSelf, 0),
+        "trim"        => (R::NewSelf, 0),
+        "trim_start"  => (R::NewSelf, 0),
+        "trim_end"    => (R::NewSelf, 0),
+        "chars"       => (R::NewListOfChar, 0),
+        "contains"    => (R::Bool, 1),
+        "starts_with" => (R::Bool, 1),
+        "ends_with"   => (R::Bool, 1),
+        "split"       => (R::NewListOfStr, 1),
+        "replace"     => (R::NewSelf, 2),
+        _ => return None,
+    })
+}
+
 pub fn len(s: &Rc<String>) -> Value { Value::Int(s.len() as i64) }
 pub fn is_empty(s: &Rc<String>) -> Value { Value::Bool(s.is_empty()) }
 pub fn to_upper(s: &Rc<String>) -> Value { Value::str_from(s.to_uppercase()) }

@@ -8,6 +8,25 @@ use crate::interpreter::value::{EvalResult, Signal, Value};
 pub const METHOD_NAMES: &[&str] =
     &["len", "is_empty", "contains_key", "keys", "values", "insert", "at"];
 
+/// No `Dictionary` method is HIGH-only today. Real, consulted registry —
+/// not a stub — see `instance::is_high_only`.
+pub const HIGH_ONLY: &[&str] = &[];
+
+/// `(return shape, arity)` for sema — see `instance::MethodReturn`.
+pub fn signature(name: &str) -> Option<(crate::builtins::instance::MethodReturn, usize)> {
+    use crate::builtins::instance::MethodReturn as R;
+    Some(match name {
+        "len"          => (R::Int, 0),
+        "is_empty"     => (R::Bool, 0),
+        "contains_key" => (R::Bool, 1),
+        "keys"         => (R::NewListOfKey, 0),
+        "values"       => (R::NewListOfValue, 0),
+        "insert"       => (R::Void, 2),
+        "at"           => (R::Elem, 1),
+        _ => return None,
+    })
+}
+
 type DictInner = Rc<RefCell<Vec<(Value, Value)>>>;
 
 pub fn len(dict: &DictInner) -> Value {

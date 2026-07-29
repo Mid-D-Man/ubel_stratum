@@ -1,0 +1,12 @@
+// tests/fixtures/err_builtin_method_arg_count.ubl
+// MEMORY_MODEL.md §8 — builtin instance methods now get real arg-count
+// checking at sema time. `push` takes exactly one argument; before this
+// reorg the whole call typed as `Unknown` and this only panicked at
+// runtime ("push() needs 1 argument").
+//
+// Expected: sema FAIL (ArgumentCountMismatch).
+
+fn main() void {
+    let items = List.new()
+    items.push()
+}

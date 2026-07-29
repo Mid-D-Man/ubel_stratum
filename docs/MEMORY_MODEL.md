@@ -301,20 +301,65 @@ now so it isn't designed away later.
 (`ExprKind::Linq`) are already hard-gated to `@tier(high)` functions only, at
 the expression level.
 
-**🔭 PROPOSED rule:** instance methods (`crates/core/src/builtins/instance.rs`,
-`method_names(ReceiverKind)`) need the same treatment. A MID- or LOW-tier
-collection should reject any HIGH-only method (LINQ-adjacent, anything
-requiring GC-only semantics) as a sema error — not silently allow it, and not
-let it become a runtime surprise.
+✅ **Implemented.** Getting here required more than the two rules below —
+builtin instance methods (`myList.push(x)`, `"s".to_upper()`, ...) had *no*
+type checking at all beforehand. `ExprKind::Field`'s generic arm had a literal
+`// TODO: field table` and always inferred `Unknown`, and
+`instance::method_names(ReceiverKind)` — meant to be sema's source of truth
+for valid method names — said so itself: "used by sema (once wired in)." It
+wasn't. So this section's actual scope ended up being: build real
+method-call type checking (`instance::resolve_receiver` / `signature` /
+`is_high_only`, wired into `type_infer.rs`'s `ExprKind::Call` handler —
+`NoSuchMethod` and `ArgumentCountMismatch` now fire for real, not just at
+runtime), *then* the two rules below on top of it.
 
-**🔭 PROPOSED rule, allocation-producing methods:** any instance method that
-constructs a *new* collection from an existing MID-tier receiver
-(`.concat()`, `.filter()` returning a new list, similar) must allocate that
-result into the **same `ArenaId`** as the receiver, not a fresh, untracked
-allocation. Without this, the result silently reverts to being untagged and
-becomes an unguarded escape the moment it's returned or stored — defeating
-Gap 2's enforcement from the other direction. This is the concrete tie-in to
-§7's "arena handle at runtime" requirement.
+Lives in `type_infer.rs` (Pass 2), not `tier_check.rs` alongside
+await/LINQ's otherwise-identical rule — `tier_check` (Pass 3) has no
+`Unifier` of its own, and `expr_types` entries can still be raw unresolved
+`Var`s at record time, so resolving a receiver's type correctly needs the
+live `apply()` Pass 2 already has. `InferCtx` gained a `current_tier` field
+(mirroring `tier_check`'s) for exactly this reason.
+
+**Rule, HIGH-only methods:** a MID- or LOW-tier collection should reject any
+HIGH-only method (LINQ-adjacent, anything requiring GC-only semantics) as a
+sema error — not silently allow it, and not let it become a runtime
+surprise. Mechanism is real and verified (`TierError::MethodInWrongTier`,
+`TIER-008`) — confirmed firing correctly by temporarily flagging a real
+method HIGH-only and running it from `@tier(mid)`. But every
+`HIGH_ONLY` const across all six receiver kinds is empty today: nothing
+currently implemented is actually LINQ-adjacent or GC-only (checked all ~43
+methods across List/Str/Dict/Tuple/Queue/Stack). So the rule is real
+infrastructure, not a stub, but inert until a method that needs it exists.
+
+**Rule, allocation-producing methods:** any instance method that constructs
+a *new* collection or value from an existing receiver (`to_upper`,
+`to_lower`, `trim`/`trim_start`/`trim_end`, `split`, `replace`, `chars` on
+`Str`; `keys`, `values` on `Dictionary`) must allocate that result into the
+**same `ArenaId`** as the receiver, not a fresh, untracked allocation —
+`instance::MethodReturn::allocates()` marks exactly these, and
+`type_infer.rs`'s `method_return_type`/`apply_receiver_wrap` re-wrap the
+result in the receiver's own `ReceiverWrap` (`Gc`/`Arena`/`Owned`) rather
+than defaulting to untagged. Verified end-to-end: constructing a
+`Dictionary` inside `with arena(...)`, calling `.keys()` on it, and
+assigning the result to a binding declared outside the block correctly
+raises `ArenaRefEscapesBoundary` — proving the tag survived the method
+call. Regression-guarded by
+`tests/fixtures/err_arena_escapes_via_method_result.ubl`. This is the
+concrete tie-in to §7's "arena handle at runtime" requirement — resolved at
+the sema/type level only, per §7's own scope; the interpreter still shares
+one untyped `Value` representation across tiers.
+
+One further correctness fix fell out of building this for real:
+`pop`/`first`/`last`/`dequeue`/`peek` (List/Queue/Stack) and `at`
+(Dictionary) all fall back to `Value::Null` on an empty/missing receiver at
+runtime (`unwrap_or(Value::Null)` in every case) — so their sema return type
+had to become `Optional(elem)`, not bare `elem`, or `x.pop() == null` (the
+documented way to check for "empty") would fail a real `TypeMismatch` that
+didn't exist before this section had any type checking at all.
+`structurally_compatible` gained two matching rules: `Optional<T>` accepts
+`Null` unconditionally, and compares directly against a bare `T` (not just
+`Optional<T>`) — the latter needed for the many existing call sites like
+`items.first() == 10` to keep working.
 
 ---
 
@@ -382,9 +427,13 @@ against once Gaps 1–2 and §8's method-tier filtering are in place.
    (assignment / field / indexed storage / closure capture), compared by
    `ArenaId`. Done, verified via `cargo test --lib` (56/56 passing) plus
    5 new end-to-end fixtures.
-3. **§8** — tier filter on instance method dispatch; arena-consistent
-   allocation for result-producing methods. **Next up.**
+3. ✅ **§8** — tier filter on instance method dispatch; arena-consistent
+   allocation for result-producing methods. Done, verified via
+   `cargo test --lib` (58/58 passing) plus 3 new end-to-end fixtures —
+   ended up including building real method-call type checking from
+   scratch, which turned out not to exist yet (see §8's own writeup).
 4. **§9** — explicit LOW-tier rejection for collection construction.
+   **Next up.**
 5. **Only then** — design and implement `Pool<T>` (§10) on a tier contract
    that's actually trustworthy underneath it.
 
