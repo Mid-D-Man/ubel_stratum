@@ -160,7 +160,7 @@ impl<'a> TierChecker<'a> {
 
         // Now safe to call contains_arena_ref with a fresh borrow.
         if self.ctx.types.get(ret_ty).contains_arena_ref(&self.ctx.types) {
-            let display = self.ctx.types.get(ret_ty).display(&self.ctx.types);
+            let display = self.ctx.types.get(ret_ty).display(&self.ctx.types, &self.ctx.symbols);
             self.errors.add_tier_error(TierError::MidReturnContainsArenaRef {
                 return_type: display,
                 span,

@@ -18,7 +18,7 @@
 #![allow(dead_code)]
 
 use std::collections::HashMap;
-use crate::sema::symbol_table::DefId;
+use crate::sema::symbol_table::{DefId, SymbolTable};
 
 // ── TypeId ────────────────────────────────────────────────────────
 
@@ -150,11 +150,25 @@ impl SemaType {
     }
 
     /// A short human-readable name for error messages.
-    pub fn display(&self, table: &TypeTable) -> String {
+    ///
+    /// Every variant is handled explicitly — no catch-all. A prior version
+    /// of this function fell through a `_ => "<type>".into()` arm for
+    /// anything past the handful of variants written out by hand, which
+    /// silently produced the useless literal string `<type>` in real user-
+    /// facing diagnostics for `Dictionary`, `Queue`, `Stack`, `Set`, `Tuple`,
+    /// `Array`, `Slice`, `Named` (every struct/enum!), `GcRef`, `OwnedRef`,
+    /// `Function` (every closure!), and every fixed-width numeric alias.
+    /// Caught via `err_arena_escapes_closure_capture.ubl` rendering
+    /// `&arena <type>` instead of a real function-type string. Composite
+    /// arms recurse with `display(table, symbols)`, so nesting (e.g. a
+    /// `List<Dictionary<string, Foo>>`) resolves all the way down instead
+    /// of bottoming out at the first unhandled inner type.
+    pub fn display(&self, table: &TypeTable, symbols: &SymbolTable) -> String {
         match self {
             SemaType::Int     => "int".into(),
             SemaType::Uint    => "uint".into(),
             SemaType::Long    => "long".into(),
+            SemaType::Ulong   => "ulong".into(),
             SemaType::Float   => "float".into(),
             SemaType::Double  => "double".into(),
             SemaType::Bool    => "bool".into(),
@@ -163,18 +177,93 @@ impl SemaType {
             SemaType::Void    => "void".into(),
             SemaType::Null    => "null".into(),
 
-            SemaType::List(t) => format!("List<{}>", table.get(*t).display(table)),
-            SemaType::Optional(t) => format!("{}?", table.get(*t).display(table)),
-            SemaType::Fallible(t) => format!("{}!", table.get(*t).display(table)),
-            SemaType::Task(t)     => format!("Task<{}>", table.get(*t).display(table)),
+            SemaType::I8    => "i8".into(),
+            SemaType::I16   => "i16".into(),
+            SemaType::I32   => "i32".into(),
+            SemaType::I64   => "i64".into(),
+            SemaType::U8    => "u8".into(),
+            SemaType::U16   => "u16".into(),
+            SemaType::U32   => "u32".into(),
+            SemaType::U64   => "u64".into(),
+            SemaType::F32   => "f32".into(),
+            SemaType::F64   => "f64".into(),
+            SemaType::Isize => "isize".into(),
+            SemaType::Usize => "usize".into(),
+
+            SemaType::List(t)  => format!("List<{}>", table.get(*t).display(table, symbols)),
+            SemaType::Set(t)   => format!("Set<{}>", table.get(*t).display(table, symbols)),
+            SemaType::Queue(t) => format!("Queue<{}>", table.get(*t).display(table, symbols)),
+            SemaType::Stack(t) => format!("Stack<{}>", table.get(*t).display(table, symbols)),
+            SemaType::Slice(t) => format!("[]{}", table.get(*t).display(table, symbols)),
+
+            SemaType::Dictionary(k, v) => format!(
+                "Dictionary<{}, {}>",
+                table.get(*k).display(table, symbols),
+                table.get(*v).display(table, symbols),
+            ),
+
+            SemaType::Tuple(ts) => format!(
+                "({})",
+                ts.iter()
+                    .map(|t| table.get(*t).display(table, symbols))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            ),
+
+            SemaType::Array { len, elem } =>
+                format!("[{}]{}", len, table.get(*elem).display(table, symbols)),
+
+            SemaType::Optional(t) => format!("{}?", table.get(*t).display(table, symbols)),
+            SemaType::Fallible(t) => format!("{}!", table.get(*t).display(table, symbols)),
+            SemaType::Task(t)     => format!("Task<{}>", table.get(*t).display(table, symbols)),
 
             SemaType::ArenaRef { inner, .. } =>
-                format!("&arena {}", table.get(*inner).display(table)),
+                format!("&arena {}", table.get(*inner).display(table, symbols)),
+
+            // `apply_receiver_wrap` never actually constructs this (Gc is
+            // the implicit default: "no wrapper" already means GC-tier —
+            // see that function's doc comment). The one live construction
+            // site is `ast_type_to_sema`'s `TypeKind::Reference` arm, i.e.
+            // a user wrote `&T` in a type position — so render it that way.
+            SemaType::GcRef(t) => format!("&{}", table.get(*t).display(table, symbols)),
+
+            // No surface syntax exists yet — LOW-tier borrow checking is
+            // Phase 4 and not started (see MEMORY_MODEL.md §9). Nothing
+            // in a currently-valid program can construct this; provisional
+            // rendering only, to avoid the old catch-all if it's ever hit.
+            SemaType::OwnedRef { mutable: true,  inner } =>
+                format!("&own mut {}", table.get(*inner).display(table, symbols)),
+            SemaType::OwnedRef { mutable: false, inner } =>
+                format!("&own {}", table.get(*inner).display(table, symbols)),
+
+            SemaType::Named { def, args } => {
+                let name = &symbols.lookup(*def).name;
+                if args.is_empty() {
+                    name.clone()
+                } else {
+                    format!(
+                        "{}<{}>",
+                        name,
+                        args.iter()
+                            .map(|t| table.get(*t).display(table, symbols))
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                    )
+                }
+            }
+
+            SemaType::Function { params, return_type, is_fallible } => format!(
+                "fn({}) {}{}",
+                params.iter()
+                    .map(|t| table.get(*t).display(table, symbols))
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                table.get(*return_type).display(table, symbols),
+                if *is_fallible { "!" } else { "" },
+            ),
 
             SemaType::Var(n) => format!("?T{}", n),
             SemaType::Unknown => "<unknown>".into(),
-
-            _ => "<type>".into(),
         }
     }
 }

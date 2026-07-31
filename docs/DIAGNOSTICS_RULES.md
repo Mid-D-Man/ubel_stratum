@@ -215,6 +215,7 @@ family in `TierError`.
 | TIER-006 | MidReturnContainsArenaRef |
 | TIER-007 | LinqInWrongTier |
 | TIER-008 | MethodInWrongTier |
+| TIER-009 | CollectionConstructionInLowTier |
 
 Physically split out of `TypeError` — see §9. Variant names and
 meaning are unchanged from their `TYPE-2xx` days; only the enum and
@@ -289,6 +290,7 @@ larger effort, not started.
 - `TIER-006` `MidReturnContainsArenaRef` — *Error*. "return type `T` contains an arena-lifetime reference; this makes the function uncallable from `@tier(high)`". No suggestion.
 - `TIER-007` `LinqInWrongTier` — *Error*. "LINQ query expressions are only valid in `@tier(high)`; this function is `@tier(x)`". Suggestion: move the query into a `@tier(high)` function, or use `.where()`/`.map()` chains instead.
 - `TIER-008` `MethodInWrongTier` — *Error*. "`.method()` is only valid in `@tier(high)`; this function is `@tier(x)`" — MEMORY_MODEL.md §8, same shape as `AwaitInWrongTier`/`LinqInWrongTier` but keyed by method name via `instance::is_high_only` rather than a dedicated keyword. Suggestion: move the call to a `@tier(high)` function, or avoid the method in `@tier(mid)`/`@tier(low)` code. Every `HIGH_ONLY` registry is empty today — real, consulted infrastructure, not currently flagging anything.
+- `TIER-009` `CollectionConstructionInLowTier` — *Error*. "`Collection.new()` is not yet supported in `@tier(low)` — LOW tier's memory model (move semantics + borrow checker) hasn't been built yet" — MEMORY_MODEL.md §9. Fires for `List`/`Dictionary`/`Queue`/`Stack` construction inside a `@tier(low)` function, at the same site `type_infer.rs` already resolves `builtin_constructor_type`. Emit-and-continue, same non-fatal pattern as `ArenaInWrongTier`/`MethodInWrongTier` — chosen deliberately over returning `Unknown`, so one bad constructor call doesn't cascade spurious errors through the rest of the function. Suggestion: construct the collection in a `@tier(mid)` or `@tier(high)` function instead, or restructure to receive it as a parameter.
 
 ---
 
@@ -416,6 +418,47 @@ right alongside `Newline`/`LineComment` — same discard behavior, but
 ...)]` directive to this lexer, ask whether it can *ever* match
 something with nonzero width before adding it — if it can, it needs
 this same treatment, not `skip`.
+
+---
+
+A second instance of the same lesson turned up independently, this
+time in `type_table.rs`'s `SemaType::display()` — the function every
+error variant in the registry above calls to render a type into its
+`found` / `expected` / `on_type` / `escaped_type` fields. It explicitly
+handled a dozen or so variants and fell through a `_ => "<type>".into()`
+catch-all for everything else: `Dictionary`, `Queue`, `Stack`, `Set`,
+`Tuple`, `Array`, `Slice`, every fixed-width numeric alias, `GcRef`,
+`OwnedRef`, `Named` (**every user struct and enum**), and `Function`
+(**every closure**). None of it errored or panicked — it silently
+rendered the literal four-character string `<type>` in place of the
+real type, in any diagnostic that happened to involve one of those.
+
+Caught the same way as the lexer bug above: someone actually reading a
+rendered diagnostic instead of trusting that the underlying data must
+be right. `err_arena_escapes_closure_capture.ubl`'s
+`ArenaRefEscapesBoundary` message read `&arena <type>` where it should
+have read `&arena fn() int` — unhelpful, and indistinguishable at a
+glance from a genuine "unknown type" versus a renderer gap. Every other
+existing fixture up to that point only ever escaped, mismatched, or
+called a missing method on a `List<T>`, so the gap had never been
+exercised.
+
+Fixed by writing out every `SemaType` variant explicitly — no catch-all
+left in the match, so adding a new `SemaType` variant without also
+handling its display is now a hard compile error, not a silent gap.
+`Named` needed `SymbolTable` access to resolve a `DefId` back to its
+declared name, so `display()`'s signature grew a `symbols: &SymbolTable`
+parameter; both call sites (`type_infer.rs`'s `display_type` helper,
+`tier_check.rs`'s `MidReturnContainsArenaRef` check) were updated to
+pass it through. Composite and collection types render using this
+language's actual surface syntax, pulled from `ast/types.rs`'s own doc
+comments rather than guessed: tuples as `(int, string)`, arrays as
+`[4]int`, slices as `[]int`, function types as `fn(int, int) bool`.
+
+If you ever add a new `SemaType` variant, the compiler will now force
+you to give it a `display()` arm in the same change — but double-check
+the string you write actually matches this language's surface syntax
+(`ast/types.rs`) rather than defaulting to a Rust-looking guess.
 
 ---
 

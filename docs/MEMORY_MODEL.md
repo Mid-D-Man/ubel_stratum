@@ -368,12 +368,31 @@ didn't exist before this section had any type checking at all.
 `OwnedRef` and the borrow checker are marked "Phase 4" in the codebase's own
 comments, and nothing has been built for either yet.
 
-**🔭 PROPOSED rule:** a `@tier(low)` function that attempts to construct any
-collection should produce a clear, explicit "not yet supported" sema
-diagnostic. It must **not** silently fall through to HIGH-tier (`GcRef`)
-behavior — that would compile successfully into semantics nobody has actually
-designed, and the failure would surface as a confusing runtime bug much later
-instead of an honest compile-time message now.
+✅ **Implemented.** A `@tier(low)` function that constructs a builtin
+collection (`List.new()`, `Dictionary.new()`, `Queue.new()`, `Stack.new()`)
+now produces a clear, explicit sema error instead of silently falling
+through to HIGH-tier (`GcRef`) behavior nobody has actually designed for LOW.
+
+Lives in `type_infer.rs`, at the exact point `builtin_constructor_type`
+already resolves — right before `maybe_arena_ref` would otherwise hand back
+a bare, untagged type. Checks `self.current_tier == TierAnnotation::Low` and
+emits `TierError::CollectionConstructionInLowTier` (`TIER-009`) if so. Same
+emit-and-continue pattern as `ArenaInWrongTier`/`MethodInWrongTier` —
+deliberately *not* returning `Unknown`, so one disallowed constructor call
+doesn't cascade spurious follow-on errors through the rest of the function.
+Verified via `tests/fixtures/err_collection_new_in_low_tier.ubl`.
+
+Building this fixture's expected error message surfaced an unrelated,
+pre-existing bug: `SemaType::display()` (the function every diagnostic uses
+to render a type) fell through a silent `_ => "<type>".into()` catch-all for
+most non-trivial types — `Dictionary`, `Queue`, `Stack`, `Named` (every
+struct/enum), `Function` (every closure), and more. Every existing arena-
+escape fixture happened to use `List`, so the gap had never been exercised.
+Fixed alongside this section (every `SemaType` variant now has an explicit
+arm, no catch-all) since §8's `ArenaRefEscapesBoundary` messages and this
+section's own `TIER-009` message both depend on `display()` being honest.
+Full case study, including why `Named` needed a new `symbols: &SymbolTable`
+parameter threaded through, lives in `DIAGNOSTICS_RULES.md`.
 
 ---
 
@@ -432,10 +451,13 @@ against once Gaps 1–2 and §8's method-tier filtering are in place.
    `cargo test --lib` (58/58 passing) plus 3 new end-to-end fixtures —
    ended up including building real method-call type checking from
    scratch, which turned out not to exist yet (see §8's own writeup).
-4. **§9** — explicit LOW-tier rejection for collection construction.
-   **Next up.**
+4. ✅ **§9** — explicit LOW-tier rejection for collection construction.
+   Done, verified via `cargo test --lib` (58/58 passing, unchanged) plus
+   1 new end-to-end fixture — also surfaced and fixed an unrelated
+   `SemaType::display()` catch-all bug affecting every diagnostic that
+   renders a non-trivial type (see §9's own writeup).
 5. **Only then** — design and implement `Pool<T>` (§10) on a tier contract
-   that's actually trustworthy underneath it.
+   that's actually trustworthy underneath it. **Next up.**
 
 ---
 

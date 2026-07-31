@@ -1,0 +1,19 @@
+// tests/fixtures/err_collection_new_in_low_tier.ubl
+// MEMORY_MODEL.md §9 — LOW tier has no memory model of its own yet
+// (`OwnedRef` + a borrow checker are Phase 4, not started). Before this
+// rule, a `@tier(low)` function calling `List.new()` (or Dictionary /
+// Queue / Stack) would compile cleanly, silently falling through to a
+// bare, untagged type — i.e. HIGH-tier (GC-default) semantics nobody
+// has actually designed for LOW. This must be an explicit, honest
+// compile-time rejection instead.
+//
+// Expected: sema FAIL (CollectionConstructionInLowTier, TIER-009).
+
+@tier(low)
+fn build() void {
+    let items = List.new()
+}
+
+fn main() void {
+    build()
+}

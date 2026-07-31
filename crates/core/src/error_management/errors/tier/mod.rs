@@ -81,6 +81,20 @@ pub enum TierError {
         actual: TierAnnotation,
         span:   Span,
     },
+
+    // ── LOW tier — explicit non-support (MEMORY_MODEL.md §9) ────────
+    /// A `@tier(low)` function constructed a builtin collection
+    /// (`List`, `Dictionary`, `Queue`, `Stack`). LOW tier's own memory
+    /// model — `OwnedRef` + a borrow checker — is Phase 4 and has not
+    /// been built yet. Without this check the constructor call would
+    /// fall through to a silent, untagged bare type: HIGH-tier
+    /// (GC-default) semantics nobody has actually designed for LOW,
+    /// compiling cleanly today and surfacing as a confusing runtime
+    /// bug later instead of an honest compile-time message now.
+    CollectionConstructionInLowTier {
+        collection: String,
+        span:       Span,
+    },
 }
 
 impl TierError {
@@ -94,6 +108,7 @@ impl TierError {
             TierError::MidReturnContainsArenaRef  { span, .. } => *span,
             TierError::LinqInWrongTier            { span, .. } => *span,
             TierError::MethodInWrongTier          { span, .. } => *span,
+            TierError::CollectionConstructionInLowTier { span, .. } => *span,
         }
     }
 
@@ -149,6 +164,13 @@ impl TierError {
                     "`.{}()` is only valid in `@tier(high)`; this function is `@tier({})`",
                     method, tier_name(*actual)
                 ),
+
+            TierError::CollectionConstructionInLowTier { collection, .. } =>
+                format!(
+                    "`{}.new()` is not yet supported in `@tier(low)` — LOW tier's memory model \
+                     (move semantics + borrow checker) hasn't been built yet",
+                    collection
+                ),
         }
     }
 
@@ -179,6 +201,13 @@ impl TierError {
                 Some(format!(
                     "move this call to a `@tier(high)` function, or avoid `.{}()` in `@tier(mid)`/`@tier(low)` code",
                     method
+                )),
+
+            TierError::CollectionConstructionInLowTier { collection, .. } =>
+                Some(format!(
+                    "construct the `{}` in a `@tier(mid)` or `@tier(high)` function instead, or \
+                     restructure this function to receive it as a parameter",
+                    collection
                 )),
 
             _ => None,
@@ -216,6 +245,7 @@ impl crate::error_management::render::Diagnosable for TierError {
             TierError::MidReturnContainsArenaRef { .. }  => "TIER-006",
             TierError::LinqInWrongTier { .. }            => "TIER-007",
             TierError::MethodInWrongTier { .. }          => "TIER-008",
+            TierError::CollectionConstructionInLowTier { .. } => "TIER-009",
         }
     }
     fn span(&self) -> Span { self.span() }

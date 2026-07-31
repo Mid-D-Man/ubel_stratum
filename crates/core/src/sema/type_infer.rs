@@ -999,6 +999,28 @@ impl<'a> InferCtx<'a> {
                     if field == "new" {
                         if let ExprKind::Ident(ns) = target.kind {
                             if let Some(ctor_ty) = self.builtin_constructor_type(ns) {
+                                // §9 FIX (MEMORY_MODEL.md) — LOW tier has
+                                // no memory model of its own yet
+                                // (`OwnedRef` + borrow checker are Phase 4,
+                                // not started). Without this check, a
+                                // `@tier(low)` function calling
+                                // `List.new()` etc. would fall straight
+                                // through `maybe_arena_ref` below to a
+                                // silent, untagged bare type — i.e.
+                                // HIGH-tier (GC-default) semantics nobody
+                                // has designed for LOW. Emit and continue
+                                // (same non-fatal pattern as
+                                // ArenaInWrongTier/MethodInWrongTier)
+                                // rather than returning Unknown, so one
+                                // bad constructor call doesn't cascade
+                                // spurious errors through the rest of the
+                                // function.
+                                if self.current_tier == TierAnnotation::Low {
+                                    self.errors.add_tier_error(TierError::CollectionConstructionInLowTier {
+                                        collection: ns.to_string(),
+                                        span:       expr.span,
+                                    });
+                                }
                                 return self.maybe_arena_ref(ctor_ty);
                             }
                         }
@@ -1467,6 +1489,6 @@ impl<'a> InferCtx<'a> {
 
     fn display_type(&self, id: TypeId) -> String {
         if id == TypeId::ERROR { return "<error>".into(); }
-        self.ctx.types.get(id).display(&self.ctx.types)
+        self.ctx.types.get(id).display(&self.ctx.types, &self.ctx.symbols)
     }
     }

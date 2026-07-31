@@ -1,0 +1,17 @@
+// tests/fixtures/err_no_such_builtin_method_dict.ubl
+// Regression test for a `SemaType::display()` bug (docs/DIAGNOSTICS_RULES.md
+// §8, second case study): `display()` explicitly handled a dozen-or-so
+// SemaType variants and fell through a `_ => "<type>".into()` catch-all for
+// everything else, including `Dictionary`. Every prior NoSuchMethod fixture
+// happened to use a `List` receiver, so this gap was never exercised — the
+// error message would have read `type <type> has no method frobnicate`
+// instead of naming the real type.
+//
+// Expected: sema FAIL (NoSuchMethod), with the `on_type` field rendering as
+// `Dictionary<?T1, ?T2>`, not `<type>`.
+
+fn main() void {
+    let ages = Dictionary.new()
+    ages.insert("alice", 31)
+    ages.frobnicate()
+}
