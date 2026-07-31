@@ -1,8 +1,9 @@
 // Brought to u by MidManStudio
-// MEMORY_MODEL.md §8 delivery: cleanup of the now-stale error-reorg.tar.gz
-// replacements bundle from the previous session (already applied, and
-// would otherwise get re-extracted alongside this session's bundle,
-// clobbering files both bundles touch with its older content).
+// display()-catch-all-fix + MEMORY_MODEL.md §9 delivery: cleanup of the
+// now-stale method-tier-gating.tar.gz replacements bundle from the previous
+// session (already applied, and would otherwise get re-extracted alongside
+// this session's bundle, clobbering files both bundles touch — tier/mod.rs
+// and type_infer.rs — with its older content).
 
 @CONFIG(
   version  -> "1.0.0",
@@ -11,5 +12,5 @@
 
 @DATA(
   delete_files::
-    { path = ".mdix/replacements/error-reorg.tar.gz" }
+    { path = ".mdix/replacements/method-tier-gating.tar.gz" }
 )
