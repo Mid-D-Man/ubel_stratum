@@ -40,6 +40,21 @@ impl TypeId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ArenaId(pub usize);
 
+/// A unique identity for one pool created by a `with pool<T>(count)` block
+/// — MEMORY_MODEL.md §10/§11. Structurally identical to `ArenaId` (both
+/// are opaque scope identities compared for equality only), kept as a
+/// distinct type rather than reusing `ArenaId` outright so `PoolRef`
+/// values render and report as "&pool"/"with pool<...>(...)" instead of
+/// silently mislabeling every pool diagnostic as an arena one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct PoolId(pub usize);
+
+/// Which kind of scope a value is bound to — used only by
+/// `scope_ref_kind` to pick the right diagnostic (arena vs pool) without
+/// duplicating the recursive walk twice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScopeKind { Arena, Pool }
+
 // ── Semantic type ─────────────────────────────────────────────────
 
 /// A fully-resolved semantic type.
@@ -65,6 +80,17 @@ pub enum SemaType {
     Tuple(Vec<TypeId>),
     Array { len: u64, elem: TypeId },
     Slice(TypeId),
+    /// `Pool<T>` — the manager/handle-issuing collection itself, as
+    /// opposed to `PoolRef` below (the scope-tag wrapper indicating a
+    /// value's lifetime is bound to a specific `with pool<T>(count) { }`
+    /// block). MEMORY_MODEL.md §10/§11.
+    Pool(TypeId),
+    /// `Handle<T>` — a generational `(index, generation)` handle returned
+    /// by `Pool<T>.acquire()`. Not itself the stored `T`; `.get(handle)`
+    /// on the owning `Pool<T>` resolves it, checked against the slot's
+    /// current generation so a stale handle fails safely instead of
+    /// silently reading whatever's been written into a reused slot.
+    Handle(TypeId),
 
     // ── User-defined ─────────────────────────────────────────────
     /// A resolved named type with generic arguments substituted in.
@@ -93,6 +119,18 @@ pub enum SemaType {
         inner:   TypeId,
     },
 
+    /// A reference scoped to a `with pool<T>(count) { }` block. Carries
+    /// the `PoolId` of its origin — structurally the same escape-boundary
+    /// mechanism as `ArenaRef` (MEMORY_MODEL.md §11: "same relationship
+    /// `with arena(...)` already has"), kept as its own variant purely so
+    /// diagnostics say "&pool"/"with pool<...>(...)" accurately instead
+    /// of reusing arena's wording for a different block kind.
+    PoolRef {
+        pool:    PoolId,
+        mutable: bool,
+        inner:   TypeId,
+    },
+
     /// A LOW-tier owned reference (borrow-checked in Phase 4).
     OwnedRef {
         mutable: bool,
@@ -116,11 +154,17 @@ pub enum SemaType {
 }
 
 impl SemaType {
-    /// Returns `true` if this type (or any type it contains) is an `ArenaRef`.
-    /// Used by the tier checker to detect cross-boundary escapes.
-    pub fn contains_arena_ref(&self, table: &TypeTable) -> bool {
+    /// Returns which scope kind (arena or pool), if any, this type — or
+    /// anything it contains — is bound to. Used by the tier checker both
+    /// to detect cross-boundary escapes (formerly `contains_arena_ref`,
+    /// generalized in MEMORY_MODEL.md §11 to also recognize `PoolRef`)
+    /// and to pick the accurately-worded diagnostic at the call site,
+    /// since arena and pool escapes are reported through different
+    /// `TierError` variants.
+    pub fn scope_ref_kind(&self, table: &TypeTable) -> Option<ScopeKind> {
         match self {
-            SemaType::ArenaRef { .. } => true,
+            SemaType::ArenaRef { .. } => Some(ScopeKind::Arena),
+            SemaType::PoolRef { .. }  => Some(ScopeKind::Pool),
             SemaType::List(t)
             | SemaType::Set(t)
             | SemaType::Queue(t)
@@ -130,22 +174,24 @@ impl SemaType {
             | SemaType::Task(t)
             | SemaType::Optional(t)
             | SemaType::GcRef(t)
+            | SemaType::Pool(t)
+            | SemaType::Handle(t)
             | SemaType::OwnedRef { inner: t, .. } => {
-                table.get(*t).contains_arena_ref(table)
+                table.get(*t).scope_ref_kind(table)
             }
             SemaType::Dictionary(k, v) => {
-                table.get(*k).contains_arena_ref(table)
-                    || table.get(*v).contains_arena_ref(table)
+                table.get(*k).scope_ref_kind(table)
+                    .or_else(|| table.get(*v).scope_ref_kind(table))
             }
-            SemaType::Tuple(ts) => ts.iter().any(|t| table.get(*t).contains_arena_ref(table)),
+            SemaType::Tuple(ts) => ts.iter().find_map(|t| table.get(*t).scope_ref_kind(table)),
             SemaType::Named { args, .. } => {
-                args.iter().any(|t| table.get(*t).contains_arena_ref(table))
+                args.iter().find_map(|t| table.get(*t).scope_ref_kind(table))
             }
             SemaType::Function { params, return_type, .. } => {
-                params.iter().any(|t| table.get(*t).contains_arena_ref(table))
-                    || table.get(*return_type).contains_arena_ref(table)
+                params.iter().find_map(|t| table.get(*t).scope_ref_kind(table))
+                    .or_else(|| table.get(*return_type).scope_ref_kind(table))
             }
-            _ => false,
+            _ => None,
         }
     }
 
@@ -219,6 +265,12 @@ impl SemaType {
 
             SemaType::ArenaRef { inner, .. } =>
                 format!("&arena {}", table.get(*inner).display(table, symbols)),
+            SemaType::PoolRef { inner, .. } =>
+                format!("&pool {}", table.get(*inner).display(table, symbols)),
+            SemaType::Pool(t) =>
+                format!("Pool<{}>", table.get(*t).display(table, symbols)),
+            SemaType::Handle(t) =>
+                format!("Handle<{}>", table.get(*t).display(table, symbols)),
 
             // `apply_receiver_wrap` never actually constructs this (Gc is
             // the implicit default: "no wrapper" already means GC-tier —

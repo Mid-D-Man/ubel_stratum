@@ -4,7 +4,7 @@
 #![allow(dead_code)]
 
 use crate::ast::expressions::Expr;
-use crate::ast::statements::{BindingTarget, Block, Stmt, StmtKind};
+use crate::ast::statements::{AllocatorKind, BindingTarget, Block, Stmt, StmtKind};
 use crate::interpreter::eval::{expr, pattern, Interpreter};
 use crate::interpreter::value::{EvalResult, Signal, Value};
 
@@ -227,10 +227,30 @@ pub fn eval_stmt<'ast>(
         }
 
         // ── With block (arena / allocator) ────────────────────────
-        // Tier enforcer already validated the tier constraint.
-        // In the tree-walker, `with` is a transparent block — real
-        // bump-allocation lands with the LLVM backend.
-        StmtKind::With { body, .. } => eval_block(interp, body),
+        // Tier enforcer already validated the tier constraint. Arena,
+        // Gc, and Heap are all transparent blocks in the tree-walker —
+        // real bump-allocation lands with the LLVM backend. Pool is the
+        // one exception: `Pool.new()` (crate::builtins::instance::
+        // pool_methods) needs a real capacity to size its slot table,
+        // and unlike `List.new()` it has no generic argument of its own
+        // to supply one — see `Interpreter::pool_capacity_stack`.
+        StmtKind::With { allocator, body } => {
+            if let AllocatorKind::Pool { count, .. } = allocator {
+                let cap_val = expr::eval_expr(interp, count)?;
+                let cap = match cap_val {
+                    Value::Int(n) if n >= 0 => n as usize,
+                    other => return Err(Signal::Panic(format!(
+                        "pool capacity must be a non-negative int, got {}", other.type_name()
+                    ))),
+                };
+                interp.pool_capacity_stack.push(cap);
+                let result = eval_block(interp, body);
+                interp.pool_capacity_stack.pop();
+                result
+            } else {
+                eval_block(interp, body)
+            }
+        }
 
         // ── Using (RAII resource management) ─────────────────────
         StmtKind::Using { bindings, body } => {

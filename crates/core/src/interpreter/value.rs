@@ -56,6 +56,37 @@ pub enum Value {
     /// Index into the interpreter's function table.
     /// Both named functions and lambdas (closures) are represented this way.
     Function(FunctionId),
+    /// `Pool<T>` — fixed-capacity slot table with a LIFO free list and a
+    /// generation counter per slot (MEMORY_MODEL.md §11). Capacity comes
+    /// from the innermost enclosing `with pool<T>(count) { }` at
+    /// construction time — see `Interpreter::pool_capacity_stack`.
+    Pool(Rc<RefCell<PoolData>>),
+    /// A generational handle returned by `Pool<T>.acquire()`. Small and
+    /// `Copy`-cheap by construction (no `Rc`); deliberately not
+    /// constructible from a tuple literal or any other user-facing
+    /// value, so a handle can only ever come from a real `acquire()`.
+    Handle { index: usize, generation: u64 },
+}
+
+/// Backing storage for `Value::Pool`. `slots[i]` and `generations[i]`
+/// are always the same length (`capacity`); `free_list` holds indices
+/// currently unoccupied, popped LIFO (most-recently-released reused
+/// first) per MEMORY_MODEL.md §11 item 3.
+#[derive(Debug, Clone)]
+pub struct PoolData {
+    pub slots:       Vec<Option<Value>>,
+    pub generations: Vec<u64>,
+    pub free_list:   Vec<usize>,
+}
+
+impl PoolData {
+    pub fn with_capacity(capacity: usize) -> Self {
+        PoolData {
+            slots:       vec![None; capacity],
+            generations: vec![0; capacity],
+            free_list:   (0..capacity).collect(),
+        }
+    }
 }
 
 /// Payload carried by an enum variant at runtime.
@@ -108,6 +139,8 @@ impl Value {
             Value::Struct { .. } => "struct",
             Value::Enum { .. }   => "enum",
             Value::Function(_)   => "function",
+            Value::Pool(_)       => "Pool",
+            Value::Handle { .. } => "Handle",
         }
     }
 
@@ -150,8 +183,16 @@ impl Value {
             (Value::Struct { fields: a, .. },
              Value::Struct { fields: b, .. })    => Rc::ptr_eq(a, b),
             (Value::Function(a), Value::Function(b)) => a == b,
+            (Value::Pool(a), Value::Pool(b)) => Rc::ptr_eq(a, b),
+            (Value::Handle { index: ia, generation: ga },
+             Value::Handle { index: ib, generation: gb }) => ia == ib && ga == gb,
             _ => false,
         }
+    }
+
+    /// Convenience: make an empty `Value::Pool` with the given capacity.
+    pub fn new_pool(capacity: usize) -> Self {
+        Value::Pool(Rc::new(RefCell::new(PoolData::with_capacity(capacity))))
     }
 
     /// Convenience: make a `Value::Str` from a `&str`.
@@ -247,6 +288,11 @@ impl fmt::Display for Value {
                 }
                 write!(f, "}}")
             }
+            Value::Pool(rc) => {
+                let pool = rc.borrow();
+                write!(f, "Pool(capacity={}, free={})", pool.slots.len(), pool.free_list.len())
+            }
+            Value::Handle { index, generation } => write!(f, "Handle(#{}/{})", index, generation),
             Value::Enum { type_name, variant, payload } => {
                 match payload.as_ref() {
                     EnumPayload::None => write!(f, "{}.{}", type_name, variant),

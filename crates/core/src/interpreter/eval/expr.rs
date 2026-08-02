@@ -662,6 +662,21 @@ fn eval_call_with_receiver<'ast>(
 ) -> EvalResult {
     // Case 1: static call — receiver is a bare identifier naming a type.
     if let ExprKind::Ident(type_name) = &recv_expr.kind {
+        // `Pool.new()` needs the interpreter's own ambient
+        // `pool_capacity_stack` (MEMORY_MODEL.md §11) — it can't be a
+        // normal `BuiltinFn` (`fn(&[Value]) -> EvalResult`), since that
+        // signature has no way to reach interpreter state. Checked
+        // before `is_builtin_namespace` for that reason, not folded
+        // into `constructors.rs`/`resolve_namespace_member` like
+        // `List.new()` etc.
+        if *type_name == "Pool" && method_name == "new" {
+            let cap = interp.pool_capacity_stack.last().copied().ok_or_else(|| {
+                Signal::Panic(
+                    "Pool.new() requires an enclosing with pool<T>(count) block".into(),
+                )
+            })?;
+            return Ok(Value::new_pool(cap));
+        }
         if crate::builtins::is_builtin_namespace(type_name) {
             let func = crate::builtins::resolve_namespace_member(type_name, method_name)
                 .ok_or_else(|| Signal::Panic(format!(
@@ -739,6 +754,17 @@ fn eval_method_call(
                 "peek"     => return Ok(m::peek(rc)),
                 "contains" => return m::contains(rc, args),
                 "clear"    => return Ok(m::clear(rc)),
+                _ => {}
+            }
+        }
+
+        // ── Built-in Pool methods (MEMORY_MODEL.md §11) ──────────────
+        Value::Pool(rc) => {
+            use crate::builtins::instance::pool_methods as m;
+            match method_name {
+                "acquire" => return m::acquire(rc, args),
+                "release" => return m::release(rc, args),
+                "at"      => return m::at(rc, args),
                 _ => {}
             }
         }

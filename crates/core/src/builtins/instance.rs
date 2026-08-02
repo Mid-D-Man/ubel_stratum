@@ -12,7 +12,7 @@
 //! arena preservation, MEMORY_MODEL.md §8) and `tier_check.rs` (HIGH-only
 //! rejection, same section).
 
-use crate::sema::type_table::{ArenaId, SemaType, TypeId, TypeTable};
+use crate::sema::type_table::{ArenaId, PoolId, SemaType, TypeId, TypeTable};
 
 pub mod list_methods;
 pub mod string_methods;
@@ -20,6 +20,7 @@ pub mod dict_methods;
 pub mod tuple_methods;
 pub mod queue_methods;
 pub mod stack_methods;
+pub mod pool_methods;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReceiverKind {
@@ -29,6 +30,7 @@ pub enum ReceiverKind {
     Tuple,
     Queue,
     Stack,
+    Pool,
 }
 
 /// Returns the valid method names for a given receiver kind — consulted
@@ -42,6 +44,7 @@ pub fn method_names(kind: ReceiverKind) -> &'static [&'static str] {
         ReceiverKind::Tuple => tuple_methods::METHOD_NAMES,
         ReceiverKind::Queue => queue_methods::METHOD_NAMES,
         ReceiverKind::Stack => stack_methods::METHOD_NAMES,
+        ReceiverKind::Pool  => pool_methods::METHOD_NAMES,
     }
 }
 
@@ -55,6 +58,11 @@ pub enum ReceiverWrap {
     Gc,
     Arena { arena: ArenaId, mutable: bool },
     Owned { mutable: bool },
+    /// MEMORY_MODEL.md §11 — mirrors `Arena` exactly, for `Pool<T>`
+    /// receivers. Kept distinct so `apply_receiver_wrap` re-wraps an
+    /// `.acquire()` result in `PoolRef` (not `ArenaRef`), matching
+    /// whichever kind the receiver actually carried.
+    Pool { pool: PoolId, mutable: bool },
 }
 
 /// Strip a `GcRef`/`ArenaRef`/`OwnedRef` wrapper off `ty` and, if what's
@@ -73,6 +81,8 @@ pub fn resolve_receiver(table: &TypeTable, ty: TypeId) -> Option<(ReceiverWrap, 
         SemaType::GcRef(inner) => (ReceiverWrap::Gc, *inner),
         SemaType::ArenaRef { arena, mutable, inner } =>
             (ReceiverWrap::Arena { arena: *arena, mutable: *mutable }, *inner),
+        SemaType::PoolRef { pool, mutable, inner } =>
+            (ReceiverWrap::Pool { pool: *pool, mutable: *mutable }, *inner),
         SemaType::OwnedRef { mutable, inner } =>
             (ReceiverWrap::Owned { mutable: *mutable }, *inner),
         _ => (ReceiverWrap::Gc, ty),
@@ -84,6 +94,7 @@ pub fn resolve_receiver(table: &TypeTable, ty: TypeId) -> Option<(ReceiverWrap, 
         SemaType::Tuple(_)       => ReceiverKind::Tuple,
         SemaType::Queue(_)       => ReceiverKind::Queue,
         SemaType::Stack(_)       => ReceiverKind::Stack,
+        SemaType::Pool(_)        => ReceiverKind::Pool,
         _ => return None,
     };
     Some((wrap, kind, bare))
@@ -123,6 +134,13 @@ pub enum MethodReturn {
     NewListOfKey,
     /// A brand-new `List<V>`. Allocates.
     NewListOfValue,
+    /// `Pool<T>.acquire(value)` — `Optional<Handle<T>>`. Allocates in
+    /// the sense that matters here: the returned `Handle<T>` needs the
+    /// receiver's own wrap applied (MEMORY_MODEL.md §11's "must not
+    /// escape" answer applies to acquired handles too, same as the pool
+    /// itself), even though no new storage is created the way `NewSelf`
+    /// etc. actually allocate.
+    AcquireHandle,
 }
 
 impl MethodReturn {
@@ -134,6 +152,7 @@ impl MethodReturn {
                 | MethodReturn::NewListOfStr
                 | MethodReturn::NewListOfKey
                 | MethodReturn::NewListOfValue
+                | MethodReturn::AcquireHandle
         )
     }
 }
@@ -148,6 +167,7 @@ pub fn signature(kind: ReceiverKind, name: &str) -> Option<(MethodReturn, usize)
         ReceiverKind::Tuple => tuple_methods::signature(name),
         ReceiverKind::Queue => queue_methods::signature(name),
         ReceiverKind::Stack => stack_methods::signature(name),
+        ReceiverKind::Pool  => pool_methods::signature(name),
     }
 }
 
@@ -166,6 +186,7 @@ pub fn is_high_only(kind: ReceiverKind, name: &str) -> bool {
         ReceiverKind::Tuple => tuple_methods::HIGH_ONLY,
         ReceiverKind::Queue => queue_methods::HIGH_ONLY,
         ReceiverKind::Stack => stack_methods::HIGH_ONLY,
+        ReceiverKind::Pool  => pool_methods::HIGH_ONLY,
     };
     list.contains(&name)
 }

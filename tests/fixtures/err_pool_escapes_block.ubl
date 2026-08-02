@@ -1,0 +1,31 @@
+// tests/fixtures/err_pool_escapes_block.ubl
+// MEMORY_MODEL.md §11 — nested-pool mismatch, same shape as
+// err_arena_escapes_nested_mismatch.ubl and for the same reason: two
+// DIFFERENT, non-interchangeable pools (PoolId(1) vs PoolId(2)), not one
+// pool used twice. `outer_pool` belongs to the outer `with pool` block;
+// reassigning it from inside the nested block hands it a value that dies
+// when the INNER block ends, while `outer_pool` itself lives until the
+// OUTER block ends.
+//
+// (There's no surface syntax to declare a plain, untagged `Pool<int>`
+// binding at all — `Pool.new()` always requires an enclosing `with
+// pool<T>(count)` block, unlike `List.new()` — so the nested-mismatch
+// shape is the reachable way to exercise this rule, the same way
+// err_arena_escapes_outer_binding.ubl's simpler shape isn't available
+// here either.)
+//
+// Expected: sema FAIL (PoolRefEscapesBoundary).
+
+@tier(mid)
+fn nested() void {
+    with pool<int>(4) {
+        let mut outer_pool = Pool.new()
+        with pool<int>(4) {
+            outer_pool = Pool.new()
+        }
+    }
+}
+
+fn main() void {
+    nested()
+}

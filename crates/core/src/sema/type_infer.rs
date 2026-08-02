@@ -39,7 +39,7 @@
 //!   via a generic `TypeMismatch` in `unify` (declared return type vs.
 //!   actual `ArenaRef`-tagged value). `unify` now recognizes this
 //!   specific shape and reports the more precise `ArenaRefEscapesBoundary`
-//!   instead — see `arena_mismatch_side`.
+//!   instead — see `scope_mismatch_side`.
 //!
 //! # Known rough edges (not airtight yet)
 //! - No occurs-check in unification.
@@ -64,13 +64,13 @@ use crate::ast::expressions::{
 };
 use crate::ast::literals::Literal;
 use crate::ast::root::{Item, Program};
-use crate::ast::statements::{BindingTarget, Block, Stmt, StmtKind};
+use crate::ast::statements::{AllocatorKind, BindingTarget, Block, Stmt, StmtKind};
 use crate::ast::types::{Type, TypeKind};
 use crate::builtins::instance::{self, MethodReturn, ReceiverWrap};
 use crate::error_management::{ErrorManager, errors::{TypeError, TierError}};
 use crate::sema::sema_context::SemaContext;
 use crate::sema::symbol_table::DefId;
-use crate::sema::type_table::{ArenaId, SemaType, TypeId};
+use crate::sema::type_table::{ArenaId, PoolId, SemaType, TypeId};
 
 // ── Entry point ───────────────────────────────────────────────────
 
@@ -123,6 +123,13 @@ struct InferCtx<'a> {
     current_fallible: bool,
     arena_stack:      Vec<ArenaId>,
     next_arena:       usize,
+    /// Mirrors `arena_stack`, one entry per open `with pool<T>(count) { }`
+    /// — MEMORY_MODEL.md §11. Stores the pool's element type alongside
+    /// its id since `Pool.new()` (unlike `List.new()`) has no generic
+    /// argument of its own to infer from; it picks up both id and
+    /// element type from the innermost enclosing pool block.
+    pool_stack:       Vec<(PoolId, TypeId)>,
+    next_pool:        usize,
     /// §8 — the enclosing function/method's `@tier(...)`. Needed here
     /// (not just in tier_check.rs) because `expr_types` entries can
     /// still be raw unresolved `Var`s at record-time — resolving a
@@ -144,6 +151,8 @@ impl<'a> InferCtx<'a> {
             current_fallible: false,
             arena_stack:      Vec::new(),
             next_arena:       0,
+            pool_stack:       Vec::new(),
+            next_pool:        0,
             current_tier:     TierAnnotation::High,
         }
     }
@@ -176,6 +185,21 @@ impl<'a> InferCtx<'a> {
         self.arena_stack.last().copied()
     }
 
+    // ── Pool tracking ─────────────────────────────────────────────
+
+    fn push_pool(&mut self, elem_ty: TypeId) -> PoolId {
+        let id = PoolId(self.next_pool);
+        self.next_pool += 1;
+        self.pool_stack.push((id, elem_ty));
+        id
+    }
+
+    fn pop_pool(&mut self) { self.pool_stack.pop(); }
+
+    fn current_pool(&self) -> Option<(PoolId, TypeId)> {
+        self.pool_stack.last().copied()
+    }
+
     /// Wrap `inner_ty` as an ArenaRef if inside a `with arena` block.
     /// Called on freshly *constructed* values only.
     fn maybe_arena_ref(&mut self, inner_ty: TypeId) -> TypeId {
@@ -191,7 +215,7 @@ impl<'a> InferCtx<'a> {
 
     /// GAP 2 — resolve `ty` and return `Some(arena)` only if its
     /// *outermost* layer is `SemaType::ArenaRef`. This is deliberately
-    /// shallow (unlike `SemaType::contains_arena_ref`, which recurses):
+    /// shallow (unlike `SemaType::scope_ref_kind`, which recurses):
     /// it answers "is this specific reference itself bound to an arena",
     /// which is what determines a binding's or receiver's *own* home
     /// arena for escape comparisons — not "does this type contain an
@@ -209,6 +233,27 @@ impl<'a> InferCtx<'a> {
     fn arena_escape(&mut self, ty: TypeId, span: Span) {
         let escaped_type = self.display_type(ty);
         self.errors.add_tier_error(TierError::ArenaRefEscapesBoundary {
+            escaped_type,
+            span,
+        });
+    }
+
+    /// Same shallow-resolve shape as `top_level_arena`, for `PoolRef` —
+    /// MEMORY_MODEL.md §11.
+    fn top_level_pool(&mut self, ty: TypeId) -> Option<PoolId> {
+        let resolved = self.apply(ty);
+        match self.ctx.types.get(resolved) {
+            SemaType::PoolRef { pool, .. } => Some(*pool),
+            _ => None,
+        }
+    }
+
+    /// Same shape as `arena_escape`, reporting the pool-specific
+    /// diagnostic so the message says "&pool"/"with pool<...>(...)"
+    /// rather than reusing arena's wording for a different block kind.
+    fn pool_escape(&mut self, ty: TypeId, span: Span) {
+        let escaped_type = self.display_type(ty);
+        self.errors.add_tier_error(TierError::PoolRefEscapesBoundary {
             escaped_type,
             span,
         });
@@ -284,7 +329,8 @@ impl<'a> InferCtx<'a> {
                 let elem = match self.ctx.types.get(bare_ty) {
                     SemaType::List(e)
                     | SemaType::Queue(e)
-                    | SemaType::Stack(e)       => *e,
+                    | SemaType::Stack(e)
+                    | SemaType::Pool(e)        => *e,
                     SemaType::Dictionary(_, v) => *v,
                     _ => self.fresh_var(),
                 };
@@ -320,6 +366,20 @@ impl<'a> InferCtx<'a> {
                 let list = self.ctx.types.insert(SemaType::List(val));
                 self.apply_receiver_wrap(wrap, list)
             }
+            // `Pool<T>.acquire(value)` — `Optional<Handle<T>>`, wrapped
+            // in the receiver's own wrap (MEMORY_MODEL.md §11: acquired
+            // handles must not escape the `with pool<T>(count) { }`
+            // block either, same "same as arena" answer that applies to
+            // the pool itself).
+            MethodReturn::AcquireHandle => {
+                let elem = match self.ctx.types.get(bare_ty) {
+                    SemaType::Pool(e) => *e,
+                    _ => self.fresh_var(),
+                };
+                let handle = self.ctx.types.insert(SemaType::Handle(elem));
+                let optional = self.ctx.types.insert(SemaType::Optional(handle));
+                self.apply_receiver_wrap(wrap, optional)
+            }
         }
     }
 
@@ -335,6 +395,8 @@ impl<'a> InferCtx<'a> {
             ReceiverWrap::Gc => inner,
             ReceiverWrap::Arena { arena, mutable } =>
                 self.ctx.types.insert(SemaType::ArenaRef { arena, mutable, inner }),
+            ReceiverWrap::Pool { pool, mutable } =>
+                self.ctx.types.insert(SemaType::PoolRef { pool, mutable, inner }),
             ReceiverWrap::Owned { mutable } =>
                 self.ctx.types.insert(SemaType::OwnedRef { mutable, inner }),
         }
@@ -788,10 +850,34 @@ impl<'a> InferCtx<'a> {
                 self.void_ty()
             }
             StmtKind::Loop(body) => { self.infer_block(body); self.void_ty() }
-            StmtKind::With { body, .. } => {
-                let _arena_id = self.push_arena();
-                self.infer_block(body);
-                self.pop_arena();
+            // BUG FIX (MEMORY_MODEL.md §11) — this arm used to ignore
+            // `allocator` entirely and push an arena scope for *every*
+            // `with` block, so `with pool<T>(count) { }` and even
+            // `with gc { }`/`with heap { }` silently got arena's escape-
+            // boundary semantics whether they wanted them or not. Now
+            // dispatches on the actual allocator kind; only `Arena` and
+            // `Pool` push a scope, since those are the only two kinds
+            // with a lifetime narrower than their enclosing function.
+            StmtKind::With { allocator, body } => {
+                match allocator {
+                    AllocatorKind::Arena(_) => {
+                        let _arena_id = self.push_arena();
+                        self.infer_block(body);
+                        self.pop_arena();
+                    }
+                    AllocatorKind::Pool { ty, count } => {
+                        let elem_ty  = self.ast_type_to_sema(ty);
+                        let count_ty = self.infer_expr(count);
+                        let int_ty   = self.int_ty();
+                        self.unify(int_ty, count_ty, count.span);
+                        let _pool_id = self.push_pool(elem_ty);
+                        self.infer_block(body);
+                        self.pop_pool();
+                    }
+                    AllocatorKind::Gc | AllocatorKind::Heap => {
+                        self.infer_block(body);
+                    }
+                }
                 self.void_ty()
             }
             StmtKind::Using { bindings, body } => {
@@ -842,6 +928,10 @@ impl<'a> InferCtx<'a> {
                 let inner = *inner;
                 self.element_type_of(inner)
             }
+            SemaType::PoolRef { inner, .. } => {
+                let inner = *inner;
+                self.element_type_of(inner)
+            }
             _ => self.fresh_var(),
         }
     }
@@ -854,13 +944,14 @@ impl<'a> InferCtx<'a> {
         ty
     }
 
-    /// GAP 2 — detect an `ArenaRef` value flowing into a binding, struct
-    /// field, or indexed slot whose own home arena (if any) doesn't
-    /// match. Returns `true` if an escape was detected and reported (the
-    /// caller should skip the generic `unify` to avoid a duplicate,
-    /// less-specific diagnostic on the same expression).
+    /// GAP 2 — detect an `ArenaRef`/`PoolRef` value (MEMORY_MODEL.md §11
+    /// generalized this from arena-only to both) flowing into a binding,
+    /// struct field, or indexed slot whose own home scope (if any)
+    /// doesn't match. Returns `true` if an escape was detected and
+    /// reported (the caller should skip the generic `unify` to avoid a
+    /// duplicate, less-specific diagnostic on the same expression).
     ///
-    /// "Home arena" per target shape:
+    /// "Home arena/pool" per target shape:
     ///   - `Ident`  — the ArenaId (if any) the binding's *original*
     ///     `def_type` carries. Reassignment never mutates `def_types`
     ///     (only the unifier's substitution table changes), so re-reading
@@ -889,6 +980,11 @@ impl<'a> InferCtx<'a> {
     /// docs/MEMORY_MODEL.md §6 for the reasoning; over-flagging a
     /// borderline-safe pattern is the right default for a memory-safety
     /// check, the same way a real borrow checker sometimes does.
+    /// Same idea as the arena case immediately above, checked first
+    /// since a value can only ever be tagged with one kind of scope ref
+    /// at its top level. Reuses the exact same "home scope per target
+    /// shape" resolution — only the tag type and the reported diagnostic
+    /// differ, so `home_ty` is computed once and both checks probe it.
     fn check_assign_arena_escape<'ast>(
         &mut self,
         target: &Expr<'ast>,
@@ -896,22 +992,25 @@ impl<'a> InferCtx<'a> {
         value_ty: TypeId,
         span: Span,
     ) -> bool {
-        let Some(value_arena) = self.top_level_arena(value_ty) else { return false; };
-
-        let home_arena: Option<ArenaId> = match &target.kind {
-            ExprKind::Ident(_) => self.top_level_arena(target_ty),
+        let home_ty: TypeId = match &target.kind {
+            ExprKind::Ident(_) => target_ty,
             ExprKind::Field { target: receiver, .. } => {
-                let receiver_ty = self.ctx.expr_type(receiver.span).unwrap_or(target_ty);
-                self.top_level_arena(receiver_ty)
+                self.ctx.expr_type(receiver.span).unwrap_or(target_ty)
             }
             ExprKind::Index { target: container, .. } => {
-                let container_ty = self.ctx.expr_type(container.span).unwrap_or(target_ty);
-                self.top_level_arena(container_ty)
+                self.ctx.expr_type(container.span).unwrap_or(target_ty)
             }
             _ => return false,
         };
 
-        if home_arena == Some(value_arena) { return false; }
+        if let Some(value_pool) = self.top_level_pool(value_ty) {
+            if self.top_level_pool(home_ty) == Some(value_pool) { return false; }
+            self.pool_escape(value_ty, span);
+            return true;
+        }
+
+        let Some(value_arena) = self.top_level_arena(value_ty) else { return false; };
+        if self.top_level_arena(home_ty) == Some(value_arena) { return false; }
 
         self.arena_escape(value_ty, span);
         true
@@ -998,6 +1097,43 @@ impl<'a> InferCtx<'a> {
                 if let ExprKind::Field { target, field } = callee.kind {
                     if field == "new" {
                         if let ExprKind::Ident(ns) = target.kind {
+                            // §11 FIX (MEMORY_MODEL.md) — `Pool.new()` is
+                            // deliberately NOT in `builtin_constructor_type`:
+                            // unlike `List.new()` etc. it has no generic
+                            // argument of its own to infer fresh — its
+                            // element type and capacity come from the
+                            // innermost enclosing `with pool<T>(count) { }`
+                            // block (the "Unify" design: `pool<T>(count)`
+                            // is the low-level allocator, `Pool<T>` is the
+                            // ergonomic handle scoped to it). Checked
+                            // before the generic path below so a bare
+                            // `Pool.new()` outside any pool block gets a
+                            // clear, dedicated error instead of silently
+                            // falling through to Unknown.
+                            if ns == "Pool" {
+                                match self.current_pool() {
+                                    Some((pool_id, elem_ty)) => {
+                                        if self.current_tier == TierAnnotation::Low {
+                                            self.errors.add_tier_error(TierError::CollectionConstructionInLowTier {
+                                                collection: "Pool".to_string(),
+                                                span:       expr.span,
+                                            });
+                                        }
+                                        let pool_ty = self.ctx.types.insert(SemaType::Pool(elem_ty));
+                                        return self.ctx.types.insert(SemaType::PoolRef {
+                                            pool:    pool_id,
+                                            mutable: false,
+                                            inner:   pool_ty,
+                                        });
+                                    }
+                                    None => {
+                                        self.errors.add_tier_error(TierError::PoolConstructedOutsideBlock {
+                                            span: expr.span,
+                                        });
+                                        return self.unknown();
+                                    }
+                                }
+                            }
                             if let Some(ctor_ty) = self.builtin_constructor_type(ns) {
                                 // §9 FIX (MEMORY_MODEL.md) — LOW tier has
                                 // no memory model of its own yet
@@ -1398,14 +1534,14 @@ impl<'a> InferCtx<'a> {
 
         if self.structurally_compatible(a, b) { return; }
 
-        // GAP 2 — an ArenaRef meeting an incompatible context (a
-        // different arena, or a context with no arena at all — e.g. a
+        // GAP 2 — an ArenaRef/PoolRef meeting an incompatible context (a
+        // different scope, or a context with no scope at all — e.g. a
         // MID-tier function's declared return type, which can never
-        // itself express ArenaRef) is specifically an arena escape, not
+        // itself express either tag) is specifically a scope escape, not
         // a generic shape mismatch. Prefer the dedicated diagnostic
-        // whenever either side carries the tag.
-        if let Some(escaped) = self.arena_mismatch_side(a, b) {
-            self.arena_escape(escaped, span);
+        // whenever either side carries a tag.
+        if let Some((escaped, is_pool)) = self.scope_mismatch_side(a, b) {
+            if is_pool { self.pool_escape(escaped, span); } else { self.arena_escape(escaped, span); }
             return;
         }
 
@@ -1417,16 +1553,23 @@ impl<'a> InferCtx<'a> {
         });
     }
 
-    /// GAP 2 — if either resolved type is `SemaType::ArenaRef`, return
-    /// that side's `TypeId` (preferring `b`, conventionally the "actual"
-    /// / "found" side in an `expected, found` unify call, which reads
-    /// better in the "Value of type `X` ... cannot cross" message).
-    /// Returns `None` when neither side is arena-tagged, i.e. this truly
-    /// is an unrelated shape mismatch.
-    fn arena_mismatch_side(&mut self, a: TypeId, b: TypeId) -> Option<TypeId> {
+    /// GAP 2 — if either resolved type is `SemaType::ArenaRef` or
+    /// `SemaType::PoolRef`, return that side's `TypeId` plus which kind
+    /// it was (preferring `b`, conventionally the "actual" / "found"
+    /// side in an `expected, found` unify call, which reads better in
+    /// the "Value of type `X` ... cannot cross" message). Returns `None`
+    /// when neither side carries either tag, i.e. this truly is an
+    /// unrelated shape mismatch. Checked pool-first for the same reason
+    /// as `check_assign_arena_escape` — a value only ever carries one.
+    fn scope_mismatch_side(&mut self, a: TypeId, b: TypeId) -> Option<(TypeId, bool)> {
+        let a_is_pool = matches!(self.ctx.types.get(a), SemaType::PoolRef { .. });
+        let b_is_pool = matches!(self.ctx.types.get(b), SemaType::PoolRef { .. });
+        if b_is_pool { return Some((b, true)); }
+        if a_is_pool { return Some((a, true)); }
+
         let a_is_arena = matches!(self.ctx.types.get(a), SemaType::ArenaRef { .. });
         let b_is_arena = matches!(self.ctx.types.get(b), SemaType::ArenaRef { .. });
-        if b_is_arena { Some(b) } else if a_is_arena { Some(a) } else { None }
+        if b_is_arena { Some((b, false)) } else if a_is_arena { Some((a, false)) } else { None }
     }
 
     /// Returns true if two concrete types are structurally compatible,
@@ -1450,15 +1593,50 @@ impl<'a> InferCtx<'a> {
                 // arena membership must always be compared by specific
                 // id, never just "is/isn't tagged ArenaRef"). A mismatch
                 // here is a real escape, not an ordinary shape mismatch —
-                // `unify`'s caller reports it via `arena_mismatch_side`
+                // `unify`'s caller reports it via `scope_mismatch_side`
                 // rather than falling through to a generic TypeMismatch.
                 (SemaType::ArenaRef { arena: aa, inner: ia, .. },
                  SemaType::ArenaRef { arena: ab, inner: ib, .. }) => {
                     if aa != ab { return false; }
                     Some((*ia, *ib))
                 }
+                // Same rule as ArenaRef immediately above, for the same
+                // reason — MEMORY_MODEL.md §11: pool membership compares
+                // by specific PoolId, never just "is/isn't tagged
+                // PoolRef." A mismatch is a real escape, reported via
+                // `scope_mismatch_side` rather than a generic TypeMismatch.
+                (SemaType::PoolRef { pool: pa, inner: ia, .. },
+                 SemaType::PoolRef { pool: pb, inner: ib, .. }) => {
+                    if pa != pb { return false; }
+                    Some((*ia, *ib))
+                }
+                (SemaType::Pool(ia),   SemaType::Pool(ib))   => Some((*ia, *ib)),
+                (SemaType::Handle(ia), SemaType::Handle(ib)) => Some((*ia, *ib)),
                 (SemaType::Named { def: da, .. }, SemaType::Named { def: db, .. }) => {
                     return da == db;
+                }
+                // `null` also compares against a PoolRef/ArenaRef-wrapped
+                // Optional — `AcquireHandle`'s result (MEMORY_MODEL.md
+                // §11) needs the escape-boundary wrap applied around the
+                // *whole* `Optional<Handle<T>>` (so the handle itself
+                // can't escape), which leaves the `Optional` one layer
+                // inside the ref wrapper instead of at the top level the
+                // way List/Queue/Stack/Dictionary's bare-`Elem`-shaped
+                // methods leave it. Peel the wrapper first so
+                // `pool.acquire(x) == null` still type-checks the same
+                // documented way `list.pop() == null` does. Must come
+                // before the bare-`Optional` arm below for the same
+                // "unconditional case, not a recursive unify" reason
+                // that arm's own comment already explains.
+                (SemaType::Null, SemaType::PoolRef { inner, .. })
+                | (SemaType::PoolRef { inner, .. }, SemaType::Null) => {
+                    let resolved = self.apply(*inner);
+                    return matches!(self.ctx.types.get(resolved), SemaType::Optional(_));
+                }
+                (SemaType::Null, SemaType::ArenaRef { inner, .. })
+                | (SemaType::ArenaRef { inner, .. }, SemaType::Null) => {
+                    let resolved = self.apply(*inner);
+                    return matches!(self.ctx.types.get(resolved), SemaType::Optional(_));
                 }
                 // `null` is a valid value of any `Optional<T>` — needed
                 // for `x.pop() == null` (§8's Optional(elem) shape) to

@@ -90,7 +90,14 @@ pub struct BuiltinSignature {
 /// Names of builtin static namespaces. Checked before falling through to
 /// `method_table` in `eval_call_with_receiver`, and before sema treats a
 /// `Namespace.method` call as an unresolved user type.
-pub const BUILTIN_NAMESPACES: &[&str] = &["Math", "List", "Dictionary", "Queue", "Stack"];
+///
+/// "Pool" is here so name resolution pre-declares it (see
+/// `declare_builtins` in `sema/name_resolution.rs`) — it is deliberately
+/// NOT in `resolve_namespace_member`'s dispatch table below, since
+/// `Pool.new()` needs the interpreter's own ambient `pool_capacity_stack`
+/// (MEMORY_MODEL.md §11) and is special-cased directly in
+/// `eval_call_with_receiver` before that table is ever consulted.
+pub const BUILTIN_NAMESPACES: &[&str] = &["Math", "List", "Dictionary", "Queue", "Stack", "Pool"];
 
 pub fn is_builtin_namespace(name: &str) -> bool {
     BUILTIN_NAMESPACES.contains(&name)

@@ -1,0 +1,16 @@
+// tests/fixtures/err_pool_new_outside_block.ubl
+// MEMORY_MODEL.md §11 — unlike `List.new()`/`Dictionary.new()`/etc.,
+// `Pool.new()` has no generic argument of its own to infer from; it
+// picks up element type and capacity from the innermost enclosing
+// `with pool<T>(count) { }` block. Calling it with no such block at all
+// has nothing to construct from.
+// Expected: sema FAIL (PoolConstructedOutsideBlock).
+
+@tier(mid)
+fn bad() void {
+    let p = Pool.new()
+}
+
+fn main() void {
+    bad()
+}

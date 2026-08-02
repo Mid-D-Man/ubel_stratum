@@ -1,0 +1,16 @@
+// tests/fixtures/err_pool_wrong_tier.ubl
+// MEMORY_MODEL.md §11 — `with pool<T>(count)` follows the same rule as
+// `with arena(...)`: MID tier only. This function is left at its default
+// HIGH tier (no @tier annotation), so the pool block should be rejected.
+// Expected: sema FAIL (PoolInWrongTier).
+
+fn leaky() void {
+    with pool<int>(4) {
+        let p = Pool.new()
+        let h = p.acquire(1)
+    }
+}
+
+fn main() void {
+    leaky()
+}

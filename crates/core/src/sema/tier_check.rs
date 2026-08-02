@@ -6,15 +6,16 @@
 //! This pass simply enforces the tier rules by walking the AST and
 //! consulting the symbol table (for callee tiers).
 //!
-//! ArenaRef escape detection (assignment / struct-field / indexed
-//! storage / closure capture — MEMORY_MODEL.md §6, "Gap 2") is *not*
-//! done here. It's enforced eagerly in type_infer.rs's Pass 2 instead,
-//! at the point each `Assign` expression (and each `unify` call) is
-//! processed — Pass 2 already tracks live arena scope via
-//! `arena_stack`/`maybe_arena_ref`, so re-deriving that here in a
+//! ArenaRef/PoolRef escape detection (assignment / struct-field / indexed
+//! storage / closure capture — MEMORY_MODEL.md §6 "Gap 2", extended to
+//! pool in §11) is *not* done here. It's enforced eagerly in
+//! type_infer.rs's Pass 2 instead, at the point each `Assign` expression
+//! (and each `unify` call) is processed — Pass 2 already tracks live
+//! arena/pool scope via `arena_stack`/`pool_stack` and
+//! `maybe_arena_ref`/`current_pool`, so re-deriving that here in a
 //! second AST walk would just be duplicated bookkeeping for the same
 //! answer. See `InferCtx::check_assign_arena_escape` and
-//! `InferCtx::arena_mismatch_side`.
+//! `InferCtx::scope_mismatch_side`.
 //!
 //! Builtin instance-method HIGH-only rejection (MEMORY_MODEL.md §8) is
 //! *also* not done here, for a related reason: it needs to resolve a
@@ -147,7 +148,7 @@ impl<'a> TierChecker<'a> {
     }
 
     /// For a MID-tier function named `name`, look up its function TypeId and
-    /// check that the return type doesn't contain ArenaRef.
+    /// check that the return type doesn't contain an ArenaRef or PoolRef.
     fn check_mid_return_type(&mut self, name: &str, span: Span) {
         let Some(def_id) = self.ctx.top_level.get(name).copied() else { return; };
         let Some(fn_ty)  = self.ctx.def_types.get(&def_id).copied() else { return; };
@@ -158,13 +159,23 @@ impl<'a> TierChecker<'a> {
             _ => return,
         };
 
-        // Now safe to call contains_arena_ref with a fresh borrow.
-        if self.ctx.types.get(ret_ty).contains_arena_ref(&self.ctx.types) {
-            let display = self.ctx.types.get(ret_ty).display(&self.ctx.types, &self.ctx.symbols);
-            self.errors.add_tier_error(TierError::MidReturnContainsArenaRef {
-                return_type: display,
-                span,
-            });
+        // Now safe to call scope_ref_kind with a fresh borrow.
+        match self.ctx.types.get(ret_ty).scope_ref_kind(&self.ctx.types) {
+            Some(crate::sema::type_table::ScopeKind::Arena) => {
+                let display = self.ctx.types.get(ret_ty).display(&self.ctx.types, &self.ctx.symbols);
+                self.errors.add_tier_error(TierError::MidReturnContainsArenaRef {
+                    return_type: display,
+                    span,
+                });
+            }
+            Some(crate::sema::type_table::ScopeKind::Pool) => {
+                let display = self.ctx.types.get(ret_ty).display(&self.ctx.types, &self.ctx.symbols);
+                self.errors.add_tier_error(TierError::MidReturnContainsPoolRef {
+                    return_type: display,
+                    span,
+                });
+            }
+            None => {}
         }
     }
 
@@ -178,15 +189,28 @@ impl<'a> TierChecker<'a> {
 
     fn check_stmt<'ast>(&mut self, stmt: &Stmt<'ast>) {
         match &stmt.kind {
-            // Rule: `with arena(…)` only in MID tier.
+            // Rule: `with arena(…)` / `with pool<T>(count)` only in MID
+            // tier — MEMORY_MODEL.md §11: pool follows "the same
+            // relationship `with arena(...)` already has."
             StmtKind::With { allocator, body } => {
-                if let AllocatorKind::Arena(_) = allocator {
-                    if self.current_tier != TierAnnotation::Mid {
-                        self.errors.add_tier_error(TierError::ArenaInWrongTier {
-                            actual: self.current_tier,
-                            span:   stmt.span,
-                        });
+                match allocator {
+                    AllocatorKind::Arena(_) => {
+                        if self.current_tier != TierAnnotation::Mid {
+                            self.errors.add_tier_error(TierError::ArenaInWrongTier {
+                                actual: self.current_tier,
+                                span:   stmt.span,
+                            });
+                        }
                     }
+                    AllocatorKind::Pool { .. } => {
+                        if self.current_tier != TierAnnotation::Mid {
+                            self.errors.add_tier_error(TierError::PoolInWrongTier {
+                                actual: self.current_tier,
+                                span:   stmt.span,
+                            });
+                        }
+                    }
+                    AllocatorKind::Gc | AllocatorKind::Heap => {}
                 }
                 self.check_block(body);
             }

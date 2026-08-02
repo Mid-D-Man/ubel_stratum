@@ -73,6 +73,12 @@ pub struct Interpreter<'ast> {
     /// expression holes (`$"Hello {expr}"`) can be parsed at runtime via
     /// `crate::parser::parse_expr`.
     pub(crate) arena:        &'ast AstArena,
+    /// Ambient capacity for the innermost enclosing `with pool<T>(count)
+    /// { }` block, pushed/popped by `StmtKind::With`'s execution
+    /// (MEMORY_MODEL.md §11). `Pool.new()` has no generic argument of
+    /// its own to construct from — unlike `List.new()` etc. — so it
+    /// reads capacity from here rather than from its own call args.
+    pub(crate) pool_capacity_stack: Vec<usize>,
 }
 
 impl<'ast> Interpreter<'ast> {
@@ -83,6 +89,7 @@ impl<'ast> Interpreter<'ast> {
             method_table: HashMap::new(),
             enum_table:   HashMap::new(),
             arena,
+            pool_capacity_stack: Vec::new(),
         };
         interp.register_builtins();
         interp

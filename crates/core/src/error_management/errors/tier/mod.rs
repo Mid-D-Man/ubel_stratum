@@ -95,6 +95,42 @@ pub enum TierError {
         collection: String,
         span:       Span,
     },
+
+    // ── Pool tier violations (MEMORY_MODEL.md §11) ──────────────────
+    /// `with pool<T>(count)` used outside `@tier(mid)` — same rule as
+    /// `ArenaInWrongTier`, extended to pool per §11's "same relationship
+    /// `with arena(...)` already has."
+    PoolInWrongTier {
+        actual: TierAnnotation,
+        span:   Span,
+    },
+
+    /// A value scoped to a `with pool<T>(count) { }` block crossed a
+    /// boundary where it would outlive its pool. Same shape and same
+    /// four escape routes as `ArenaRefEscapesBoundary` (assignment,
+    /// struct field, closure capture, return) — kept as its own variant
+    /// purely so the message says "pool" accurately instead of "arena."
+    PoolRefEscapesBoundary {
+        escaped_type: String,
+        span:         Span,
+    },
+
+    /// A MID-tier function's return type contains a pool-scoped type.
+    /// Same reasoning as `MidReturnContainsArenaRef`: HIGH-tier callers
+    /// can't safely receive something bound to a pool that may already
+    /// be torn down by the time the call returns.
+    MidReturnContainsPoolRef {
+        return_type: String,
+        span:        Span,
+    },
+
+    /// `Pool.new()` called with no enclosing `with pool<T>(count) { }`
+    /// block to supply its element type and capacity from. Unlike
+    /// `List.new()` etc., `Pool.new()` takes no generic argument of its
+    /// own — it has nothing to construct without one.
+    PoolConstructedOutsideBlock {
+        span: Span,
+    },
 }
 
 impl TierError {
@@ -109,6 +145,10 @@ impl TierError {
             TierError::LinqInWrongTier            { span, .. } => *span,
             TierError::MethodInWrongTier          { span, .. } => *span,
             TierError::CollectionConstructionInLowTier { span, .. } => *span,
+            TierError::PoolInWrongTier            { span, .. } => *span,
+            TierError::PoolRefEscapesBoundary     { span, .. } => *span,
+            TierError::MidReturnContainsPoolRef   { span, .. } => *span,
+            TierError::PoolConstructedOutsideBlock { span, .. } => *span,
         }
     }
 
@@ -171,6 +211,30 @@ impl TierError {
                      (move semantics + borrow checker) hasn't been built yet",
                     collection
                 ),
+
+            TierError::PoolInWrongTier { actual, .. } =>
+                format!(
+                    "`with pool` is only valid in `@tier(mid)`; this function is `@tier({})`",
+                    tier_name(*actual)
+                ),
+
+            TierError::PoolRefEscapesBoundary { escaped_type, .. } =>
+                format!(
+                    "value of type `{}` is scoped to a `with pool<...>(...)` block and cannot \
+                     outlive it — check the binding, struct field, or closure it's flowing into",
+                    escaped_type
+                ),
+
+            TierError::MidReturnContainsPoolRef { return_type, .. } =>
+                format!(
+                    "return type `{}` contains a pool-lifetime reference; \
+                     this makes the function uncallable from `@tier(high)`",
+                    return_type
+                ),
+
+            TierError::PoolConstructedOutsideBlock { .. } =>
+                "`Pool.new()` requires an enclosing `with pool<T>(count) { }` block to supply \
+                 its element type and capacity".to_string(),
         }
     }
 
@@ -210,6 +274,22 @@ impl TierError {
                     collection
                 )),
 
+            TierError::PoolInWrongTier { .. } =>
+                Some("annotate this function with `@tier(mid)` or remove the pool block".to_string()),
+
+            TierError::PoolRefEscapesBoundary { .. } =>
+                Some("copy the data out into a plain (non-pool) value before it leaves the \
+                      `with pool<...>(...)` block, or restructure with the callback pattern: pass a \
+                      closure in and return a GC-owned value from inside it, instead of returning \
+                      or storing the pool-scoped value directly".to_string()),
+
+            TierError::MidReturnContainsPoolRef { .. } =>
+                Some("copy the data out into a plain (non-pool) value before returning, or change \
+                      this function's tier so it isn't callable from `@tier(high)`".to_string()),
+
+            TierError::PoolConstructedOutsideBlock { .. } =>
+                Some("wrap this call in a `with pool<T>(count) { }` block".to_string()),
+
             _ => None,
         }
     }
@@ -246,6 +326,10 @@ impl crate::error_management::render::Diagnosable for TierError {
             TierError::LinqInWrongTier { .. }            => "TIER-007",
             TierError::MethodInWrongTier { .. }          => "TIER-008",
             TierError::CollectionConstructionInLowTier { .. } => "TIER-009",
+            TierError::PoolInWrongTier { .. }             => "TIER-010",
+            TierError::PoolRefEscapesBoundary { .. }      => "TIER-011",
+            TierError::MidReturnContainsPoolRef { .. }    => "TIER-012",
+            TierError::PoolConstructedOutsideBlock { .. } => "TIER-013",
         }
     }
     fn span(&self) -> Span { self.span() }

@@ -396,10 +396,156 @@ parameter threaded through, lives in `DIAGNOSTICS_RULES.md`.
 
 ---
 
-## 10. `Pool<T>` — Design Principles
+## 10. `Pool<T>` — Implemented
 
-Not yet implemented. These are the constraints agreed on so far, to design
-against once Gaps 1–2 and §8's method-tier filtering are in place.
+✅ **Implemented**, on top of the design principles below (kept as-is since
+they're still the accurate constraints — this section now also records what
+actually got built against them, and where it deliberately stops short).
+
+1. **Tier-agnostic name, tier via wrapper** — built as designed. `Pool<T>` is
+   `SemaType::Pool(elem_ty)`; `PoolRef { pool: PoolId, mutable, inner }` is
+   the separate scope-tag wrapper, structurally identical to `ArenaRef` but
+   kept as its own variant so diagnostics say "&pool"/"with pool<...>(...)"
+   accurately instead of reusing arena's wording for a different block kind.
+2. **Fixed capacity, built. `.growable()` — not built.** `with pool<T>(count)`
+   evaluates `count` once at block entry (must unify against `int`) and
+   allocates exactly that many slots. There is no growable variant yet;
+   `.growable()` remains a real follow-up, not implemented here.
+3. **LIFO free list, built. `.fifo()` — not built.** `PoolData.free_list` is a
+   plain `Vec<usize>`; release pushes, acquire pops — cache-friendly reuse of
+   the most-recently-freed slot, matching item 3's stated default. No FIFO
+   opt-in exists yet.
+4. **Generational handles, built — and not optional.** `Value::Handle {
+   index, generation }`; every slot carries a `u64` generation counter,
+   bumped on release. There is no raw-index opt-out — item 4's "opt-out"
+   framing didn't get built either; generational is the only mode in v1
+   (§12 below, item 2).
+5. **Not `sync.Pool`-style — built as designed.** A slot persists exactly
+   until an explicit `.release()` with a matching generation; nothing clears
+   it behind the caller's back.
+6. **Naming — resolved: unify.** `pool<T>(count)` is the allocator primitive;
+   `Pool<T>` (via `Pool.new()`, called inside the `with pool<T>(count) { }`
+   block it belongs to) is the value-level handle-issuing manager. Escape
+   rule: **same as arena, not exempt** — a `Pool<T>` (and anything acquired
+   from it) must not outlive its `with pool<T>(count) { }` block, enforced
+   through the exact same mechanism as `ArenaRefEscapesBoundary`, just
+   reported through its own `TierError` variant for accurate wording. This
+   was a real, deliberate choice over the alternative (exempting handles from
+   escape-checking and relying purely on generational safety) — real object
+   pools are normally set up once and used for a program's whole lifetime,
+   but scoping was chosen for v1 consistency with arena's already-trusted
+   model; loosening it later is a smaller change than tightening it would be.
+
+### Method surface
+
+Three methods, on `Pool<T>` itself (not on `Handle<T>`, which is an opaque
+`(index, generation)` value with no methods of its own):
+
+- **`.acquire(value: T)`** → `Optional<Handle<T>>`. Stores `value` into a
+  free slot; `null` if the pool is exhausted. Takes the value directly
+  (rather than reserving an empty slot) since the language has no
+  default-value/uninitialized-slot story to reserve *into*.
+- **`.release(handle: Handle<T>)`** → `void`. Frees the slot and bumps its
+  generation if the handle still matches; a stale or invalid handle is a
+  silent no-op — fails safe, doesn't panic, matching `Optional`'s existing
+  "checked failure, not memory corruption" philosophy elsewhere in the
+  language.
+- **`.at(handle: Handle<T>)`** → `Optional<T>`. Reads the slot if the
+  generation matches, else `null`. **Named `at`, not `get`** — `get`/`set`
+  are reserved lexer tokens (`TokenType::Get`/`Set`) in this language, not
+  usable as a method name after `.` without a separate parser change.
+  `Dictionary.at(key)` already established this exact naming for "keyed
+  lookup"; `Pool.at(handle)` follows the same precedent rather than
+  colliding with a reserved word.
+
+### Where it lives
+
+- `type_table.rs`: `PoolId`, `ScopeKind`, `SemaType::{Pool, Handle, PoolRef}`,
+  `display()` arms, `scope_ref_kind` (generalized from `contains_arena_ref`
+  to recognize both scope kinds).
+- `type_infer.rs`: **the real bug this section's fixture surfaced** —
+  `StmtKind::With` used to ignore `allocator` entirely and push an arena
+  scope for *every* `with` block, so `with pool<T>(count) { }` (and even
+  `with gc { }`/`with heap { }`) silently inherited arena's escape semantics
+  whether they wanted them or not. Now dispatches on the actual
+  `AllocatorKind`. Also: `pool_stack`/`push_pool`/`pop_pool`/`current_pool`
+  mirroring arena's equivalents; `check_assign_arena_escape` and `unify`'s
+  mismatch-reporting (renamed `scope_mismatch_side`) generalized to check
+  pool escapes using the same comparison algorithm, branching only at the
+  final report call so the message stays accurate; a `Pool.new()` special
+  case in the constructor call site pulling element type + capacity from
+  `current_pool()` rather than inferring fresh like every other constructor.
+- `tier_check.rs`: `with pool<T>(count)` requires `@tier(mid)`, same rule and
+  same call site as arena's; `check_mid_return_type` generalized alongside
+  `scope_ref_kind` to also catch a MID function returning a pool-containing
+  type (`MidReturnContainsPoolRef`) — though, like its arena counterpart
+  `MidReturnContainsArenaRef`, this is real consulted infrastructure that
+  can't currently be *triggered* by any writable fixture, since there's no
+  surface syntax yet to write `Pool<T>` as an explicit return-type
+  annotation (see "Known gap" below) — the reachable path is the escape-
+  boundary check via assignment/reassignment instead.
+- `builtins/instance.rs` + new `builtins/instance/pool_methods.rs`:
+  `Pool` as a 7th receiver kind (`ReceiverKind::Pool`, `ReceiverWrap::Pool`),
+  `MethodReturn::AcquireHandle`, same dual sema-signature + interpreter-
+  runtime file pattern every other collection already uses.
+- `interpreter/value.rs`: `Value::Pool(Rc<RefCell<PoolData>>)`,
+  `Value::Handle { index, generation }`, `PoolData { slots, generations,
+  free_list }`.
+- `interpreter/eval/{stmt,expr}.rs`: `with pool<T>(count)` evaluates `count`
+  once and pushes it onto a small ambient `pool_capacity_stack` on
+  `Interpreter` (needed because `Pool.new()` — unlike every other builtin
+  constructor — has no generic argument of its own to size itself from, and
+  the generic `BuiltinFn` dispatch table has no interpreter-state access at
+  all); `Pool.new()` is special-cased in `eval_call_with_receiver` ahead of
+  the generic namespace dispatch to read that ambient capacity.
+
+### A real type-system gap this section's own fixture found
+
+`AcquireHandle`'s result needs the escape-boundary wrap applied around the
+*whole* `Optional<Handle<T>>` (so the handle itself can't escape) — unlike
+every other `Elem`-shaped method (`pop`/`at`/`dequeue`/`peek`), which
+deliberately leaves `Optional<T>` bare at the top level. That left `Optional`
+one layer inside the `PoolRef` wrapper instead of at the top level, and the
+existing `null`-compatibility rule in `structurally_compatible` only
+recognized a bare `Optional<_>` — so `pool.acquire(x) == null` failed to
+type-check, reported (incorrectly) as `PoolRefEscapesBoundary`. Fixed by
+adding `PoolRef`/`ArenaRef`-peeling arms to the null-compatibility check
+ahead of the existing bare-`Optional` one, resolving the wrapper's inner type
+and checking *that* for `Optional`.
+
+### Known gap — no surface type-annotation syntax yet
+
+`Pool<T>`/`Handle<T>` are inference-only today. `let h = pool.acquire(x)`
+works (type inferred); writing `let h: Handle<Entity>` explicitly, or a
+function signature like `fn f() Pool<Entity> { ... }`, does not — `Pool`
+and `Handle` aren't registered as type-annotation keywords in
+`rd_parser`'s type grammar (unlike `List`/`Dictionary`/`Set`/`Queue`/`Stack`,
+which each have a dedicated `TypeKind` variant, per PARSER_RULES.md). Adding
+that is straightforward (new `TypeKind::Pool`/`TypeKind::Handle` variants +
+grammar rules) but is a distinct, additive follow-up, not done here.
+
+### Verified
+
+`tests/fixtures/ok_pool_basic.ubl` — full pipeline (lex → parse → sema →
+interpret), exercising acquire/release/at, LIFO reuse of a just-released
+slot, exhaustion returning `null`, and — the actual point of generational
+handles — a stale handle held past `.release()` provably failing `.at()`
+instead of silently reading the slot's next occupant. Plus three sema-fail
+fixtures, one per new `TierError` variant reachable today:
+`err_pool_wrong_tier.ubl` (`PoolInWrongTier`), `err_pool_escapes_block.ubl`
+(`PoolRefEscapesBoundary`, via nested-pool mismatch — the same shape
+`err_arena_escapes_nested_mismatch.ubl` uses, and for the same reason: there's
+no way to construct a plain untagged `Pool<T>` to reassign into, since
+`Pool.new()` always requires an enclosing block, so the reachable escape
+shape is two *different* pools rather than one pool vs. none), and
+`err_pool_new_outside_block.ubl` (`PoolConstructedOutsideBlock`).
+`cargo test --lib`: 58/58 passing, unchanged. Full fixture sweep: 34 total
+(30 → 34, four new), 15 sema-ok (was 14) all reaching full interpret, 19
+sema-fail all firing their specific intended variant.
+
+---
+
+## Design principles (as originally agreed, kept for reference)
 
 1. **Tier-agnostic name, tier via wrapper** — same rule as §2. `Pool<T>` is
    one shape; `GcRef<Pool<T>>` / `ArenaRef<Pool<T>>` are what differ.
@@ -426,15 +572,7 @@ against once Gaps 1–2 and §8's method-tier filtering are in place.
    checked-out or idle-but-reserved slot in Ubel's `Pool<T>` must persist
    deterministically until explicit release or pool teardown. Worth stating
    outright given the name overlap invites the wrong mental model.
-6. **Naming — leaning toward unifying with the existing `pool<T>(count)`
-   allocator statement**, rather than treating the name collision as
-   something to avoid. Proposal: `pool<T>(count)` stays the low-level
-   allocator primitive (how the memory gets carved out); `Pool<T>` becomes
-   the ergonomic value-level handle you acquire/release against, scoped to
-   that `with pool<T>(count) { }` block — same relationship `with arena(...)`
-   already has to whatever lives inside it. **Not yet finally decided** — the
-   alternative (rename the collection to `ObjectPool<T>` or similar to avoid
-   any collision at all) is still on the table.
+6. **Naming** — resolved above: unify with `pool<T>(count)`.
 
 ---
 
@@ -456,8 +594,12 @@ against once Gaps 1–2 and §8's method-tier filtering are in place.
    1 new end-to-end fixture — also surfaced and fixed an unrelated
    `SemaType::display()` catch-all bug affecting every diagnostic that
    renders a non-trivial type (see §9's own writeup).
-5. **Only then** — design and implement `Pool<T>` (§10) on a tier contract
-   that's actually trustworthy underneath it. **Next up.**
+5. ✅ **§10** — `Pool<T>` design and implementation. Done, verified via
+   `cargo test --lib` (58/58 passing, unchanged) plus 4 new end-to-end
+   fixtures — also surfaced and fixed a real bug in the `with`-statement
+   dispatch (every allocator kind was silently getting arena's escape
+   semantics) and a real gap in null-compatibility checking for wrapped
+   `Optional` results (see §10's own writeup).
 
 ---
 
@@ -465,7 +607,7 @@ against once Gaps 1–2 and §8's method-tier filtering are in place.
 
 | # | Question | Status |
 |---|---|---|
-| 1 | Unify `pool<T>(n)` / `Pool<T>` (§10.6), or rename the collection to avoid the collision entirely? | Open |
-| 2 | Generational handles as opt-out default, or opt-in? | Leaning opt-out (default = generational) |
+| 1 | Unify `pool<T>(n)` / `Pool<T>` (§10.6), or rename the collection to avoid the collision entirely? | ✅ Resolved — unify |
+| 2 | Generational handles as opt-out default, or opt-in? | ✅ Resolved — generational only in v1; no raw-index opt-out was built |
 | 3 | Does a `@tier(mid)` function require an explicit `with arena(...)` for every collection, or should entering a `@tier(mid)` function implicitly open a function-scoped arena? | Open |
-| 4 | Does `with pool<T>(n)` get the same `@tier(mid)`-only restriction `with arena(...)` currently has (`ArenaInWrongTier`), or should fixed-capacity pools be legal from HIGH-tier code too (an "unsafe-block"-style local optimization)? | Open |
+| 4 | Does `with pool<T>(n)` get the same `@tier(mid)`-only restriction `with arena(...)` currently has (`ArenaInWrongTier`), or should fixed-capacity pools be legal from HIGH-tier code too (an "unsafe-block"-style local optimization)? | ✅ Resolved — same `@tier(mid)`-only restriction as arena (`PoolInWrongTier`) |

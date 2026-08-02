@@ -216,6 +216,10 @@ family in `TierError`.
 | TIER-007 | LinqInWrongTier |
 | TIER-008 | MethodInWrongTier |
 | TIER-009 | CollectionConstructionInLowTier |
+| TIER-010 | PoolInWrongTier |
+| TIER-011 | PoolRefEscapesBoundary |
+| TIER-012 | MidReturnContainsPoolRef |
+| TIER-013 | PoolConstructedOutsideBlock |
 
 Physically split out of `TypeError` — see §9. Variant names and
 meaning are unchanged from their `TYPE-2xx` days; only the enum and
@@ -291,6 +295,10 @@ larger effort, not started.
 - `TIER-007` `LinqInWrongTier` — *Error*. "LINQ query expressions are only valid in `@tier(high)`; this function is `@tier(x)`". Suggestion: move the query into a `@tier(high)` function, or use `.where()`/`.map()` chains instead.
 - `TIER-008` `MethodInWrongTier` — *Error*. "`.method()` is only valid in `@tier(high)`; this function is `@tier(x)`" — MEMORY_MODEL.md §8, same shape as `AwaitInWrongTier`/`LinqInWrongTier` but keyed by method name via `instance::is_high_only` rather than a dedicated keyword. Suggestion: move the call to a `@tier(high)` function, or avoid the method in `@tier(mid)`/`@tier(low)` code. Every `HIGH_ONLY` registry is empty today — real, consulted infrastructure, not currently flagging anything.
 - `TIER-009` `CollectionConstructionInLowTier` — *Error*. "`Collection.new()` is not yet supported in `@tier(low)` — LOW tier's memory model (move semantics + borrow checker) hasn't been built yet" — MEMORY_MODEL.md §9. Fires for `List`/`Dictionary`/`Queue`/`Stack` construction inside a `@tier(low)` function, at the same site `type_infer.rs` already resolves `builtin_constructor_type`. Emit-and-continue, same non-fatal pattern as `ArenaInWrongTier`/`MethodInWrongTier` — chosen deliberately over returning `Unknown`, so one bad constructor call doesn't cascade spurious errors through the rest of the function. Suggestion: construct the collection in a `@tier(mid)` or `@tier(high)` function instead, or restructure to receive it as a parameter.
+- `TIER-010` `PoolInWrongTier` — *Error*. "`with pool<T>(count)` is only valid in `@tier(mid)`; this function is `@tier(x)`" — MEMORY_MODEL.md §10, exact same rule and call site as `ArenaInWrongTier`. Suggestion: move the pool block to a `@tier(mid)` function.
+- `TIER-011` `PoolRefEscapesBoundary` — *Error*. "value of type `&pool T` is scoped to a `with pool<T>(count) { }` block and cannot outlive it" — MEMORY_MODEL.md §10, same escape-boundary mechanism as `ArenaRefEscapesBoundary` (`check_assign_arena_escape`/`scope_mismatch_side`, generalized to check both scope kinds off one shared comparison, branching only at the report call so the wording stays accurate). Applies to `Pool<T>` itself and to anything acquired from it (`Handle<T>` results are re-wrapped in the receiver's own `PoolRef`, same as every other allocating instance method). Suggestion: copy the data out before the block ends, or restructure with the callback pattern.
+- `TIER-012` `MidReturnContainsPoolRef` — *Error*. "MID-tier function's return type contains a pool-lifetime reference" — MEMORY_MODEL.md §10, generalized from `MidReturnContainsArenaRef` alongside `scope_ref_kind`. Like its arena counterpart, real consulted infrastructure that can't currently be *triggered* by any writable fixture — there's no surface syntax yet to write `Pool<T>` as an explicit return-type annotation (§10's "Known gap"), so the reachable path for this exact mistake is the escape-boundary check via assignment instead.
+- `TIER-013` `PoolConstructedOutsideBlock` — *Error*. "`Pool.new()` requires an enclosing `with pool<T>(count) { }` block" — MEMORY_MODEL.md §10. Unlike every other builtin constructor, `Pool.new()` has no generic argument of its own to infer element type or capacity from; it reads both from `current_pool()`, which is `None` outside any pool block. Suggestion: call `Pool.new()` inside a `with pool<T>(count) { }` block.
 
 ---
 

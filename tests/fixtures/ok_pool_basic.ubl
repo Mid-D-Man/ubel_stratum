@@ -1,0 +1,38 @@
+// tests/fixtures/ok_pool_basic.ubl
+// End-to-end coverage of Pool<T> (MEMORY_MODEL.md §11): with pool<T>(count)
+// + Pool.new(), acquire/release/get, LIFO free-list reuse, exhaustion
+// returning null, and generational staleness detection catching a
+// use-after-release before it can read a reused slot's new occupant.
+// Expected: zero errors, all assertions pass.
+
+@tier(mid)
+fn run_pool() void {
+    with pool<int>(4) {
+        let p = Pool.new()
+
+        let a = p.acquire(10)
+        let b = p.acquire(20)
+        assert(p.at(a) == 10, "pool: get after acquire returns stored value")
+        assert(p.at(b) == 20, "pool: second acquire independent of first")
+
+        p.release(a)
+        assert(p.at(a) == null, "pool: stale handle fails get after release")
+
+        let c = p.acquire(30)
+        assert(p.at(c) == 30, "pool: reacquire after release returns new value")
+
+        let d = p.acquire(40)
+        let e = p.acquire(50)
+        let full = p.acquire(60)
+        assert(full == null, "pool: acquire on exhausted pool returns null")
+
+        p.release(b)
+        p.release(c)
+        p.release(d)
+        p.release(e)
+    }
+}
+
+fn main() void {
+    run_pool()
+}
