@@ -154,7 +154,7 @@ pub fn eval_stmt<'ast>(
                 // Push a scope for pattern bindings.
                 interp.env.push();
                 let matched = pattern::match_pattern(
-                    &arm.pattern, &scrutinee_val, &mut interp.env,
+                    &arm.pattern, &scrutinee_val, &mut interp.env, &interp.enum_table,
                 );
                 if matched {
                     // Check guard (can reference pattern bindings).

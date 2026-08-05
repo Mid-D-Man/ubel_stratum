@@ -1,0 +1,12 @@
+// tests/fixtures/err_enum_variant_arity.ubl
+// ENUM_RULES.md — Ok holds exactly one int; constructed here with two.
+// Expected: sema FAIL (VariantArityMismatch).
+
+enum Result {
+    Ok(int),
+    Err(string)
+}
+
+fn main() void {
+    let r = Result.Ok(1, 2)
+}

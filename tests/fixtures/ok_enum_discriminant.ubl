@@ -1,0 +1,30 @@
+// tests/fixtures/ok_enum_discriminant.ubl
+// ENUM_RULES.md §4 items 1/2 — explicit discriminants, auto-increment
+// for the ones left bare, and that discriminant variants behave like
+// fieldless ones for construction/matching (their chosen ordinal isn't
+// read back anywhere in this fixture — see the enum section's own
+// "Known gap": no `as int` cast exists yet).
+// Expected: zero errors, all assertions pass.
+
+enum LogLevel {
+    DEBUG = 0,
+    INFO,
+    WARN,
+    ERROR = 10
+}
+
+fn label(l: LogLevel) string {
+    match l {
+        DEBUG => return "debug",
+        INFO  => return "info",
+        WARN  => return "warn",
+        ERROR => return "error",
+    }
+}
+
+fn main() void {
+    assert(label(LogLevel.DEBUG) == "debug", "discriminant: explicit 0")
+    assert(label(LogLevel.INFO)  == "info",  "discriminant: auto-increment")
+    assert(label(LogLevel.WARN)  == "warn",  "discriminant: auto-increment")
+    assert(label(LogLevel.ERROR) == "error", "discriminant: explicit non-sequential value")
+}

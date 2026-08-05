@@ -1,0 +1,14 @@
+// tests/fixtures/err_enum_unknown_variant.ubl
+// ENUM_RULES.md — Northeast isn't a real variant of Direction.
+// Expected: sema FAIL (UnknownVariant).
+
+enum Direction {
+    North,
+    South,
+    East,
+    West
+}
+
+fn main() void {
+    let dir = Direction.Northeast
+}

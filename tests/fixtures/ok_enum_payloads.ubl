@@ -1,0 +1,42 @@
+// tests/fixtures/ok_enum_payloads.ubl
+// ENUM_RULES.md — tuple-payload (Result.Ok/Err) and struct-payload
+// (Message.Move/Write) variant construction, pattern matching, and
+// payload binding, plus a guard on top of an enum pattern.
+// Expected: zero errors, all assertions pass.
+
+enum Result {
+    Ok(int),
+    Err(string)
+}
+
+enum Message {
+    Move { x: int, y: int },
+    Write { text: string },
+    Quit
+}
+
+fn describe_result(r: Result) string {
+    match r {
+        Ok(value) where value > 100 => return "big ok",
+        Ok(value) => return "ok: " + to_string(value),
+        Err(msg)  => return "err: " + msg,
+    }
+}
+
+fn describe_message(m: Message) string {
+    match m {
+        Move { x, y } => return "move " + to_string(x) + "," + to_string(y),
+        Write { text } => return "write " + text,
+        Quit => return "quit",
+    }
+}
+
+fn main() void {
+    assert(describe_result(Result.Ok(5)) == "ok: 5", "tuple payload: Ok binds value")
+    assert(describe_result(Result.Ok(999)) == "big ok", "tuple payload: guard on top of pattern")
+    assert(describe_result(Result.Err("bad")) == "err: bad", "tuple payload: Err binds message")
+
+    assert(describe_message(Message.Move { x = 1, y = 2 }) == "move 1,2", "struct payload: Move binds fields")
+    assert(describe_message(Message.Write { text = "hi" }) == "write hi", "struct payload: Write binds field")
+    assert(describe_message(Message.Quit) == "quit", "fieldless variant alongside payload variants")
+}

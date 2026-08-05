@@ -1,0 +1,15 @@
+// tests/fixtures/err_enum_mixed_discriminant_payload.ubl
+// ENUM_RULES.md §4 item 2 — an enum can't mix an explicit discriminant
+// variant with a payload-carrying one; there's no defined runtime
+// representation for "this variant has both a chosen ordinal and a
+// payload shape."
+// Expected: sema FAIL (MixedDiscriminantAndPayload).
+
+enum Confused {
+    Active = 1,
+    Holding(int)
+}
+
+fn main() void {
+    let c = Confused.Active
+}

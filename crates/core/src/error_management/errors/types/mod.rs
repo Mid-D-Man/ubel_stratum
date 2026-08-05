@@ -69,6 +69,44 @@ pub enum TypeError {
         found:     usize,
         span:      Span,
     },
+
+    // ── Enum sema (ENUM_RULES.md) ────────────────────────────────
+
+    /// `EnumName.variant_name` where `variant_name` isn't a real variant
+    /// of `EnumName` — either as an expression (`Direction.Northeast`) or
+    /// a pattern (`Direction.Northeast => ...`).
+    UnknownVariant {
+        enum_name:    String,
+        variant_name: String,
+        span:         Span,
+    },
+
+    /// A tuple-payload variant constructed or matched with the wrong
+    /// number of elements — `Result.Ok(1, 2)` when `Ok` holds exactly one.
+    VariantArityMismatch {
+        enum_name:    String,
+        variant_name: String,
+        expected:     usize,
+        found:        usize,
+        span:         Span,
+    },
+
+    /// A `match` over an enum scrutinee doesn't cover every variant and
+    /// has no wildcard/catch-all arm.
+    NonExhaustiveMatch {
+        missing_variants: Vec<String>,
+        span:             Span,
+    },
+
+    /// An enum declares both an explicit `Discriminant` variant and a
+    /// payload-carrying (`Tuple`/`Struct`) variant — ENUM_RULES.md §4,
+    /// item 2: disallowed, since there's no defined runtime
+    /// representation for "this variant has both a chosen ordinal and a
+    /// payload shape."
+    MixedDiscriminantAndPayload {
+        enum_name: String,
+        span:      Span,
+    },
 }
 
 impl TypeError {
@@ -82,6 +120,10 @@ impl TypeError {
             TypeError::AwaitOnNonTask             { span, .. } => *span,
             TypeError::CannotInferType            { span, .. } => *span,
             TypeError::GenericArgCountMismatch    { span, .. } => *span,
+            TypeError::UnknownVariant             { span, .. } => *span,
+            TypeError::VariantArityMismatch       { span, .. } => *span,
+            TypeError::NonExhaustiveMatch         { span, .. } => *span,
+            TypeError::MixedDiscriminantAndPayload{ span, .. } => *span,
         }
     }
 
@@ -113,6 +155,27 @@ impl TypeError {
                     "`{}` expects {} type argument(s), found {}",
                     type_name, expected, found
                 ),
+
+            TypeError::UnknownVariant { enum_name, variant_name, .. } =>
+                format!("enum `{}` has no variant `{}`", enum_name, variant_name),
+
+            TypeError::VariantArityMismatch { enum_name, variant_name, expected, found, .. } =>
+                format!(
+                    "`{}.{}` expects {} value(s), found {}",
+                    enum_name, variant_name, expected, found
+                ),
+
+            TypeError::NonExhaustiveMatch { missing_variants, .. } =>
+                format!(
+                    "match is not exhaustive — missing variant(s): {}",
+                    missing_variants.join(", ")
+                ),
+
+            TypeError::MixedDiscriminantAndPayload { enum_name, .. } =>
+                format!(
+                    "enum `{}` mixes an explicit discriminant variant with a payload-carrying variant",
+                    enum_name
+                ),
         }
     }
 
@@ -120,6 +183,12 @@ impl TypeError {
         match self {
             TypeError::CannotInferType { suggestion: Some(s), .. } =>
                 Some(s.clone()),
+
+            TypeError::NonExhaustiveMatch { .. } =>
+                Some("add arms for the missing variant(s), or a wildcard `_ => ...` arm to cover the rest".to_string()),
+
+            TypeError::MixedDiscriminantAndPayload { .. } =>
+                Some("use either explicit discriminants on every fieldless variant, or payload variants — not both in the same enum".to_string()),
 
             _ => None,
         }
@@ -148,6 +217,10 @@ impl crate::error_management::render::Diagnosable for TypeError {
             TypeError::AwaitOnNonTask { .. }             => "TYPE-106",
             TypeError::CannotInferType { .. }            => "TYPE-107",
             TypeError::GenericArgCountMismatch { .. }    => "TYPE-108",
+            TypeError::UnknownVariant { .. }             => "TYPE-109",
+            TypeError::VariantArityMismatch { .. }       => "TYPE-110",
+            TypeError::NonExhaustiveMatch { .. }         => "TYPE-111",
+            TypeError::MixedDiscriminantAndPayload { .. } => "TYPE-112",
         }
     }
     fn span(&self) -> Span { self.span() }

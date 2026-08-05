@@ -11,7 +11,16 @@ use crate::ast::patterns::{
     FieldPattern, Pattern, PatternKind,
 };
 use crate::interpreter::env::Environment;
+use crate::interpreter::eval::VariantKind;
 use crate::interpreter::value::{EnumPayload, Value};
+
+/// enum_type_name → variant_name → payload kind — the same table
+/// `Interpreter::enum_table` holds, threaded through so `PatternKind::Ident`
+/// and `PatternKind::Struct` can tell "this name is definitely one of this
+/// enum's variants, just not the one we have" (no match, try the next arm)
+/// apart from "this name isn't any variant at all" (genuine catch-all
+/// binding) — see those two arms' own comments in `match_inner`.
+type EnumTable = HashMap<String, HashMap<String, VariantKind>>;
 
 // ── Public API ────────────────────────────────────────────────────
 
@@ -21,8 +30,13 @@ use crate::interpreter::value::{EnumPayload, Value};
 /// Bindings are committed atomically — either all succeed (pattern matched,
 /// all names defined) or none are (pattern failed, env is unchanged).
 /// This invariant is maintained by the internal `try_match` helper.
-pub fn match_pattern(pattern: &Pattern<'_>, value: &Value, env: &mut Environment) -> bool {
-    match try_match(pattern, value) {
+pub fn match_pattern(
+    pattern:    &Pattern<'_>,
+    value:      &Value,
+    env:        &mut Environment,
+    enum_table: &EnumTable,
+) -> bool {
+    match try_match(pattern, value, enum_table) {
         Some(bindings) => {
             for (name, val) in bindings { env.define(&name, val); }
             true
@@ -102,9 +116,13 @@ pub fn bind_destructure_pattern(
 ///
 /// Collecting bindings before committing them means OR patterns can try each
 /// alternative cleanly without partially polluting the environment.
-fn try_match(pattern: &Pattern<'_>, value: &Value) -> Option<Vec<(String, Value)>> {
+fn try_match(
+    pattern:    &Pattern<'_>,
+    value:      &Value,
+    enum_table: &EnumTable,
+) -> Option<Vec<(String, Value)>> {
     let mut bindings = Vec::new();
-    if match_inner(pattern, value, &mut bindings) {
+    if match_inner(pattern, value, &mut bindings, enum_table) {
         Some(bindings)
     } else {
         None
@@ -114,9 +132,10 @@ fn try_match(pattern: &Pattern<'_>, value: &Value) -> Option<Vec<(String, Value)
 /// Recursive matching core. Accumulates name bindings into `out`.
 /// Returns `true` if the pattern matched.
 fn match_inner(
-    pattern:  &Pattern<'_>,
-    value:    &Value,
-    out:      &mut Vec<(String, Value)>,
+    pattern:    &Pattern<'_>,
+    value:      &Value,
+    out:        &mut Vec<(String, Value)>,
+    enum_table: &EnumTable,
 ) -> bool {
     match &pattern.kind {
         // ── Wildcard `_` — always matches, binds nothing ──────────
@@ -126,7 +145,30 @@ fn match_inner(
         PatternKind::Literal(lit) => match_literal(lit, value),
 
         // ── Binding: `x` or `mut x` — always matches, binds name ─
+        // ENUM_RULES.md fix: EXCEPT when `value` is itself an enum and
+        // `name` names one of THAT SAME ENUM TYPE's variants — then this
+        // is a bare unqualified variant pattern (`North => ...`, not
+        // `Direction.North => ...`), which the parser can't tell apart
+        // from a fresh binding at parse time (no type info yet). Sema
+        // resolves this ambiguity statically via the scrutinee's known
+        // type (`InferCtx::check_pattern`'s Ident arm); this mirrors the
+        // same call dynamically, off the concrete runtime value instead.
+        //
+        // Consulting `enum_table` (not just comparing `name` against
+        // THIS value's own `variant`) matters: without it, an arm whose
+        // pattern name happens not to equal the CURRENT value's variant
+        // would fall through to "always matches, binds name" — exactly
+        // the original bug, just one comparison later. `North => ...`
+        // tried against a `South` value must FAIL and let the next arm
+        // try, not silently bind `North` to the whole South value.
         PatternKind::Ident { name, .. } => {
+            if let Value::Enum { type_name, variant, payload } = value {
+                if matches!(payload.as_ref(), EnumPayload::None) {
+                    if let Some(kind) = enum_table.get(type_name.as_str()).and_then(|v| v.get(*name)) {
+                        return *kind == VariantKind::Fieldless && variant == name;
+                    }
+                }
+            }
             out.push((name.to_string(), value.clone()));
             true
         }
@@ -139,11 +181,11 @@ fn match_inner(
                 Value::List(rc) => {
                     // Can't easily return a borrow here; clone.
                     let cloned: Vec<Value> = rc.borrow().clone();
-                    return match_tuple_slice(pats, &cloned, out);
+                    return match_tuple_slice(pats, &cloned, out, enum_table);
                 }
                 _ => return false,
             };
-            match_tuple_slice(pats, items, out)
+            match_tuple_slice(pats, items, out, enum_table)
         }
 
         // ── Array: [a, b, ...rest] ────────────────────────────────
@@ -163,7 +205,7 @@ fn match_inner(
             }
             let mut trial = Vec::new();
             for (pat, item) in elements.iter().zip(items.iter()) {
-                if !match_inner(pat, item, &mut trial) { return false; }
+                if !match_inner(pat, item, &mut trial, enum_table) { return false; }
             }
             // Bind the rest if named.
             if let Some(Some(rest_name)) = rest {
@@ -177,7 +219,37 @@ fn match_inner(
         }
 
         // ── Struct: Point { x, y } ────────────────────────────────
+        // ENUM_RULES.md fix: also matches Value::Enum when
+        // `expected_name` names one of its variants — `Move { x, y }`
+        // parses as this same PatternKind::Struct (not
+        // PatternKind::Enum) whenever it's written with a 1-segment
+        // name, since the parser can't tell a struct-payload enum
+        // variant apart from a plain struct pattern without type info
+        // (`parse_pattern.rs` only treats 2+-segment names like
+        // `Result.Err { code }` as unambiguously enum). Sema resolves
+        // this the same way, statically, in `InferCtx::check_pattern`'s
+        // mirroring `PatternKind::Struct { name: Some(n), .. }` arm.
         PatternKind::Struct { name: expected_name, fields } => {
+            if let Value::Enum { type_name: _, variant, payload } = value {
+                if let Some(n) = expected_name {
+                    if n == variant {
+                        if let EnumPayload::Struct(field_map) = payload.as_ref() {
+                            let mut trial = Vec::new();
+                            for fp in fields.iter() {
+                                let field_val = field_map.get(fp.field).cloned().unwrap_or(Value::Null);
+                                if let Some(sub_pat) = &fp.pattern {
+                                    if !match_inner(sub_pat, &field_val, &mut trial, enum_table) { return false; }
+                                } else {
+                                    trial.push((fp.field.to_string(), field_val));
+                                }
+                            }
+                            out.extend(trial);
+                            return true;
+                        }
+                    }
+                }
+                return false;
+            }
             let (type_name, field_map) = match value {
                 Value::Struct { type_name, fields } => {
                     (type_name.as_str(), fields.borrow().clone())
@@ -192,7 +264,7 @@ fn match_inner(
             for fp in fields.iter() {
                 let field_val = field_map.get(fp.field).cloned().unwrap_or(Value::Null);
                 if let Some(sub_pat) = &fp.pattern {
-                    if !match_inner(sub_pat, &field_val, &mut trial) { return false; }
+                    if !match_inner(sub_pat, &field_val, &mut trial, enum_table) { return false; }
                 } else {
                     // Shorthand `{ name }` — bind the field name directly.
                     trial.push((fp.field.to_string(), field_val));
@@ -228,11 +300,11 @@ fn match_inner(
                         (EnumPatternPayload::Tuple(pats), EnumPayload::Tuple(vals)) => {
                             if pats.len() != vals.len() { return false; }
                             pats.iter().zip(vals.iter()).all(|(p, v)| {
-                                match_inner(p, v, &mut trial)
+                                match_inner(p, v, &mut trial, enum_table)
                             })
                         }
                         (EnumPatternPayload::Struct(fps), EnumPayload::Struct(fields)) => {
-                            match_struct_payload(fps, fields, &mut trial)
+                            match_struct_payload(fps, fields, &mut trial, enum_table)
                         }
                         // Tolerant: pattern expects None but value has payload — no match.
                         _ => false,
@@ -280,7 +352,7 @@ fn match_inner(
         PatternKind::Or(pats) => {
             for pat in pats.iter() {
                 let mut trial = Vec::new();
-                if match_inner(pat, value, &mut trial) {
+                if match_inner(pat, value, &mut trial, enum_table) {
                     out.extend(trial);
                     return true;
                 }
@@ -298,7 +370,7 @@ fn match_inner(
             for fp in fields.iter() {
                 let fv = field_map.get(fp.field).cloned().unwrap_or(Value::Null);
                 if let Some(sub_pat) = &fp.pattern {
-                    if !match_inner(sub_pat, &fv, &mut trial) { return false; }
+                    if !match_inner(sub_pat, &fv, &mut trial, enum_table) { return false; }
                 } else {
                     trial.push((fp.field.to_string(), fv));
                 }
@@ -344,14 +416,15 @@ fn literal_to_char(lit: &Literal<'_>) -> Option<char> {
 // ── Tuple slice matching ──────────────────────────────────────────
 
 fn match_tuple_slice(
-    pats:  &[Pattern<'_>],
-    items: &[Value],
-    out:   &mut Vec<(String, Value)>,
+    pats:       &[Pattern<'_>],
+    items:      &[Value],
+    out:        &mut Vec<(String, Value)>,
+    enum_table: &EnumTable,
 ) -> bool {
     if pats.len() != items.len() { return false; }
     let mut trial = Vec::new();
     for (pat, val) in pats.iter().zip(items.iter()) {
-        if !match_inner(pat, val, &mut trial) { return false; }
+        if !match_inner(pat, val, &mut trial, enum_table) { return false; }
     }
     out.extend(trial);
     true
@@ -360,15 +433,16 @@ fn match_tuple_slice(
 // ── Struct payload matching ───────────────────────────────────────
 
 fn match_struct_payload(
-    fps:    &[FieldPattern<'_>],
-    fields: &HashMap<String, Value>,
-    out:    &mut Vec<(String, Value)>,
+    fps:        &[FieldPattern<'_>],
+    fields:     &HashMap<String, Value>,
+    out:        &mut Vec<(String, Value)>,
+    enum_table: &EnumTable,
 ) -> bool {
     let mut trial = Vec::new();
     for fp in fps.iter() {
         let fv = fields.get(fp.field).cloned().unwrap_or(Value::Null);
         if let Some(sub_pat) = &fp.pattern {
-            if !match_inner(sub_pat, &fv, &mut trial) { return false; }
+            if !match_inner(sub_pat, &fv, &mut trial, enum_table) { return false; }
         } else {
             trial.push((fp.field.to_string(), fv));
         }
@@ -389,4 +463,4 @@ fn bind_destructure_elem(
         DestructureElement::Wildcard    => {}
         DestructureElement::Nested(pat) => bind_destructure_pattern(pat, value, env),
     }
-        }
+}

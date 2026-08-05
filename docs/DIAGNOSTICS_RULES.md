@@ -202,6 +202,10 @@ family in `TierError`.
 | TYPE-106 | AwaitOnNonTask |
 | TYPE-107 | CannotInferType |
 | TYPE-108 | GenericArgCountMismatch |
+| TYPE-109 | UnknownVariant |
+| TYPE-110 | VariantArityMismatch |
+| TYPE-111 | NonExhaustiveMatch |
+| TYPE-112 | MixedDiscriminantAndPayload |
 
 ### TIER-0xx — tier & arena enforcement, `errors/tier/mod.rs`
 
@@ -284,6 +288,10 @@ larger effort, not started.
 - `TYPE-106` `AwaitOnNonTask` — *Error*. "`await` requires `Task<T>`, found `x`". No suggestion.
 - `TYPE-107` `CannotInferType` — *Error*. "cannot infer type — add an explicit type annotation". Suggestion passed through verbatim when the caller supplies one.
 - `TYPE-108` `GenericArgCountMismatch` — *Error*. "`T` expects N type argument(s), found M". No suggestion.
+- `TYPE-109` `UnknownVariant` — *Error*. "enum `E` has no variant `V`" — ENUM_RULES.md §5. Fires for both expression position (`Direction.Northeast`) and pattern position (a bad variant name, including the `{field}` form used when a struct-payload pattern names a field that isn't declared). No suggestion — the enum's real variant names are already visible at the declaration site.
+- `TYPE-110` `VariantArityMismatch` — *Error*. "`E.V` expects N value(s), found M" — ENUM_RULES.md §5. Fires for tuple-payload arity mismatches at both construction (`Result.Ok(1, 2)`) and pattern (`Ok(a, b) => ...`) sites, and for a payload-shape mismatch entirely (a bare `Ok => ...` pattern against a tuple-payload variant, reported as expected-N-found-0). No suggestion — the fix is always "match the declared shape," visible at the enum declaration.
+- `TYPE-111` `NonExhaustiveMatch` — *Error*. "match is not exhaustive — missing variant(s): ..." — ENUM_RULES.md §5. Pragmatic top-level-only coverage check (no nested-pattern usefulness analysis, unlike Rust's full decision-tree algorithm) — real and useful, not a stub. A guarded arm never counts toward coverage, since the guard can fail. Suggestion: add arms for the missing variant(s), or a wildcard `_ => ...` arm.
+- `TYPE-112` `MixedDiscriminantAndPayload` — *Error*. "enum `E` mixes an explicit discriminant variant with a payload-carrying variant" — ENUM_RULES.md §3.2/§5. Checked once per enum in `collect_enum_sig`; matches Rust's own restriction rather than defining a combined runtime representation for a shape nobody asked for. Suggestion: use either explicit discriminants on every fieldless variant, or payload variants — not both in the same enum.
 
 **TIER-0xx**
 - `TIER-001` `ArenaInWrongTier` — *Error*. "`with arena` is only valid in `@tier(mid)`; this function is `@tier(x)`". Suggestion: annotate with `@tier(mid)` or remove the arena block.

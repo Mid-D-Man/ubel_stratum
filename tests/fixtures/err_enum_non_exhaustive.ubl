@@ -1,0 +1,23 @@
+// tests/fixtures/err_enum_non_exhaustive.ubl
+// ENUM_RULES.md — West is never covered, and there's no wildcard/
+// catch-all arm to fall back on.
+// Expected: sema FAIL (NonExhaustiveMatch).
+
+enum Direction {
+    North,
+    South,
+    East,
+    West
+}
+
+fn describe(d: Direction) string {
+    match d {
+        North => return "heading north",
+        South => return "heading south",
+        East  => return "heading east",
+    }
+}
+
+fn main() void {
+    let desc = describe(Direction.North)
+}

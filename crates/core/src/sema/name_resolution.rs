@@ -555,8 +555,23 @@ fn resolve_pattern_bindings<'ast>(&mut self, pat: &Pattern<'ast>) {
             }
         }
         PatternKind::Enum { path, payload } => {
-            // Resolve the enum/variant path as a use, not a binding.
-            self.resolve_qual_path(path, pat.span);
+            // A 2+-segment path (`Direction.North`) already only
+            // resolves its root here via `resolve_qual_path`, deferring
+            // the variant segment to Pass 2. But a 1-segment path with a
+            // payload (`Ok(value)`, `Some(x)`) ALSO parses as this same
+            // PatternKind::Enum (payload is what makes it Enum instead
+            // of Ident — see ENUM_RULES.md), and `resolve_qual_path`'s
+            // 1-segment branch does a *strict* top-level name lookup,
+            // which fails immediately for `Ok` — it's a nested variant
+            // of `Result`, never a top-level declaration on its own. Skip
+            // resolution entirely for the 1-segment case, deferring the
+            // whole thing to Pass 2's `check_enum_pattern` (which already
+            // knows the scrutinee's type and validates the variant name
+            // for real) — same principle as the 2+-segment case, just
+            // pushed one segment further back.
+            if path.len() >= 2 {
+                self.resolve_qual_path(path, pat.span);
+            }
             match payload {
                 EnumPatternPayload::Tuple(pats) => {
                     for p in pats.iter() { self.resolve_pattern_bindings(p); }

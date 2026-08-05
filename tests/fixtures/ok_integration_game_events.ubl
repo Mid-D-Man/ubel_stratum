@@ -1,0 +1,106 @@
+// tests/fixtures/ok_integration_game_events.ubl
+// A real, multi-feature program rather than a narrow single-bug test —
+// the kind of thing an actual .ubl file looks like, exercising several
+// already-built pieces together instead of in isolation: enums (all
+// four variant shapes across two enums), a struct, List<T>, a
+// @tier(mid) function using with arena(...) for scratch work, a match
+// with a guard layered over an enum pattern, and string accumulation.
+// Expected: zero errors, all assertions pass.
+
+struct Stats {
+    total_score: int,
+    joins: int
+}
+
+enum Event {
+    Join(string),
+    Score { player: string, points: int },
+    Leave(string),
+    Heartbeat
+}
+
+enum Severity {
+    Info,
+    Warning,
+    Critical = 9
+}
+
+@tier(mid)
+fn classify(points: int) Severity {
+    if points > 50 {
+        return Severity.Critical
+    } elif points > 20 {
+        return Severity.Warning
+    } else {
+        return Severity.Info
+    }
+}
+
+@tier(mid)
+fn severity_tag(s: Severity) string {
+    match s {
+        Info     => return "[i]",
+        Warning  => return "[w]",
+        Critical => return "[!]",
+    }
+}
+
+@tier(mid)
+fn summarize(events: List<Event>, stats: Stats) string {
+    let mut log = ""
+
+    with arena(64KB) {
+        let scratch = [1, 2, 3, 4]
+        log = log + "scratch len=" + to_string(scratch.len()) + "\n"
+    }
+
+    while !events.is_empty() {
+        let e = events.pop()
+        match e {
+            Join(name) => {
+                stats.joins += 1
+                log = log + "join: " + name + "\n"
+            }
+            Score { player, points } where points > 50 => {
+                stats.total_score += points
+                let tag = severity_tag(classify(points))
+                log = log + tag + " " + player + " scored big: " + to_string(points) + "\n"
+            }
+            Score { player, points } => {
+                stats.total_score += points
+                let tag = severity_tag(classify(points))
+                log = log + tag + " " + player + " scored: " + to_string(points) + "\n"
+            }
+            Leave(name) => {
+                log = log + "leave: " + name + "\n"
+            }
+            Heartbeat => {}
+        }
+    }
+
+    log = log + "total=" + to_string(stats.total_score) + " joins=" + to_string(stats.joins)
+    return log
+}
+
+fn main() void {
+    let events = List.new()
+    events.push(Event.Join("Alice"))
+    events.push(Event.Score { player = "Alice", points = 30 })
+    events.push(Event.Join("Bob"))
+    events.push(Event.Score { player = "Bob", points = 75 })
+    events.push(Event.Heartbeat)
+    events.push(Event.Leave("Alice"))
+
+    let stats = Stats { total_score = 0, joins = 0 }
+    let summary = summarize(events, stats)
+
+    assert(summary.contains("join: Alice"), "integration: tuple-payload Join event logged")
+    assert(summary.contains("join: Bob"), "integration: second Join event logged")
+    assert(summary.contains("[!] Bob scored big: 75"), "integration: guard-matched Score routed through classify()")
+    assert(summary.contains("[w] Alice scored: 30"), "integration: plain Score event, non-guard arm")
+    assert(summary.contains("leave: Alice"), "integration: Leave event logged")
+    assert(summary.contains("scratch len=4"), "integration: arena scratch block ran inside @tier(mid)")
+    assert(summary.contains("total=105 joins=2"), "integration: struct-field accumulation across all events correct")
+
+    println("integration test passed")
+}

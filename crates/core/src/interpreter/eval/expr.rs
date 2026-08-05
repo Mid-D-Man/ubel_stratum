@@ -124,20 +124,35 @@ pub fn eval_expr<'ast>(interp: &mut Interpreter<'ast>, expr: &Expr<'ast>) -> Eva
         ExprKind::Field { target, field } => {
             // `EnumName.Variant` constructs an enum value — this has to be
             // checked before evaluating `target`, since `EnumName` is a
-            // type name, not something bound in the environment.
+            // type name, not something bound in the environment. Only
+            // Fieldless (which also covers Discriminant — see
+            // `VariantKind`) constructs here; Tuple/Struct variants need
+            // their payload, which bare field-access syntax doesn't
+            // supply — those go through the Call and StructLit arms
+            // instead. Sema has already rejected a bare reference to a
+            // payload-carrying variant by this point (`ExprKind::Field`'s
+            // `VariantArityMismatch` check), so falling through to the
+            // ordinary field lookup below is unreachable in practice for
+            // valid programs, not a silent behavior change.
             if let ExprKind::Ident(name) = &target.kind {
                 if let Some(variants) = interp.enum_table.get(*name) {
-                    return if variants.contains(*field) {
-                        Ok(Value::Enum {
-                            type_name: name.to_string(),
-                            variant:   field.to_string(),
-                            payload:   Box::new(crate::interpreter::value::EnumPayload::None),
-                        })
+                    if let Some(kind) = variants.get(*field) {
+                        return if *kind == crate::interpreter::eval::VariantKind::Fieldless {
+                            Ok(Value::Enum {
+                                type_name: name.to_string(),
+                                variant:   field.to_string(),
+                                payload:   Box::new(crate::interpreter::value::EnumPayload::None),
+                            })
+                        } else {
+                            Err(Signal::Panic(format!(
+                                "'{}.{}' needs a payload — use call or `{{ }}` syntax", name, field
+                            )))
+                        };
                     } else {
-                        Err(Signal::Panic(format!(
+                        return Err(Signal::Panic(format!(
                             "enum '{}' has no variant '{}'", name, field
-                        )))
-                    };
+                        )));
+                    }
                 }
             }
             let obj = eval_expr(interp, target)?;
@@ -228,6 +243,28 @@ pub fn eval_expr<'ast>(interp: &mut Interpreter<'ast>, expr: &Expr<'ast>) -> Eva
 
         // ── Struct literal: Point { x = 1, y = 2 } ───────────────
         ExprKind::StructLit { path, fields } => {
+            // ENUM_RULES.md — `Message.Move { x = 1, y = 2 }`, struct-
+            // payload variant construction. Same signal as sema uses to
+            // tell this apart from a plain struct literal: 2+ path
+            // segments, first one names a known enum. Sema has already
+            // validated field names/types by this point.
+            if path.len() >= 2 {
+                if let Some(variants) = interp.enum_table.get(path[0]) {
+                    let variant = path[path.len() - 1];
+                    if variants.get(variant) == Some(&crate::interpreter::eval::VariantKind::Struct) {
+                        let mut map = HashMap::new();
+                        for f in fields.iter() {
+                            let v = eval_expr(interp, f.value)?;
+                            map.insert(f.name.to_string(), v);
+                        }
+                        return Ok(Value::Enum {
+                            type_name: path[0].to_string(),
+                            variant:   variant.to_string(),
+                            payload:   Box::new(crate::interpreter::value::EnumPayload::Struct(map)),
+                        });
+                    }
+                }
+            }
             let type_name = path.last().copied().unwrap_or("").to_string();
             let mut map = HashMap::new();
             for f in fields.iter() {
@@ -287,7 +324,7 @@ pub fn eval_expr<'ast>(interp: &mut Interpreter<'ast>, expr: &Expr<'ast>) -> Eva
             let scrutinee = eval_expr(interp, m.scrutinee)?;
             for arm in m.arms.iter() {
                 interp.env.push();
-                let matched = pattern::match_pattern(&arm.pattern, &scrutinee, &mut interp.env);
+                let matched = pattern::match_pattern(&arm.pattern, &scrutinee, &mut interp.env, &interp.enum_table);
                 if matched {
                     let guard_ok = match arm.guard {
                         Some(g) => eval_expr(interp, g)?.is_truthy()?,
@@ -676,6 +713,20 @@ fn eval_call_with_receiver<'ast>(
                 )
             })?;
             return Ok(Value::new_pool(cap));
+        }
+        // ENUM_RULES.md — `Result.Ok(5)`, tuple-payload variant
+        // construction. Sema has already validated arity/types by this
+        // point, so this just evaluates the args and wraps them —
+        // no re-checking here.
+        if let Some(variants) = interp.enum_table.get(*type_name) {
+            if variants.get(method_name) == Some(&crate::interpreter::eval::VariantKind::Tuple) {
+                let args = eval_args(interp, raw_args)?;
+                return Ok(Value::Enum {
+                    type_name: type_name.to_string(),
+                    variant:   method_name.to_string(),
+                    payload:   Box::new(crate::interpreter::value::EnumPayload::Tuple(args)),
+                });
+            }
         }
         if crate::builtins::is_builtin_namespace(type_name) {
             let func = crate::builtins::resolve_namespace_member(type_name, method_name)

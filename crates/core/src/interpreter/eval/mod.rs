@@ -57,6 +57,19 @@ pub struct FunctionDef<'ast> {
 /// `Block<'ast>` and `&'ast Expr<'ast>` references.  `Value` and `Environment`
 /// are both lifetime-free, so closures and runtime values can be passed around
 /// freely without the compiler tracking AST provenance through them.
+/// A variant's payload shape, as far as the interpreter needs to know to
+/// construct it — no element/field types, since sema has already
+/// validated those; see `Interpreter::enum_table`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum VariantKind {
+    /// Fieldless or Discriminant — both construct `EnumPayload::None`;
+    /// the interpreter doesn't track a discriminant's chosen ordinal
+    /// (see MEMORY_MODEL.md's enum-section "Known gap").
+    Fieldless,
+    Tuple,
+    Struct,
+}
+
 pub struct Interpreter<'ast> {
     pub(crate) env:          Environment,
     pub(crate) functions:    Vec<FunctionDef<'ast>>,
@@ -64,11 +77,14 @@ pub struct Interpreter<'ast> {
     /// Static and instance methods both live here; the call site determines
     /// whether a receiver is passed.
     pub(crate) method_table: HashMap<String, HashMap<String, FunctionId>>,
-    /// enum_type_name → set of its declared (bare, payload-less) variant
-    /// names. Consulted by `EnumName.Variant` field-access evaluation to
-    /// tell "construct an enum value" apart from an ordinary field lookup —
-    /// see `eval::expr::eval_expr`'s `ExprKind::Field` case.
-    pub(crate) enum_table:   HashMap<String, std::collections::HashSet<String>>,
+    /// enum_type_name → variant_name → its payload kind. Consulted by
+    /// `EnumName.Variant` construction (bare field access for
+    /// fieldless/discriminant, call syntax for tuple, struct-literal
+    /// syntax for struct — ENUM_RULES.md) to tell "construct an enum
+    /// value" apart from an ordinary field/method lookup. Sema has
+    /// already validated arity/types by the time any of these run, so
+    /// construction here doesn't re-check either.
+    pub(crate) enum_table:   HashMap<String, HashMap<String, VariantKind>>,
     /// The arena used to parse the program.  Kept here so interpolated-string
     /// expression holes (`$"Hello {expr}"`) can be parsed at runtime via
     /// `crate::parser::parse_expr`.
@@ -195,14 +211,18 @@ impl<'ast> Interpreter<'ast> {
                     }
                 }
                 Item::Enum(e) => {
-                    let variants: std::collections::HashSet<String> = e.variants.iter()
-                        .filter(|v| matches!(v.payload, crate::ast::declarations::EnumVariantPayload::None))
-                        .map(|v| v.name.to_string())
+                    use crate::ast::declarations::EnumVariantPayload as P;
+                    let variants: HashMap<String, VariantKind> = e.variants.iter()
+                        .map(|v| {
+                            let kind = match v.payload {
+                                P::None | P::Discriminant(_) => VariantKind::Fieldless,
+                                P::Tuple(_)                  => VariantKind::Tuple,
+                                P::Struct(_)                 => VariantKind::Struct,
+                            };
+                            (v.name.to_string(), kind)
+                        })
                         .collect();
                     self.enum_table.insert(e.name.to_string(), variants);
-                    // TODO: EnumVariantPayload::Discriminant/Tuple/Struct aren't
-                    // constructible at runtime yet — payload-carrying variants
-                    // are silently excluded from enum_table rather than handled.
                 }
                 _ => {}
             }

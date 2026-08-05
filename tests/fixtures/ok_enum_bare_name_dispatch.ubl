@@ -1,0 +1,32 @@
+// tests/fixtures/ok_enum_bare_name_dispatch.ubl
+// ENUM_RULES.md — the actual proof this section's fix is real, not
+// coincidental. ok_enum_variants.ubl alone doesn't prove it: it only
+// ever matches Direction.North, which was ALSO the first (and therefore
+// previously always-winning) arm — that fixture would keep passing even
+// with the old bug. This one calls describe() with every variant that
+// ISN'T first, so a regression back to "first arm always wins" would
+// fail loudly instead of silently.
+// Expected: zero errors, all assertions pass.
+
+enum Direction {
+    North,
+    South,
+    East,
+    West
+}
+
+fn describe(d: Direction) string {
+    match d {
+        North => return "heading north",
+        South => return "heading south",
+        East  => return "heading east",
+        West  => return "heading west",
+    }
+}
+
+fn main() void {
+    assert(describe(Direction.South) == "heading south", "bare-name match: South")
+    assert(describe(Direction.East)  == "heading east",  "bare-name match: East")
+    assert(describe(Direction.West)  == "heading west",  "bare-name match: West")
+    assert(describe(Direction.North) == "heading north", "bare-name match: North")
+}

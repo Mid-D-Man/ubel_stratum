@@ -54,7 +54,7 @@ use std::collections::HashMap;
 
 use crate::ast::common::{BinOp, Span, TierAnnotation, UnaryOp};
 use crate::ast::declarations::{
-    ConstDecl, EnumDecl, ExtendDecl, FunctionDecl, ImplBlock,
+    ConstDecl, EnumDecl, EnumVariantPayload, ExtendDecl, FunctionDecl, ImplBlock,
     MethodDecl, Param, ParamKind, ReturnType, StructDecl, StructMember,
     TraitItem, TypeAlias, MethodSig,
 };
@@ -63,6 +63,7 @@ use crate::ast::expressions::{
     MatchArmBody, OrElseFallback,
 };
 use crate::ast::literals::Literal;
+use crate::ast::patterns::{EnumPatternPayload, Pattern, PatternKind};
 use crate::ast::root::{Item, Program};
 use crate::ast::statements::{AllocatorKind, BindingTarget, Block, Stmt, StmtKind};
 use crate::ast::types::{Type, TypeKind};
@@ -113,6 +114,38 @@ impl Unifier {
     }
 }
 
+// ── Enum variant metadata ───────────────────────────────────────────
+
+/// Element/field-type info for one enum variant, computed once during
+/// signature collection (`collect_enum_sig`) and consulted by every other
+/// enum usage site — bare `EnumName.Variant` access, `EnumName.Variant(..)`
+/// tuple construction, `EnumName.Variant { .. }` struct construction, and
+/// pattern checking. ENUM_RULES.md.
+#[derive(Clone)]
+enum VariantShape {
+    None,
+    /// Behaves identically to `None` for every purpose except declaration-
+    /// time validation (ENUM_RULES.md §4 item 1/2) — the chosen ordinal
+    /// isn't tracked past sema; there's no `as int` cast to read it back
+    /// yet (see this section's "Known gap").
+    Discriminant,
+    Tuple(Vec<TypeId>),
+    Struct(Vec<(String, TypeId)>),
+}
+
+/// What a checked pattern definitively covers, for exhaustiveness.
+enum PatternCoverage {
+    /// Matches unconditionally regardless of the scrutinee's shape —
+    /// `_`, or a genuine (non-variant-name) binding.
+    CatchAll,
+    /// Matches only these specific enum variant names.
+    Variants(Vec<String>),
+    /// Not enum-related (non-enum scrutinee, or a pattern shape this
+    /// pass doesn't do deep exhaustiveness analysis on) — doesn't affect
+    /// the enum coverage count either way.
+    Other,
+}
+
 // ── InferCtx ─────────────────────────────────────────────────────
 
 struct InferCtx<'a> {
@@ -130,6 +163,9 @@ struct InferCtx<'a> {
     /// element type from the innermost enclosing pool block.
     pool_stack:       Vec<(PoolId, TypeId)>,
     next_pool:        usize,
+    /// Populated once per enum by `collect_enum_sig`, consulted by every
+    /// other enum usage site for the rest of Pass 2 — ENUM_RULES.md.
+    enum_variants:    HashMap<DefId, Vec<(String, VariantShape)>>,
     /// §8 — the enclosing function/method's `@tier(...)`. Needed here
     /// (not just in tier_check.rs) because `expr_types` entries can
     /// still be raw unresolved `Var`s at record-time — resolving a
@@ -153,6 +189,7 @@ impl<'a> InferCtx<'a> {
             next_arena:       0,
             pool_stack:       Vec::new(),
             next_pool:        0,
+            enum_variants:    HashMap::new(),
             current_tier:     TierAnnotation::High,
         }
     }
@@ -649,10 +686,444 @@ impl<'a> InferCtx<'a> {
         let Some(def_id) = self.ctx.top_level_def(e.name) else { return; };
         let enum_ty = self.ctx.types.insert(SemaType::Named { def: def_id, args: vec![] });
         self.ctx.set_def_type(def_id, enum_ty);
+
+        let mut shapes: Vec<(String, VariantShape)> = Vec::with_capacity(e.variants.len());
+        let mut has_discriminant = false;
+        let mut has_payload      = false;
+
         for variant in e.variants {
             if let Some(var_def) = self.ctx.resolutions.get(variant.span) {
                 self.ctx.set_def_type(var_def, enum_ty);
             }
+            let shape = match &variant.payload {
+                EnumVariantPayload::None => VariantShape::None,
+                EnumVariantPayload::Discriminant(expr) => {
+                    has_discriminant = true;
+                    // Auto-increment (ENUM_RULES.md §4 item 1) needs no
+                    // active tracking here — nothing downstream currently
+                    // reads a discriminant's chosen value back out (no
+                    // `as int` cast exists yet), so this validates that
+                    // the written expression is at least int-shaped and
+                    // stops there. See this section's "Known gap."
+                    let d_ty  = self.infer_expr(expr);
+                    let int_ty = self.int_ty();
+                    self.unify(int_ty, d_ty, expr.span);
+                    VariantShape::Discriminant
+                }
+                EnumVariantPayload::Tuple(tys) => {
+                    has_payload = true;
+                    VariantShape::Tuple(tys.iter().map(|t| self.ast_type_to_sema(t)).collect())
+                }
+                EnumVariantPayload::Struct(fields) => {
+                    has_payload = true;
+                    VariantShape::Struct(
+                        fields.iter()
+                            .map(|f| (f.name.to_string(), self.ast_type_to_sema(f.ty)))
+                            .collect()
+                    )
+                }
+            };
+            shapes.push((variant.name.to_string(), shape));
+        }
+
+        // ENUM_RULES.md §4 item 2 — an explicit discriminant and a
+        // payload-carrying variant have no defined combined runtime
+        // representation; reject the enum declaration outright rather
+        // than silently picking one interpretation.
+        if has_discriminant && has_payload {
+            self.errors.add_type_error(TypeError::MixedDiscriminantAndPayload {
+                enum_name: e.name.to_string(),
+                span:      e.span,
+            });
+        }
+
+        self.enum_variants.insert(def_id, shapes);
+    }
+
+    /// Resolve `ty` down to `(enum DefId, variant shapes)` if it names a
+    /// known enum, else `None` (covers non-enum types and unresolved
+    /// vars uniformly — every enum caller below just treats "not an
+    /// enum" the same way regardless of why).
+    fn enum_shapes_of(&mut self, ty: TypeId) -> Option<(DefId, Vec<(String, VariantShape)>)> {
+        let resolved = self.apply(ty);
+        let SemaType::Named { def, .. } = self.ctx.types.get(resolved) else { return None; };
+        let def = *def;
+        self.enum_variants.get(&def).map(|shapes| (def, shapes.clone()))
+    }
+
+    /// Type-checks a match-arm pattern against the scrutinee's type,
+    /// binding any names it introduces. Returns what it definitively
+    /// covers, for the exhaustiveness check in `StmtKind::Match`/
+    /// `ExprKind::Match`. ENUM_RULES.md.
+    fn check_pattern<'ast>(&mut self, pat: &Pattern<'ast>, scrutinee_ty: TypeId) -> PatternCoverage {
+        match &pat.kind {
+            PatternKind::Wildcard => PatternCoverage::CatchAll,
+
+            PatternKind::Ident { name, .. } => {
+                if let Some((enum_def, shapes)) = self.enum_shapes_of(scrutinee_ty) {
+                    if let Some((vname, shape)) = shapes.iter().find(|(n, _)| n == name) {
+                        // The actual point of this section's fix: a bare
+                        // unqualified variant name (`North`, not
+                        // `Direction.North`) used to parse as this same
+                        // PatternKind::Ident and silently behave as an
+                        // unconditional binding — "always matches, binds
+                        // name" per the interpreter's own comment — so
+                        // whichever arm's name happened to come first
+                        // fired regardless of the scrutinee's real value.
+                        // Reinterpreted here now that the scrutinee's
+                        // type is known: matches only this one variant,
+                        // introduces no binding. Pass 1 already declared
+                        // `name` as a fresh Local for the general-binding
+                        // case; that declaration goes simply unused here,
+                        // which is harmless.
+                        let expected = match shape {
+                            VariantShape::None | VariantShape::Discriminant => {
+                                return PatternCoverage::Variants(vec![vname.clone()]);
+                            }
+                            VariantShape::Tuple(t)  => t.len(),
+                            VariantShape::Struct(t) => t.len(),
+                        };
+                        // A payload-carrying variant referenced bare with
+                        // no payload pattern at all (`Ok => ...` instead
+                        // of `Ok(x)`) — surface it instead of silently
+                        // treating `name` as a binding for a shape it
+                        // doesn't fit.
+                        self.errors.add_type_error(TypeError::VariantArityMismatch {
+                            enum_name:    self.ctx.symbols.lookup(enum_def).name.clone(),
+                            variant_name: vname.clone(),
+                            expected,
+                            found:        0,
+                            span:         pat.span,
+                        });
+                        return PatternCoverage::Variants(vec![vname.clone()]);
+                    }
+                }
+                // Genuine catch-all binding.
+                if let Some(def_id) = self.ctx.resolutions.get(pat.span) {
+                    self.ctx.set_def_type(def_id, scrutinee_ty);
+                }
+                PatternCoverage::CatchAll
+            }
+
+            PatternKind::Literal(lit) => {
+                let lit_ty = self.infer_literal(lit);
+                self.unify(scrutinee_ty, lit_ty, pat.span);
+                PatternCoverage::Other
+            }
+
+            PatternKind::Enum { path, payload } => {
+                self.check_enum_pattern(path, payload, scrutinee_ty, pat.span)
+            }
+
+            PatternKind::Or(pats) => {
+                let mut variants   = Vec::new();
+                let mut catch_all  = false;
+                for p in pats.iter() {
+                    match self.check_pattern(p, scrutinee_ty) {
+                        PatternCoverage::CatchAll     => catch_all = true,
+                        PatternCoverage::Variants(vs) => variants.extend(vs),
+                        PatternCoverage::Other        => {}
+                    }
+                }
+                if catch_all { PatternCoverage::CatchAll }
+                else if !variants.is_empty() { PatternCoverage::Variants(variants) }
+                else { PatternCoverage::Other }
+            }
+
+            PatternKind::Tuple(pats) => {
+                let resolved = self.apply(scrutinee_ty);
+                if let SemaType::Tuple(elem_tys) = self.ctx.types.get(resolved) {
+                    let elem_tys = elem_tys.clone();
+                    for (p, t) in pats.iter().zip(elem_tys.iter()) {
+                        self.check_pattern(p, *t);
+                    }
+                    for p in pats.iter().skip(elem_tys.len()) {
+                        let fresh = self.fresh_var();
+                        self.check_pattern(p, fresh);
+                    }
+                } else {
+                    for p in pats.iter() {
+                        let fresh = self.fresh_var();
+                        self.check_pattern(p, fresh);
+                    }
+                }
+                PatternCoverage::Other
+            }
+
+            // Struct-destructure / array / range / other-language-level
+            // patterns aren't part of this section's scope — walked
+            // permissively (bindings still get *some* type, so later
+            // references don't dangle) without deep shape validation.
+            // Doesn't affect enum exhaustiveness either way.
+            // `Name { field, ... }` with a 1-segment name always parses
+            // as this (not PatternKind::Enum) regardless of whether
+            // `Name` turns out to be a plain struct or an enum's
+            // struct-payload variant — the parser can't tell without
+            // type info (`parse_pattern.rs`: 2+ segments is the only
+            // syntactic signal it has, `Result.Err { code }` vs
+            // `Point { x, y }`). Same reinterpretation this section
+            // already does for bare `PatternKind::Ident` variant names —
+            // if `name` matches a Struct-payload variant of the known
+            // enum scrutinee, treat it as that; otherwise it's a genuine
+            // struct pattern.
+            PatternKind::Struct { name: Some(n), fields } => {
+                if let Some((enum_def, shapes)) = self.enum_shapes_of(scrutinee_ty) {
+                    if let Some((vname, shape)) = shapes.iter().find(|(sn, _)| sn == n) {
+                        let vname = vname.clone();
+                        return match shape {
+                            VariantShape::Struct(field_tys) => {
+                                let field_tys = field_tys.clone();
+                                for f in fields.iter() {
+                                    match field_tys.iter().find(|(fn_, _)| fn_ == f.field) {
+                                        Some((_, t)) => {
+                                            if let Some(sub_pat) = &f.pattern {
+                                                self.check_pattern(sub_pat, *t);
+                                            } else if let Some(def_id) = self.ctx.resolutions.get(f.span) {
+                                                self.ctx.set_def_type(def_id, *t);
+                                            }
+                                        }
+                                        None => {
+                                            self.errors.add_type_error(TypeError::UnknownVariant {
+                                                enum_name:    self.ctx.symbols.lookup(enum_def).name.clone(),
+                                                variant_name: format!("{}.{{{}}}", vname, f.field),
+                                                span:         f.span,
+                                            });
+                                        }
+                                    }
+                                }
+                                PatternCoverage::Variants(vec![vname])
+                            }
+                            _ => {
+                                // Real variant, wrong payload shape.
+                                let expected = match shape {
+                                    VariantShape::Tuple(t)  => t.len(),
+                                    _                        => 0,
+                                };
+                                self.errors.add_type_error(TypeError::VariantArityMismatch {
+                                    enum_name:    self.ctx.symbols.lookup(enum_def).name.clone(),
+                                    variant_name: vname.clone(),
+                                    expected,
+                                    found:        fields.len(),
+                                    span:         pat.span,
+                                });
+                                PatternCoverage::Variants(vec![vname])
+                            }
+                        };
+                    }
+                }
+                for f in fields.iter() {
+                    if let Some(sub_pat) = &f.pattern {
+                        let fresh = self.fresh_var();
+                        self.check_pattern(sub_pat, fresh);
+                    } else if let Some(def_id) = self.ctx.resolutions.get(f.span) {
+                        let fresh = self.fresh_var();
+                        self.ctx.set_def_type(def_id, fresh);
+                    }
+                }
+                PatternCoverage::Other
+            }
+            PatternKind::Struct { name: None, fields } => {
+                for f in fields.iter() {
+                    if let Some(sub_pat) = &f.pattern {
+                        let fresh = self.fresh_var();
+                        self.check_pattern(sub_pat, fresh);
+                    } else if let Some(def_id) = self.ctx.resolutions.get(f.span) {
+                        let fresh = self.fresh_var();
+                        self.ctx.set_def_type(def_id, fresh);
+                    }
+                }
+                PatternCoverage::Other
+            }
+            PatternKind::Array { elements, .. } => {
+                for p in elements.iter() {
+                    let fresh = self.fresh_var();
+                    self.check_pattern(p, fresh);
+                }
+                PatternCoverage::Other
+            }
+            PatternKind::Extract(fields) => {
+                for f in fields.iter() {
+                    if let Some(sub_pat) = &f.pattern {
+                        let fresh = self.fresh_var();
+                        self.check_pattern(sub_pat, fresh);
+                    } else if let Some(def_id) = self.ctx.resolutions.get(f.span) {
+                        let fresh = self.fresh_var();
+                        self.ctx.set_def_type(def_id, fresh);
+                    }
+                }
+                PatternCoverage::Other
+            }
+            PatternKind::Range { .. } => PatternCoverage::Other,
+        }
+    }
+
+    fn check_enum_pattern<'ast>(
+        &mut self,
+        path: &[&'ast str],
+        payload: &EnumPatternPayload<'ast>,
+        scrutinee_ty: TypeId,
+        span: Span,
+    ) -> PatternCoverage {
+        let Some((enum_def, shapes)) = self.enum_shapes_of(scrutinee_ty) else {
+            // Scrutinee isn't a known enum (Unknown/unresolved var, or a
+            // genuinely non-enum type — that mismatch surfaces on its
+            // own via the scrutinee's own inference). Still walk payload
+            // sub-patterns with fresh vars so their bindings get *some*
+            // type instead of dangling.
+            self.check_enum_payload_fallback(payload);
+            return PatternCoverage::Other;
+        };
+
+        let Some(variant_name) = path.last().copied() else { return PatternCoverage::Other; };
+
+        let Some((vname, shape)) = shapes.iter().find(|(n, _)| n == variant_name) else {
+            self.errors.add_type_error(TypeError::UnknownVariant {
+                enum_name:    self.ctx.symbols.lookup(enum_def).name.clone(),
+                variant_name: variant_name.to_string(),
+                span,
+            });
+            self.check_enum_payload_fallback(payload);
+            return PatternCoverage::Other;
+        };
+        let vname = vname.clone();
+
+        match (shape, payload) {
+            (VariantShape::None, EnumPatternPayload::None)
+            | (VariantShape::Discriminant, EnumPatternPayload::None) => {}
+
+            (VariantShape::Tuple(elem_tys), EnumPatternPayload::Tuple(pats)) => {
+                let elem_tys = elem_tys.clone();
+                if elem_tys.len() != pats.len() {
+                    self.errors.add_type_error(TypeError::VariantArityMismatch {
+                        enum_name:    self.ctx.symbols.lookup(enum_def).name.clone(),
+                        variant_name: vname.clone(),
+                        expected:     elem_tys.len(),
+                        found:        pats.len(),
+                        span,
+                    });
+                }
+                for (sub_pat, elem_ty) in pats.iter().zip(elem_tys.iter()) {
+                    self.check_pattern(sub_pat, *elem_ty);
+                }
+                for sub_pat in pats.iter().skip(elem_tys.len()) {
+                    let fresh = self.fresh_var();
+                    self.check_pattern(sub_pat, fresh);
+                }
+            }
+
+            (VariantShape::Struct(field_tys), EnumPatternPayload::Struct(fields)) => {
+                let field_tys = field_tys.clone();
+                for f in fields.iter() {
+                    match field_tys.iter().find(|(n, _)| n == f.field) {
+                        Some((_, t)) => {
+                            if let Some(sub_pat) = &f.pattern {
+                                self.check_pattern(sub_pat, *t);
+                            } else if let Some(def_id) = self.ctx.resolutions.get(f.span) {
+                                self.ctx.set_def_type(def_id, *t);
+                            }
+                        }
+                        None => {
+                            self.errors.add_type_error(TypeError::UnknownVariant {
+                                enum_name:    self.ctx.symbols.lookup(enum_def).name.clone(),
+                                variant_name: format!("{}.{{{}}}", vname, f.field),
+                                span:         f.span,
+                            });
+                            if let Some(sub_pat) = &f.pattern {
+                                let fresh = self.fresh_var();
+                                self.check_pattern(sub_pat, fresh);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Payload shape doesn't match the pattern's payload shape at
+            // all (e.g. matching a tuple-payload variant with no parens,
+            // or a fieldless variant with parens) — a degenerate arity
+            // mismatch (0 either side vs. however many the pattern wrote).
+            _ => {
+                let (expected, found) = match (shape, payload) {
+                    (VariantShape::Tuple(t), EnumPatternPayload::None)  => (t.len(), 0),
+                    (VariantShape::Struct(t), EnumPatternPayload::None) => (t.len(), 0),
+                    (VariantShape::None | VariantShape::Discriminant, EnumPatternPayload::Tuple(p))
+                        => (0, p.len()),
+                    (VariantShape::None | VariantShape::Discriminant, EnumPatternPayload::Struct(p))
+                        => (0, p.len()),
+                    _ => (0, 0),
+                };
+                self.errors.add_type_error(TypeError::VariantArityMismatch {
+                    enum_name: self.ctx.symbols.lookup(enum_def).name.clone(),
+                    variant_name: vname.clone(),
+                    expected,
+                    found,
+                    span,
+                });
+                self.check_enum_payload_fallback(payload);
+            }
+        }
+
+        PatternCoverage::Variants(vec![vname])
+    }
+
+    fn check_enum_payload_fallback<'ast>(&mut self, payload: &EnumPatternPayload<'ast>) {
+        match payload {
+            EnumPatternPayload::None => {}
+            EnumPatternPayload::Tuple(pats) => {
+                for p in pats.iter() {
+                    let fresh = self.fresh_var();
+                    self.check_pattern(p, fresh);
+                }
+            }
+            EnumPatternPayload::Struct(fields) => {
+                for f in fields.iter() {
+                    if let Some(sub_pat) = &f.pattern {
+                        let fresh = self.fresh_var();
+                        self.check_pattern(sub_pat, fresh);
+                    } else if let Some(def_id) = self.ctx.resolutions.get(f.span) {
+                        let fresh = self.fresh_var();
+                        self.ctx.set_def_type(def_id, fresh);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Checks match-arm coverage against an enum scrutinee's full variant
+    /// set, emitting `NonExhaustiveMatch` if neither a catch-all arm nor
+    /// the union of every guard-less arm's coverage accounts for all of
+    /// them. Pragmatic top-level-only exhaustiveness (no nested-pattern
+    /// usefulness analysis) — not Rust's full decision-tree algorithm,
+    /// but a real, useful check rather than none at all.
+    fn check_match_exhaustiveness<'ast>(
+        &mut self,
+        scrutinee_ty: TypeId,
+        arms: &[(PatternCoverage, bool /* has_guard */)],
+        span: Span,
+    ) {
+        let Some((_, shapes)) = self.enum_shapes_of(scrutinee_ty) else { return; };
+
+        if arms.iter().any(|(cov, has_guard)| !has_guard && matches!(cov, PatternCoverage::CatchAll)) {
+            return;
+        }
+
+        let mut covered: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        for (cov, has_guard) in arms.iter() {
+            if *has_guard { continue; }
+            if let PatternCoverage::Variants(vs) = cov {
+                covered.extend(vs.iter().map(|s| s.as_str()));
+            }
+        }
+
+        let missing: Vec<String> = shapes.iter()
+            .map(|(n, _)| n.clone())
+            .filter(|n| !covered.contains(n.as_str()))
+            .collect();
+
+        if !missing.is_empty() {
+            self.errors.add_type_error(TypeError::NonExhaustiveMatch {
+                missing_variants: missing,
+                span,
+            });
         }
     }
 
@@ -825,14 +1296,18 @@ impl<'a> InferCtx<'a> {
                 self.void_ty()
             }
             StmtKind::Match { scrutinee, arms } => {
-                self.infer_expr(scrutinee);
+                let scrutinee_ty = self.infer_expr(scrutinee);
+                let mut coverage = Vec::with_capacity(arms.len());
                 for arm in arms.iter() {
+                    let cov = self.check_pattern(&arm.pattern, scrutinee_ty);
                     if let Some(g) = arm.guard { self.infer_expr(g); }
                     match &arm.body {
                         MatchArmBody::Expr(e)  => { self.infer_expr(e); }
                         MatchArmBody::Block(b) => { self.infer_block(b); }
                     }
+                    coverage.push((cov, arm.guard.is_some()));
                 }
+                self.check_match_exhaustiveness(scrutinee_ty, &coverage, stmt.span);
                 self.void_ty()
             }
             StmtKind::For { binding, iter, body } => {
@@ -1163,6 +1638,51 @@ impl<'a> InferCtx<'a> {
                     }
                 }
 
+                // ENUM_RULES.md — tuple-payload variant construction,
+                // `Result.Ok(5)`. Separate check from the constructor
+                // block above (that one's gated on `field == "new"`;
+                // variant names are arbitrary). Struct-payload
+                // construction (`Message.Move { x = 1, y = 2 }`) goes
+                // through `ExprKind::StructLit` instead — different
+                // surface syntax, already routed there by the parser.
+                if let ExprKind::Field { target, field } = callee.kind {
+                    if let ExprKind::Ident(ns) = target.kind {
+                        if let Some(def_id) = self.ctx.top_level_def(ns) {
+                            if let Some(shapes) = self.enum_variants.get(&def_id) {
+                                let shapes  = shapes.clone();
+                                let enum_ty = self.ctx.def_type(def_id).unwrap_or_else(|| self.unknown());
+                                if let Some((vname, shape)) = shapes.iter().find(|(n, _)| n == field) {
+                                    if let VariantShape::Tuple(elem_tys) = shape {
+                                        if elem_tys.len() != args.len() {
+                                            self.errors.add_type_error(TypeError::VariantArityMismatch {
+                                                enum_name:    ns.to_string(),
+                                                variant_name: vname.clone(),
+                                                expected:     elem_tys.len(),
+                                                found:        args.len(),
+                                                span:         expr.span,
+                                            });
+                                        }
+                                        for (arg, elem_ty) in args.iter().zip(elem_tys.iter()) {
+                                            if let ArgKind::Positional(e) = &arg.kind {
+                                                let arg_ty = self.infer_expr(e);
+                                                self.unify(*elem_ty, arg_ty, e.span);
+                                            }
+                                        }
+                                        return self.maybe_arena_ref(enum_ty);
+                                    }
+                                } else {
+                                    self.errors.add_type_error(TypeError::UnknownVariant {
+                                        enum_name:    ns.to_string(),
+                                        variant_name: field.to_string(),
+                                        span:         expr.span,
+                                    });
+                                    return self.unknown();
+                                }
+                            }
+                        }
+                    }
+                }
+
                 // §8 FIX (MEMORY_MODEL.md) — builtin instance methods
                 // (`myList.push(x)`, `"s".to_upper()`, ...). The generic
                 // Field arm below has no field table (see that arm's own
@@ -1228,8 +1748,39 @@ impl<'a> InferCtx<'a> {
                 self.call_return_type(callee_ty, expr.span)
             }
 
-            ExprKind::Field { target, .. }
-            | ExprKind::OptionalChain { target, .. } => {
+            ExprKind::Field { target, field } => {
+                // `EnumName.Variant` (fieldless/discriminant only — a
+                // payload-carrying variant referenced bare with no call
+                // isn't a valid value on its own; falls through to the
+                // generic Unknown below same as any other unhandled
+                // shape). Mirrors `Pool.new()`'s constructor special-
+                // case: recognized syntactically here rather than via
+                // the general field table, which doesn't exist yet.
+                if let ExprKind::Ident(name) = &target.kind {
+                    if let Some(def_id) = self.ctx.top_level_def(name) {
+                        if let Some(shapes) = self.enum_variants.get(&def_id) {
+                            let shapes = shapes.clone();
+                            if let Some((_, shape)) = shapes.iter().find(|(n, _)| n == field) {
+                                if matches!(shape, VariantShape::None | VariantShape::Discriminant) {
+                                    let enum_ty = self.ctx.def_type(def_id)
+                                        .unwrap_or_else(|| self.unknown());
+                                    return self.maybe_arena_ref(enum_ty);
+                                }
+                            } else {
+                                self.errors.add_type_error(TypeError::UnknownVariant {
+                                    enum_name:    name.to_string(),
+                                    variant_name: field.to_string(),
+                                    span:         expr.span,
+                                });
+                                return self.unknown();
+                            }
+                        }
+                    }
+                }
+                self.infer_expr(target);
+                self.unknown() // TODO: field table
+            }
+            ExprKind::OptionalChain { target, .. } => {
                 self.infer_expr(target);
                 self.unknown() // TODO: field table
             }
@@ -1296,6 +1847,66 @@ impl<'a> InferCtx<'a> {
             }
 
             ExprKind::StructLit { path, fields } => {
+                // ENUM_RULES.md — `Message.Move { x = 1, y = 2 }`, a
+                // struct-payload variant construction, arrives here as a
+                // 2-segment path (parser routes it the same as a plain
+                // struct literal; the only signal it's an enum variant
+                // is the extra path segment). Plain struct literals
+                // (`Holder { data = ... }`, 1-segment) keep their
+                // existing, unvalidated behavior below — general struct-
+                // field checking isn't part of this section's scope.
+                if path.len() >= 2 {
+                    if let Some(def_id) = self.ctx.top_level_def(path[0]) {
+                        if let Some(shapes) = self.enum_variants.get(&def_id) {
+                            let shapes    = shapes.clone();
+                            let enum_ty   = self.ctx.def_type(def_id).unwrap_or_else(|| self.unknown());
+                            let variant   = path[path.len() - 1];
+                            match shapes.iter().find(|(n, _)| n == variant) {
+                                Some((vname, VariantShape::Struct(field_tys))) => {
+                                    let vname     = vname.clone();
+                                    let field_tys = field_tys.clone();
+                                    for f in fields.iter() {
+                                        match field_tys.iter().find(|(n, _)| n == f.name) {
+                                            Some((_, t)) => {
+                                                let val_ty = self.infer_expr(f.value);
+                                                self.unify(*t, val_ty, f.span);
+                                            }
+                                            None => {
+                                                self.infer_expr(f.value);
+                                                self.errors.add_type_error(TypeError::UnknownVariant {
+                                                    enum_name:    path[0].to_string(),
+                                                    variant_name: format!("{}.{{{}}}", vname, f.name),
+                                                    span:         f.span,
+                                                });
+                                            }
+                                        }
+                                    }
+                                    return self.maybe_arena_ref(enum_ty);
+                                }
+                                Some(_) => {
+                                    // Real variant, wrong payload shape
+                                    // (fieldless/tuple constructed with
+                                    // `{ }` syntax) — walk fields once so
+                                    // their own errors surface, but don't
+                                    // fall through to the generic path
+                                    // below (which would infer them
+                                    // again and double-report).
+                                    for f in fields.iter() { self.infer_expr(f.value); }
+                                    return self.maybe_arena_ref(enum_ty);
+                                }
+                                None => {
+                                    for f in fields.iter() { self.infer_expr(f.value); }
+                                    self.errors.add_type_error(TypeError::UnknownVariant {
+                                        enum_name:    path[0].to_string(),
+                                        variant_name: variant.to_string(),
+                                        span:         expr.span,
+                                    });
+                                    return self.unknown();
+                                }
+                            }
+                        }
+                    }
+                }
                 for f in fields.iter() { self.infer_expr(f.value); }
                 let root      = path.first().copied().unwrap_or("");
                 let struct_ty = self.ctx.top_level_def(root)
@@ -1367,17 +1978,21 @@ impl<'a> InferCtx<'a> {
             }
 
             ExprKind::Match(m) => {
-                self.infer_expr(m.scrutinee);
+                let scrutinee_ty = self.infer_expr(m.scrutinee);
                 let void_ty = self.void_ty();
                 let mut result = void_ty;
+                let mut coverage = Vec::with_capacity(m.arms.len());
                 for arm in m.arms.iter() {
+                    let cov = self.check_pattern(&arm.pattern, scrutinee_ty);
                     if let Some(g) = arm.guard { self.infer_expr(g); }
                     let arm_ty = match &arm.body {
                         MatchArmBody::Expr(e)  => self.infer_expr(e),
                         MatchArmBody::Block(b) => self.infer_block(b),
                     };
                     if arm_ty != void_ty { result = arm_ty; }
+                    coverage.push((cov, arm.guard.is_some()));
                 }
+                self.check_match_exhaustiveness(scrutinee_ty, &coverage, m.span);
                 result
             }
 
