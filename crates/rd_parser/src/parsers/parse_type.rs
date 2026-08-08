@@ -362,21 +362,22 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
             if self.cursor.is_at(&TokenType::Greater) { break; }
         }
 
-        // Confirm close `>` AND that what follows isn't `=` (that would be a
-        // comparison `a < b >= c` which we'd misparse)
+        // Confirm close `>`. NOTE: earlier revisions of this function also
+        // speculatively backed out if the token right after `>` was `=`/`==`
+        // (worried about misparsing a chained comparison `a < b >= c`) — but
+        // both real call sites (`parse_type_base`'s `Named` arm, and the
+        // `impl Foo<T> for Bar` trait-impl check in `parse_decl.rs`) are
+        // *type*-grammar positions, not expression positions; there's no
+        // comparison-expression interpretation possible there at all, so
+        // that guard only ever misfired — e.g. `let x: Option<int> = ...`
+        // (`=` right after `>`, the single most ordinary case for a
+        // generic type annotation) would wrongly restore and leave a bare
+        // `<` for the caller to choke on. Removed; nothing currently calls
+        // this from expression/Pratt context, where a real ambiguity could
+        // exist (see PARSER_RULES.md §5.1 — that disambiguation isn't
+        // wired through this function).
         if ok && self.cursor.is_at(&TokenType::Greater) {
             self.cursor.advance(); // consume `>`
-            // Validate: next token should be something that can follow a type,
-            // not an `=` (which would indicate this was `<=`)
-            let next = self.cursor.peek();
-            if matches!(next, TokenType::Equal | TokenType::EqualEqual) {
-                // Looks like a comparison — restore
-                self.cursor.restore(saved);
-                self.memo_set(start_pos, crate::parser::MemoRule::GenericArgs,
-                    crate::parser::MemoEntry::Miss);
-                return &[];
-            }
-
             self.memo_set(start_pos, crate::parser::MemoRule::GenericArgs,
                 crate::parser::MemoEntry::Hit { end_pos: self.cursor.position() });
             self.arena.alloc_slice_clone(&args)
