@@ -43,23 +43,37 @@
 //!
 //! # Known rough edges (not airtight yet)
 //! - No occurs-check in unification.
-//! - Generic instantiation returns Unknown; no error emitted.
-//! - Method-call chains leave result Unknown pending field/method tables.
 //! - Multi-element destructuring shares one Span; all get collection elem type.
-//! - `self` param type is Unknown until current_struct_type is threaded in.
+//! - A method name pre-inferred as the callee of an enclosing `Call`
+//!   (e.g. `Rectangle.doesNotExist()`) can surface both `NoSuchField`
+//!   (from the callee's own standalone inference) and `NoSuchMethod`
+//!   (from the Call arm's dedicated dispatch) for the same typo — a
+//!   real diagnostic duplication, not a false positive; see
+//!   GENERICS_RULES.md's own "Known gaps" for why it's left as-is.
+//! - A struct/enum method's *own* extra generic params (beyond whatever
+//!   generic params the enclosing struct/enum itself declares) aren't
+//!   substituted at call sites — GENERICS_RULES.md.
+//! - `impl`/`extend` blocks on a generic struct aren't wired to that
+//!   struct's own generic scope (no current fixture exercises this;
+//!   inline struct methods — the common case — are unaffected).
+//!
+//! Previously listed here, now real (GENERICS_RULES.md):
+//! generic struct/enum/fn instantiation, `self` typing, general struct
+//! field access, and struct static/instance method dispatch all used to
+//! be `Unknown`-typed no-ops; they're substituted/checked for real now.
 
 #![allow(dead_code, unused_variables, unused_imports)]
 
 use std::collections::HashMap;
 
-use crate::ast::common::{BinOp, Span, TierAnnotation, UnaryOp};
+use crate::ast::common::{BinOp, GenericParam, Span, TierAnnotation, UnaryOp};
 use crate::ast::declarations::{
     ConstDecl, EnumDecl, EnumVariantPayload, ExtendDecl, FunctionDecl, ImplBlock,
     MethodDecl, Param, ParamKind, ReturnType, StructDecl, StructMember,
     TraitItem, TypeAlias, MethodSig,
 };
 use crate::ast::expressions::{
-    ArgKind, Expr, ExprKind, LambdaBody, LinqClause,
+    Arg, ArgKind, Expr, ExprKind, LambdaBody, LinqClause,
     MatchArmBody, OrElseFallback,
 };
 use crate::ast::literals::Literal;
@@ -133,6 +147,24 @@ enum VariantShape {
     Struct(Vec<(String, TypeId)>),
 }
 
+// ── Struct member metadata (GENERICS_RULES.md) ──────────────────────
+
+/// One method's signature, computed once during `collect_struct_sig` and
+/// consulted at every call site — mirrors `VariantShape`'s role for enums.
+/// `params`/`return_type` may contain `Param` placeholders for a generic
+/// struct; substituted per call site via `InferCtx::substitute`.
+#[derive(Clone)]
+struct MethodShape {
+    /// Whether the method's first param is `self`/`mut self`/`&self`/
+    /// `&mut self` — distinguishes `Box.new(v)` (associated/static call,
+    /// dispatched on the type name) from `boxed.unwrap()` (instance call,
+    /// dispatched on a value's own type).
+    has_self:    bool,
+    params:      Vec<TypeId>,
+    return_type: TypeId,
+    is_fallible: bool,
+}
+
 /// What a checked pattern definitively covers, for exhaustiveness.
 enum PatternCoverage {
     /// Matches unconditionally regardless of the scrutinee's shape —
@@ -166,6 +198,34 @@ struct InferCtx<'a> {
     /// Populated once per enum by `collect_enum_sig`, consulted by every
     /// other enum usage site for the rest of Pass 2 — ENUM_RULES.md.
     enum_variants:    HashMap<DefId, Vec<(String, VariantShape)>>,
+    /// Generic-param name -> `Param(i)` placeholder, active only while
+    /// collecting the signature or checking the body of the struct/enum/fn
+    /// currently being processed (GENERICS_RULES.md). Empty outside any
+    /// generic decl. `ast_type_to_sema`'s `TypeKind::Named` arm checks
+    /// this *before* falling back to `top_level_def`, so a bare `T` that
+    /// names one of the enclosing decl's own generic params resolves to
+    /// its placeholder instead of silently becoming `Unknown`.
+    current_generic_params: HashMap<String, TypeId>,
+    /// `self`'s type while inside a struct's own method bodies — the
+    /// abstract `Named { def, args: [Param(0), Param(1), ...] }` for a
+    /// generic struct, or `Named { def, args: [] }` for a non-generic
+    /// one. Method bodies are checked once, generically — the same way
+    /// Rust checks a generic impl's body once rather than per
+    /// instantiation — with concrete substitution happening at each call
+    /// site instead. `None` outside any method body.
+    current_struct_type: Option<TypeId>,
+    /// Populated once per struct by `collect_struct_sig`, mirrors
+    /// `enum_variants`'s role. Field types may contain `Param`
+    /// placeholders for a generic struct.
+    struct_fields:    HashMap<DefId, Vec<(String, TypeId)>>,
+    /// Populated once per struct by `collect_struct_sig`. Same `Param`-
+    /// placeholder treatment as `struct_fields`.
+    struct_methods:   HashMap<DefId, Vec<(String, MethodShape)>>,
+    /// How many generic params the struct/enum at this `DefId` declares.
+    /// Consulted at `TypeKind::Named` use sites to validate argument
+    /// count (`GenericArgCountMismatch`) and at construction/call sites
+    /// to know how many fresh `Var`s to allocate before substituting.
+    generic_arity:    HashMap<DefId, usize>,
     /// §8 — the enclosing function/method's `@tier(...)`. Needed here
     /// (not just in tier_check.rs) because `expr_types` entries can
     /// still be raw unresolved `Var`s at record-time — resolving a
@@ -190,7 +250,121 @@ impl<'a> InferCtx<'a> {
             pool_stack:       Vec::new(),
             next_pool:        0,
             enum_variants:    HashMap::new(),
+            current_generic_params: HashMap::new(),
+            current_struct_type:    None,
+            struct_fields:    HashMap::new(),
+            struct_methods:   HashMap::new(),
+            generic_arity:    HashMap::new(),
             current_tier:     TierAnnotation::High,
+        }
+    }
+
+    // ── Generics (GENERICS_RULES.md) ────────────────────────────────
+
+    /// Enter a struct/enum/fn's own generic scope, returning the
+    /// previous scope so the caller can restore it on the way out.
+    /// Builds one `Param(i)` placeholder per declared generic param,
+    /// keyed by name — repeated references to the same param name within
+    /// one declaration (e.g. `T` in both `Some(T)` and a sibling variant)
+    /// resolve to the identical `TypeId` for free, since the map is only
+    /// built once per `push`.
+    fn push_generic_scope(&mut self, params: &[GenericParam]) -> HashMap<String, TypeId> {
+        let mut new_map = HashMap::with_capacity(params.len());
+        for (i, gp) in params.iter().enumerate() {
+            new_map.insert(gp.name.to_string(), self.ctx.types.intern(SemaType::Param(i)));
+        }
+        std::mem::replace(&mut self.current_generic_params, new_map)
+    }
+
+    fn pop_generic_scope(&mut self, prev: HashMap<String, TypeId>) {
+        self.current_generic_params = prev;
+    }
+
+    /// Build a fresh instantiation of a struct/enum def: `Named { def,
+    /// args }` with one fresh `Var` per its own declared generic param
+    /// (or just its stored, already-computed `def_type` — cheap, no
+    /// allocation — for a non-generic one). Used at every *bare*
+    /// construction site (enum fieldless/tuple/struct-payload variant
+    /// construction, struct literals, struct associated-function calls)
+    /// where there's no already-known instantiation to substitute
+    /// against and the concrete type args must instead be *inferred*
+    /// from how the constructed value's parts are used — unification
+    /// does the rest, the same way this file's existing `fresh_var()`
+    /// already resolves an untyped `[]` list literal's element type from
+    /// context (GENERICS_RULES.md).
+    fn instantiate(&mut self, def_id: DefId) -> TypeId {
+        let arity = self.generic_arity.get(&def_id).copied().unwrap_or(0);
+        if arity == 0 {
+            return self.ctx.def_type(def_id).unwrap_or_else(|| self.unknown());
+        }
+        let args: Vec<TypeId> = (0..arity).map(|_| self.fresh_var()).collect();
+        self.ctx.types.insert(SemaType::Named { def: def_id, args })
+    }
+
+    /// Recursively replace every `Param(i)` inside `ty` with `args[i]`.
+    /// A type containing no `Param` (i.e. anything already concrete —
+    /// every non-generic type) is reconstructed unchanged; correctness
+    /// over cheapness here, matching the rest of this pass's existing
+    /// style (e.g. `unify`'s `apply`-then-compare).  Every real use site
+    /// of a generic struct/enum/fn's stored (raw, `Param`-containing)
+    /// signature goes through this before the result is unified,
+    /// displayed, or bound to a variable — `enum_shapes_of`, struct field
+    /// access, struct static/instance method dispatch, and generic
+    /// free-function calls.
+    fn substitute(&mut self, ty: TypeId, args: &[TypeId]) -> TypeId {
+        let t = self.ctx.types.get(ty).clone();
+        match t {
+            SemaType::Param(i) => args.get(i).copied().unwrap_or(ty),
+
+            SemaType::List(e) => { let e = self.substitute(e, args); self.ctx.types.insert(SemaType::List(e)) }
+            SemaType::Set(e)  => { let e = self.substitute(e, args); self.ctx.types.insert(SemaType::Set(e)) }
+            SemaType::Queue(e) => { let e = self.substitute(e, args); self.ctx.types.insert(SemaType::Queue(e)) }
+            SemaType::Stack(e) => { let e = self.substitute(e, args); self.ctx.types.insert(SemaType::Stack(e)) }
+            SemaType::Slice(e) => { let e = self.substitute(e, args); self.ctx.types.insert(SemaType::Slice(e)) }
+            SemaType::Pool(e)  => { let e = self.substitute(e, args); self.ctx.types.insert(SemaType::Pool(e)) }
+            SemaType::Handle(e) => { let e = self.substitute(e, args); self.ctx.types.insert(SemaType::Handle(e)) }
+            SemaType::Fallible(e) => { let e = self.substitute(e, args); self.ctx.types.insert(SemaType::Fallible(e)) }
+            SemaType::Task(e) => { let e = self.substitute(e, args); self.ctx.types.insert(SemaType::Task(e)) }
+            SemaType::Optional(e) => { let e = self.substitute(e, args); self.ctx.types.insert(SemaType::Optional(e)) }
+            SemaType::GcRef(e) => { let e = self.substitute(e, args); self.ctx.types.insert(SemaType::GcRef(e)) }
+
+            SemaType::Dictionary(k, v) => {
+                let k = self.substitute(k, args);
+                let v = self.substitute(v, args);
+                self.ctx.types.insert(SemaType::Dictionary(k, v))
+            }
+            SemaType::Tuple(ts) => {
+                let ts: Vec<TypeId> = ts.iter().map(|t| self.substitute(*t, args)).collect();
+                self.ctx.types.insert(SemaType::Tuple(ts))
+            }
+            SemaType::Array { len, elem } => {
+                let elem = self.substitute(elem, args);
+                self.ctx.types.insert(SemaType::Array { len, elem })
+            }
+            SemaType::ArenaRef { arena, mutable, inner } => {
+                let inner = self.substitute(inner, args);
+                self.ctx.types.insert(SemaType::ArenaRef { arena, mutable, inner })
+            }
+            SemaType::PoolRef { pool, mutable, inner } => {
+                let inner = self.substitute(inner, args);
+                self.ctx.types.insert(SemaType::PoolRef { pool, mutable, inner })
+            }
+            SemaType::OwnedRef { mutable, inner } => {
+                let inner = self.substitute(inner, args);
+                self.ctx.types.insert(SemaType::OwnedRef { mutable, inner })
+            }
+            SemaType::Function { params, return_type, is_fallible, generic_arity } => {
+                let params: Vec<TypeId> = params.iter().map(|p| self.substitute(*p, args)).collect();
+                let return_type = self.substitute(return_type, args);
+                self.ctx.types.insert(SemaType::Function { params, return_type, is_fallible, generic_arity })
+            }
+            SemaType::Named { def, args: inner_args } => {
+                let inner_args: Vec<TypeId> = inner_args.iter().map(|t| self.substitute(*t, args)).collect();
+                self.ctx.types.insert(SemaType::Named { def, args: inner_args })
+            }
+
+            // Primitives, Var, Null, Unknown, Void — nothing to substitute.
+            _ => ty,
         }
     }
 
@@ -498,13 +672,37 @@ impl<'a> InferCtx<'a> {
             }
             TypeKind::Named { path, args } => {
                 let root = path.first().copied().unwrap_or("");
+                // GENERICS_RULES.md — a bare single-segment name that
+                // matches one of the enclosing struct/enum/fn's own
+                // generic params (`T` inside `struct Box<T> { value: T }`)
+                // resolves to its `Param` placeholder, not a top-level
+                // lookup. Checked before `top_level_def` so a generic
+                // param can't be shadowed by an unrelated top-level type
+                // of the same name.
+                if path.len() == 1 && args.is_empty() {
+                    if let Some(&param_ty) = self.current_generic_params.get(root) {
+                        return param_ty;
+                    }
+                }
                 let arg_ids: Vec<TypeId> = args.iter()
                     .map(|a| self.ast_type_to_sema(a))
                     .collect();
                 match self.ctx.top_level_def(root) {
-                    Some(def_id) => self.ctx.types.insert(SemaType::Named {
-                        def: def_id, args: arg_ids,
-                    }),
+                    Some(def_id) => {
+                        if let Some(&expected) = self.generic_arity.get(&def_id) {
+                            if expected != arg_ids.len() {
+                                self.errors.add_type_error(TypeError::GenericArgCountMismatch {
+                                    type_name: root.to_string(),
+                                    expected,
+                                    found:     arg_ids.len(),
+                                    span:      ty.span,
+                                });
+                            }
+                        }
+                        self.ctx.types.insert(SemaType::Named {
+                            def: def_id, args: arg_ids,
+                        })
+                    }
                     None => self.unknown(),
                 }
             }
@@ -550,6 +748,7 @@ impl<'a> InferCtx<'a> {
                     params,
                     return_type: ret,
                     is_fallible: ft.is_fallible,
+                    generic_arity: 0, // bare `fn(..)`  type annotations are never generic
                 })
             }
             TypeKind::Infer => self.fresh_var(),
@@ -608,6 +807,7 @@ impl<'a> InferCtx<'a> {
     }
 
     fn collect_fn_sig<'ast>(&mut self, f: &FunctionDecl<'ast>) -> TypeId {
+        let prev_generics = self.push_generic_scope(f.generic_params);
         let param_tys: Vec<TypeId> = f.params.iter()
             .filter_map(|p| match p.kind {
                 ParamKind::Named { ty, .. } => ty.map(|t| self.ast_type_to_sema(t)),
@@ -615,18 +815,27 @@ impl<'a> InferCtx<'a> {
             })
             .collect();
         let (ret_ty, is_fallible) = self.return_type_to_sema(f.return_type.as_ref());
+        self.pop_generic_scope(prev_generics);
         let fn_ty = self.ctx.types.insert(SemaType::Function {
             params: param_tys,
             return_type: ret_ty,
             is_fallible,
+            generic_arity: f.generic_params.len(),
         });
         if let Some(def_id) = self.ctx.top_level_def(f.name) {
             self.ctx.set_def_type(def_id, fn_ty);
+            self.generic_arity.insert(def_id, f.generic_params.len());
         }
         fn_ty
     }
 
     fn collect_method_sig<'ast>(&mut self, m: &MethodDecl<'ast>) -> TypeId {
+        // NOTE: a method's *own* extra generic params (beyond whatever
+        // struct-level scope the caller may already have pushed — see
+        // `collect_struct_sig`) aren't substituted at call sites yet;
+        // scoped out for now (GENERICS_RULES.md "Known gaps"). Pushing
+        // here would only matter for that unimplemented case, so it's
+        // deliberately skipped rather than half-wired.
         let param_tys: Vec<TypeId> = m.params.iter()
             .filter_map(|p| match p.kind {
                 ParamKind::Named { ty, .. } => ty.map(|t| self.ast_type_to_sema(t)),
@@ -638,6 +847,7 @@ impl<'a> InferCtx<'a> {
             params: param_tys,
             return_type: ret_ty,
             is_fallible,
+            generic_arity: m.generic_params.len(),
         });
         if let Some(def_id) = self.ctx.resolutions.get(m.span) {
             self.ctx.set_def_type(def_id, fn_ty);
@@ -658,6 +868,7 @@ impl<'a> InferCtx<'a> {
             params: param_tys,
             return_type: ret_ty,
             is_fallible,
+            generic_arity: sig.generic_params.len(),
         });
         if let Some(def_id) = self.ctx.resolutions.get(sig.span) {
             self.ctx.set_def_type(def_id, fn_ty);
@@ -666,8 +877,23 @@ impl<'a> InferCtx<'a> {
 
     fn collect_struct_sig<'ast>(&mut self, s: &StructDecl<'ast>) {
         let Some(def_id) = self.ctx.top_level_def(s.name) else { return; };
-        let struct_ty = self.ctx.types.insert(SemaType::Named { def: def_id, args: vec![] });
+        self.generic_arity.insert(def_id, s.generic_params.len());
+        let prev_generics = self.push_generic_scope(s.generic_params);
+        // The abstract "Self" type while collecting this struct's own
+        // fields/methods — `Named { def, args: [Param(0), Param(1), ..] }`
+        // for a generic struct, `Named { def, args: [] }` for a plain
+        // one. Field/method signatures are stored in these (possibly
+        // `Param`-containing) terms; every real use site substitutes
+        // concrete args in via `substitute` (GENERICS_RULES.md).
+        let self_args: Vec<TypeId> = (0..s.generic_params.len())
+            .map(|i| self.ctx.types.intern(SemaType::Param(i)))
+            .collect();
+        let struct_ty = self.ctx.types.insert(SemaType::Named { def: def_id, args: self_args });
         self.ctx.set_def_type(def_id, struct_ty);
+
+        let mut fields:  Vec<(String, TypeId)>      = Vec::with_capacity(s.members.len());
+        let mut methods: Vec<(String, MethodShape)> = Vec::new();
+
         for member in s.members {
             match member {
                 StructMember::Field(f) => {
@@ -675,16 +901,40 @@ impl<'a> InferCtx<'a> {
                     if let Some(field_def) = self.ctx.resolutions.get(f.span) {
                         self.ctx.set_def_type(field_def, field_ty);
                     }
+                    fields.push((f.name.to_string(), field_ty));
                 }
-                StructMember::Method(m)   => { self.collect_method_sig(m); }
+                StructMember::Method(m) => {
+                    let fn_ty = self.collect_method_sig(m);
+                    let has_self = m.params.first()
+                        .map(|p| matches!(p.kind,
+                            ParamKind::SelfVal | ParamKind::SelfMut
+                            | ParamKind::SelfRef | ParamKind::SelfRefMut))
+                        .unwrap_or(false);
+                    if let SemaType::Function { params, return_type, is_fallible, .. } =
+                        self.ctx.types.get(fn_ty).clone()
+                    {
+                        methods.push((m.name.to_string(), MethodShape {
+                            has_self, params, return_type, is_fallible,
+                        }));
+                    }
+                }
                 StructMember::Property(_) => {}
             }
         }
+
+        self.struct_fields.insert(def_id, fields);
+        self.struct_methods.insert(def_id, methods);
+        self.pop_generic_scope(prev_generics);
     }
 
     fn collect_enum_sig<'ast>(&mut self, e: &EnumDecl<'ast>) {
         let Some(def_id) = self.ctx.top_level_def(e.name) else { return; };
-        let enum_ty = self.ctx.types.insert(SemaType::Named { def: def_id, args: vec![] });
+        self.generic_arity.insert(def_id, e.generic_params.len());
+        let prev_generics = self.push_generic_scope(e.generic_params);
+        let self_args: Vec<TypeId> = (0..e.generic_params.len())
+            .map(|i| self.ctx.types.intern(SemaType::Param(i)))
+            .collect();
+        let enum_ty = self.ctx.types.insert(SemaType::Named { def: def_id, args: self_args });
         self.ctx.set_def_type(def_id, enum_ty);
 
         let mut shapes: Vec<(String, VariantShape)> = Vec::with_capacity(e.variants.len());
@@ -737,18 +987,44 @@ impl<'a> InferCtx<'a> {
             });
         }
 
+        self.pop_generic_scope(prev_generics);
         self.enum_variants.insert(def_id, shapes);
     }
 
     /// Resolve `ty` down to `(enum DefId, variant shapes)` if it names a
     /// known enum, else `None` (covers non-enum types and unresolved
     /// vars uniformly — every enum caller below just treats "not an
-    /// enum" the same way regardless of why).
+    /// enum" the same way regardless of why). For a generic enum, the
+    /// stored shapes (raw, `Param`-containing — see `collect_enum_sig`)
+    /// are substituted against `ty`'s own concrete `args` before being
+    /// returned, so every caller (`check_pattern`, tuple/struct-variant
+    /// construction) gets already-concrete types for free and needs no
+    /// generics-awareness of its own (GENERICS_RULES.md).
     fn enum_shapes_of(&mut self, ty: TypeId) -> Option<(DefId, Vec<(String, VariantShape)>)> {
         let resolved = self.apply(ty);
-        let SemaType::Named { def, .. } = self.ctx.types.get(resolved) else { return None; };
-        let def = *def;
-        self.enum_variants.get(&def).map(|shapes| (def, shapes.clone()))
+        let SemaType::Named { def, args } = self.ctx.types.get(resolved).clone() else { return None; };
+        let raw_shapes = self.enum_variants.get(&def)?.clone();
+        if args.is_empty() {
+            return Some((def, raw_shapes));
+        }
+        let shapes: Vec<(String, VariantShape)> = raw_shapes.into_iter()
+            .map(|(name, shape)| {
+                let shape = match shape {
+                    VariantShape::None         => VariantShape::None,
+                    VariantShape::Discriminant => VariantShape::Discriminant,
+                    VariantShape::Tuple(tys) => VariantShape::Tuple(
+                        tys.into_iter().map(|t| self.substitute(t, &args)).collect()
+                    ),
+                    VariantShape::Struct(fields) => VariantShape::Struct(
+                        fields.into_iter()
+                            .map(|(n, t)| (n, self.substitute(t, &args)))
+                            .collect()
+                    ),
+                };
+                (name, shape)
+            })
+            .collect();
+        Some((def, shapes))
     }
 
     /// Type-checks a match-arm pattern against the scrutinee's type,
@@ -1203,11 +1479,26 @@ impl<'a> InferCtx<'a> {
     }
 
     fn infer_struct_bodies<'ast>(&mut self, s: &StructDecl<'ast>) {
+        let Some(def_id) = self.ctx.top_level_def(s.name) else { return; };
+        let prev_generics = self.push_generic_scope(s.generic_params);
+        // `self`'s type for the duration of this struct's own method
+        // bodies — see `current_struct_type`'s own doc comment. Rebuilt
+        // here (not reused from `collect_struct_sig`) since that field
+        // TypeId belongs to a different `push_generic_scope` call and
+        // this is a fresh one — same positional `Param` indices, so the
+        // *meaning* is identical, just a different `TypeId` instance.
+        let self_args: Vec<TypeId> = (0..s.generic_params.len())
+            .map(|i| self.ctx.types.intern(SemaType::Param(i)))
+            .collect();
+        let self_ty = self.ctx.types.insert(SemaType::Named { def: def_id, args: self_args });
+        let prev_self = self.current_struct_type.replace(self_ty);
         for member in s.members {
             if let StructMember::Method(m) = member {
                 self.infer_method_body(m);
             }
         }
+        self.current_struct_type = prev_self;
+        self.pop_generic_scope(prev_generics);
     }
 
     fn infer_const_body<'ast>(&mut self, c: &ConstDecl<'ast>) {
@@ -1503,7 +1794,7 @@ impl<'a> InferCtx<'a> {
                 }
             }
 
-            ExprKind::SelfExpr => self.unknown(), // TODO: current_struct_type
+            ExprKind::SelfExpr => self.current_struct_type.unwrap_or_else(|| self.unknown()),
 
             ExprKind::ShortDecl { value, .. } => {
                 let ty = self.infer_expr(value);
@@ -1650,9 +1941,23 @@ impl<'a> InferCtx<'a> {
                         if let Some(def_id) = self.ctx.top_level_def(ns) {
                             if let Some(shapes) = self.enum_variants.get(&def_id) {
                                 let shapes  = shapes.clone();
-                                let enum_ty = self.ctx.def_type(def_id).unwrap_or_else(|| self.unknown());
+                                // GENERICS_RULES.md — a fresh instantiation
+                                // per call site (not the raw, possibly
+                                // `Param`-containing stored type): a bare
+                                // constructor call has no already-known
+                                // concrete args, so they're inferred from
+                                // how the payload argument(s) below unify
+                                // against the (substituted) element types.
+                                let enum_ty  = self.instantiate(def_id);
+                                let inst_args: Vec<TypeId> = match self.ctx.types.get(enum_ty).clone() {
+                                    SemaType::Named { args, .. } => args,
+                                    _ => Vec::new(),
+                                };
                                 if let Some((vname, shape)) = shapes.iter().find(|(n, _)| n == field) {
                                     if let VariantShape::Tuple(elem_tys) = shape {
+                                        let elem_tys: Vec<TypeId> = elem_tys.iter()
+                                            .map(|t| self.substitute(*t, &inst_args))
+                                            .collect();
                                         if elem_tys.len() != args.len() {
                                             self.errors.add_type_error(TypeError::VariantArityMismatch {
                                                 enum_name:    ns.to_string(),
@@ -1677,6 +1982,49 @@ impl<'a> InferCtx<'a> {
                                         span:         expr.span,
                                     });
                                     return self.unknown();
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // GENERICS_RULES.md — struct associated/static function
+                // calls: `Box.new(42)`, dispatched on the type name (the
+                // matched method has no `self` param). Mirrors the enum
+                // tuple-variant constructor check just above. Instance
+                // calls (`boxed.unwrap()`) are handled separately, after
+                // the builtin-instance-method block below, since that one
+                // already needs the *receiver's* resolved type in scope
+                // rather than a bare type name.
+                if let ExprKind::Field { target, field } = callee.kind {
+                    if let ExprKind::Ident(ns) = target.kind {
+                        if let Some(def_id) = self.ctx.top_level_def(ns) {
+                            if let Some(methods) = self.struct_methods.get(&def_id).cloned() {
+                                if let Some((_, m)) = methods.iter().find(|(n, m)| n == field && !m.has_self) {
+                                    let m = m.clone();
+                                    let arity = self.generic_arity.get(&def_id).copied().unwrap_or(0);
+                                    let fresh_args: Vec<TypeId> = (0..arity).map(|_| self.fresh_var()).collect();
+                                    let params: Vec<TypeId> = m.params.iter()
+                                        .map(|p| self.substitute(*p, &fresh_args))
+                                        .collect();
+                                    let return_type = self.substitute(m.return_type, &fresh_args);
+                                    if params.len() != args.len() {
+                                        self.errors.add_type_error(TypeError::ArgumentCountMismatch {
+                                            expected: params.len(),
+                                            found:    args.len(),
+                                            span:     expr.span,
+                                        });
+                                    }
+                                    for (arg, param_ty) in args.iter().zip(params.iter()) {
+                                        let arg_span = match &arg.kind {
+                                            ArgKind::Positional(e)       => e.span,
+                                            ArgKind::Named { value, .. } => value.span,
+                                        };
+                                        if let Some(arg_ty) = self.ctx.expr_type(arg_span).map(|t| self.apply(t)) {
+                                            self.unify(*param_ty, arg_ty, arg_span);
+                                        }
+                                    }
+                                    return self.maybe_arena_ref(return_type);
                                 }
                             }
                         }
@@ -1742,10 +2090,59 @@ impl<'a> InferCtx<'a> {
                             }
                             return self.method_return_type(ret, wrap, bare_ty);
                         }
+
+                        // GENERICS_RULES.md — user struct instance
+                        // methods: `boxed.unwrap()`. `receiver_ty`'s own
+                        // `args` are already the concrete instantiation
+                        // (inferred back when `boxed` was constructed),
+                        // so — unlike the associated-call case above —
+                        // no fresh `Var`s are needed here, just substitute
+                        // the receiver's own args straight in.
+                        if let SemaType::Named { def, args: recv_args } =
+                            self.ctx.types.get(receiver_ty).clone()
+                        {
+                            if let Some(methods) = self.struct_methods.get(&def).cloned() {
+                                return match methods.iter().find(|(n, m)| n == field && m.has_self) {
+                                    Some((_, m)) => {
+                                        let m = m.clone();
+                                        let params: Vec<TypeId> = m.params.iter()
+                                            .map(|p| self.substitute(*p, &recv_args))
+                                            .collect();
+                                        let return_type = self.substitute(m.return_type, &recv_args);
+                                        if params.len() != args.len() {
+                                            self.errors.add_type_error(TypeError::ArgumentCountMismatch {
+                                                expected: params.len(),
+                                                found:    args.len(),
+                                                span:     expr.span,
+                                            });
+                                        }
+                                        for (arg, param_ty) in args.iter().zip(params.iter()) {
+                                            let arg_span = match &arg.kind {
+                                                ArgKind::Positional(e)       => e.span,
+                                                ArgKind::Named { value, .. } => value.span,
+                                            };
+                                            if let Some(arg_ty) = self.ctx.expr_type(arg_span).map(|t| self.apply(t)) {
+                                                self.unify(*param_ty, arg_ty, arg_span);
+                                            }
+                                        }
+                                        self.maybe_arena_ref(return_type)
+                                    }
+                                    None => {
+                                        let on_type = self.display_type(receiver_ty);
+                                        self.errors.add_type_error(TypeError::NoSuchMethod {
+                                            method: field.to_string(),
+                                            on_type,
+                                            span:   callee.span,
+                                        });
+                                        self.unknown()
+                                    }
+                                };
+                            }
+                        }
                     }
                 }
 
-                self.call_return_type(callee_ty, expr.span)
+                self.call_return_type(callee_ty, args, expr.span)
             }
 
             ExprKind::Field { target, field } => {
@@ -1762,8 +2159,16 @@ impl<'a> InferCtx<'a> {
                             let shapes = shapes.clone();
                             if let Some((_, shape)) = shapes.iter().find(|(n, _)| n == field) {
                                 if matches!(shape, VariantShape::None | VariantShape::Discriminant) {
-                                    let enum_ty = self.ctx.def_type(def_id)
-                                        .unwrap_or_else(|| self.unknown());
+                                    // GENERICS_RULES.md — fresh per-use
+                                    // instantiation, same reasoning as the
+                                    // tuple-variant constructor above:
+                                    // `Option.None` has no argument to
+                                    // infer T from here, so it starts as
+                                    // an unresolved Var and picks up a
+                                    // concrete type from wherever the
+                                    // result is used (an annotation, a
+                                    // return type, a later unify).
+                                    let enum_ty = self.instantiate(def_id);
                                     return self.maybe_arena_ref(enum_ty);
                                 }
                             } else {
@@ -1777,8 +2182,45 @@ impl<'a> InferCtx<'a> {
                         }
                     }
                 }
-                self.infer_expr(target);
-                self.unknown() // TODO: field table
+
+                // GENERICS_RULES.md / struct field access — `foo.field`
+                // on a plain struct instance. `Named { def, args }`'s
+                // `args` are already the receiver's *own* concrete
+                // instantiation (inferred back when the receiver itself
+                // was constructed), so no fresh-var allocation is needed
+                // here — just substitute into the field's raw stored type.
+                let receiver_ty = self.infer_expr(target);
+                let receiver_ty = self.apply(receiver_ty);
+                if let SemaType::Named { def, args } = self.ctx.types.get(receiver_ty).clone() {
+                    if let Some(fields) = self.struct_fields.get(&def).cloned() {
+                        if let Some((_, raw_ty)) = fields.iter().find(|(n, _)| n == field) {
+                            return self.substitute(*raw_ty, &args);
+                        }
+                        // Not a field — this `ExprKind::Field` may be
+                        // getting pre-inferred as the *callee* of an
+                        // enclosing `Call` (`Box.new(..)`, `boxed.unwrap()`
+                        // — the Call arm unconditionally infers its
+                        // callee before running its own static/instance
+                        // method dispatch, same as it already did for
+                        // enum tuple-variant construction pre-dating this
+                        // change). A real method name here is expected
+                        // and not an error; only a name that's neither a
+                        // field nor a method is genuinely unknown.
+                        let is_method = self.struct_methods.get(&def)
+                            .map(|ms| ms.iter().any(|(n, _)| n == field))
+                            .unwrap_or(false);
+                        if !is_method {
+                            let on_type = self.display_type(receiver_ty);
+                            self.errors.add_type_error(TypeError::NoSuchField {
+                                field: field.to_string(),
+                                on_type,
+                                span:  expr.span,
+                            });
+                        }
+                        return self.unknown();
+                    }
+                }
+                self.unknown() // not a known struct/enum receiver
             }
             ExprKind::OptionalChain { target, .. } => {
                 self.infer_expr(target);
@@ -1859,12 +2301,22 @@ impl<'a> InferCtx<'a> {
                     if let Some(def_id) = self.ctx.top_level_def(path[0]) {
                         if let Some(shapes) = self.enum_variants.get(&def_id) {
                             let shapes    = shapes.clone();
-                            let enum_ty   = self.ctx.def_type(def_id).unwrap_or_else(|| self.unknown());
+                            // GENERICS_RULES.md — same fresh-per-call-site
+                            // reasoning as the tuple-variant constructor:
+                            // the struct-payload fields' values below are
+                            // what T gets inferred from via unification.
+                            let enum_ty   = self.instantiate(def_id);
+                            let inst_args: Vec<TypeId> = match self.ctx.types.get(enum_ty).clone() {
+                                SemaType::Named { args, .. } => args,
+                                _ => Vec::new(),
+                            };
                             let variant   = path[path.len() - 1];
                             match shapes.iter().find(|(n, _)| n == variant) {
                                 Some((vname, VariantShape::Struct(field_tys))) => {
                                     let vname     = vname.clone();
-                                    let field_tys = field_tys.clone();
+                                    let field_tys: Vec<(String, TypeId)> = field_tys.iter()
+                                        .map(|(n, t)| (n.clone(), self.substitute(*t, &inst_args)))
+                                        .collect();
                                     for f in fields.iter() {
                                         match field_tys.iter().find(|(n, _)| n == f.name) {
                                             Some((_, t)) => {
@@ -1907,8 +2359,40 @@ impl<'a> InferCtx<'a> {
                         }
                     }
                 }
+                // GENERICS_RULES.md / plain struct literal field
+                // validation — `Rectangle { width = w, height = h }`.
+                // Fresh per-call-site instantiation, same as a struct's
+                // `TypeName.method(..)` associated-function call: each
+                // provided field's value is what the struct's own generic
+                // args (if any) get inferred from.
+                let root = path.first().copied().unwrap_or("");
+                if let Some(def_id) = self.ctx.top_level_def(root) {
+                    if let Some(decl_fields) = self.struct_fields.get(&def_id).cloned() {
+                        let struct_ty  = self.instantiate(def_id);
+                        let inst_args: Vec<TypeId> = match self.ctx.types.get(struct_ty).clone() {
+                            SemaType::Named { args, .. } => args,
+                            _ => Vec::new(),
+                        };
+                        for f in fields.iter() {
+                            let val_ty = self.infer_expr(f.value);
+                            match decl_fields.iter().find(|(n, _)| n == f.name) {
+                                Some((_, raw_ty)) => {
+                                    let field_ty = self.substitute(*raw_ty, &inst_args);
+                                    self.unify(field_ty, val_ty, f.span);
+                                }
+                                None => {
+                                    self.errors.add_type_error(TypeError::NoSuchField {
+                                        field:   f.name.to_string(),
+                                        on_type: root.to_string(),
+                                        span:    f.span,
+                                    });
+                                }
+                            }
+                        }
+                        return self.maybe_arena_ref(struct_ty);
+                    }
+                }
                 for f in fields.iter() { self.infer_expr(f.value); }
-                let root      = path.first().copied().unwrap_or("");
                 let struct_ty = self.ctx.top_level_def(root)
                     .and_then(|id| self.ctx.def_type(id))
                     .unwrap_or_else(|| self.unknown());
@@ -1941,6 +2425,7 @@ impl<'a> InferCtx<'a> {
                     params:      param_tys,
                     return_type: ret_resolved,
                     is_fallible: false,
+                    generic_arity: 0, // lambdas are never generic
                 });
                 // GAP 2 — closure capture. A lambda built inside a
                 // `with arena(…)` block may capture arena-scoped locals
@@ -2099,10 +2584,43 @@ impl<'a> InferCtx<'a> {
         }
     }
 
-    fn call_return_type(&mut self, callee_ty: TypeId, span: Span) -> TypeId {
+    /// GENERICS_RULES.md — was previously "just return the declared
+    /// return type," with `args` inferred (each individually, for their
+    /// own diagnostics) but never unified against the fn's own param
+    /// types at all — not for generic functions, not for *any* plain
+    /// function call. `identity(5)` and `identity(5, 5, 5)` type-checked
+    /// identically. Fixed uniformly rather than special-cased to only
+    /// generic callees: a non-generic fn's `generic_arity` is 0, so the
+    /// fresh-Var/substitute step below is a no-op for it and this is
+    /// just real argument checking that never existed, generic or not.
+    fn call_return_type<'ast>(&mut self, callee_ty: TypeId, args: &[Arg<'ast>], span: Span) -> TypeId {
         let resolved = self.apply(callee_ty);
-        match self.ctx.types.get(resolved) {
-            SemaType::Function { return_type, .. } => *return_type,
+        match self.ctx.types.get(resolved).clone() {
+            SemaType::Function { params, return_type, generic_arity, .. } => {
+                let fresh_args: Vec<TypeId> = (0..generic_arity).map(|_| self.fresh_var()).collect();
+                let params: Vec<TypeId> = params.iter()
+                    .map(|p| self.substitute(*p, &fresh_args))
+                    .collect();
+                let return_type = self.substitute(return_type, &fresh_args);
+
+                if params.len() != args.len() {
+                    self.errors.add_type_error(TypeError::ArgumentCountMismatch {
+                        expected: params.len(),
+                        found:    args.len(),
+                        span,
+                    });
+                }
+                for (arg, param_ty) in args.iter().zip(params.iter()) {
+                    let arg_span = match &arg.kind {
+                        ArgKind::Positional(e)       => e.span,
+                        ArgKind::Named { value, .. } => value.span,
+                    };
+                    if let Some(arg_ty) = self.ctx.expr_type(arg_span).map(|t| self.apply(t)) {
+                        self.unify(*param_ty, arg_ty, arg_span);
+                    }
+                }
+                return_type
+            }
             SemaType::Var(_)   => self.fresh_var(),
             SemaType::Unknown  => self.unknown(),
             _ => {
@@ -2191,6 +2709,63 @@ impl<'a> InferCtx<'a> {
     /// recursively unifying their type arguments. Extracts inner TypeIds
     /// (which are Copy) before calling unify to avoid borrow conflicts.
     fn structurally_compatible(&mut self, a: TypeId, b: TypeId) -> bool {
+        // GENERICS_RULES.md — `fn(..)` type compatibility, e.g. checking
+        // a lambda/closure argument's inferred type against a declared
+        // `fn(int) int`-shaped param. Multi-pair (each param position,
+        // plus the return type), so it can't reuse the single-inner-pair
+        // pattern the rest of this function is built around — handled
+        // separately, up front. Never exercised before this file's own
+        // `call_return_type` started actually unifying call arguments
+        // against declared param types at all (previously: computed and
+        // discarded) — a plain shape mismatch (param count) is a real
+        // difference; a nested unresolved `Var` (an untyped lambda
+        // param's type, inferred from how it's *used* inside the lambda
+        // body) is exactly what a normal call argument commonly looks
+        // like and must bind through here, not hard-fail.
+        let fn_pair: Option<(Vec<TypeId>, TypeId, Vec<TypeId>, TypeId)> = {
+            match (self.ctx.types.get(a), self.ctx.types.get(b)) {
+                (SemaType::Function { params: pa, return_type: ra, .. },
+                 SemaType::Function { params: pb, return_type: rb, .. }) =>
+                    Some((pa.clone(), *ra, pb.clone(), *rb)),
+                _ => None,
+            }
+        };
+        if let Some((pa, ra, pb, rb)) = fn_pair {
+            if pa.len() != pb.len() { return false; }
+            for (ia, ib) in pa.iter().zip(pb.iter()) {
+                self.unify(*ia, *ib, Span::at(0));
+            }
+            self.unify(ra, rb, Span::at(0));
+            return true;
+        }
+
+        // GENERICS_RULES.md — `Named { def, args }` compatibility. Was
+        // previously `def_a == def_b` alone, with `args` completely
+        // ignored — meaning two independently-built instantiations of
+        // the same generic type (the canonical case: a `let` binding's
+        // own type annotation, built fresh via `ast_type_to_sema`,
+        // reconciled against its initializer's own separately-built
+        // `Named`, e.g. `let x: Option<int> = Option.None`) were treated
+        // as compatible without ever binding the initializer's
+        // unresolved `Var` args to the annotation's concrete ones. Two
+        // non-generic types (`args` empty on both sides) still take the
+        // cheap `def_a == def_b` path with nothing further to unify.
+        let named_pair: Option<(DefId, Vec<TypeId>, DefId, Vec<TypeId>)> = {
+            match (self.ctx.types.get(a), self.ctx.types.get(b)) {
+                (SemaType::Named { def: da, args: aa }, SemaType::Named { def: db, args: ab }) =>
+                    Some((*da, aa.clone(), *db, ab.clone())),
+                _ => None,
+            }
+        };
+        if let Some((da, aa, db, ab)) = named_pair {
+            if da != db { return false; }
+            if aa.len() != ab.len() { return false; } // same def => should never differ; defensive
+            for (ia, ib) in aa.iter().zip(ab.iter()) {
+                self.unify(*ia, *ib, Span::at(0));
+            }
+            return true;
+        }
+
         // Extract inner id pairs first, releasing the immutable borrow on
         // self.ctx.types before we call self.unify (which needs &mut self).
         let inner: Option<(TypeId, TypeId)> = {
@@ -2227,9 +2802,6 @@ impl<'a> InferCtx<'a> {
                 }
                 (SemaType::Pool(ia),   SemaType::Pool(ib))   => Some((*ia, *ib)),
                 (SemaType::Handle(ia), SemaType::Handle(ib)) => Some((*ia, *ib)),
-                (SemaType::Named { def: da, .. }, SemaType::Named { def: db, .. }) => {
-                    return da == db;
-                }
                 // `null` also compares against a PoolRef/ArenaRef-wrapped
                 // Optional — `AcquireHandle`'s result (MEMORY_MODEL.md
                 // §11) needs the escape-boundary wrap applied around the

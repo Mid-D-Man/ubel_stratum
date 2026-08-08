@@ -1,0 +1,20 @@
+// tests/fixtures/err_struct_no_such_field.ubl
+// GENERICS_RULES.md — general struct field access didn't exist at all
+// before this file (every `foo.field` silently typed as `Unknown`, so
+// a typo'd field name was never caught). `depth` isn't a field of
+// Rectangle.
+// Expected: sema FAIL (NoSuchField).
+
+struct Rectangle {
+    width:  int
+    height: int
+
+    pub fn new(w: int, h: int) Rectangle {
+        return Rectangle { width = w, height = h }
+    }
+}
+
+fn main() void {
+    let rect = Rectangle.new(10, 5)
+    let d = rect.depth
+}

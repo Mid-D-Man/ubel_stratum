@@ -99,6 +99,17 @@ pub enum SemaType {
         args: Vec<TypeId>,
     },
 
+    /// A reference to the Nth generic parameter of the struct/enum/fn
+    /// currently being declared — e.g. inside `struct Box<T> { value: T }`,
+    /// `T`'s field type resolves to `Param(0)`, not a concrete type. Only
+    /// ever appears in the *raw* stored signature of a generic
+    /// struct/enum/fn (`struct_fields`/`struct_methods`/`enum_variants`/
+    /// `SemaType::Function.generic_arity` in `type_infer.rs`); every real
+    /// use site substitutes `Param(i) -> args[i]` before a value of this
+    /// shape is unified, displayed, or otherwise treated as a concrete
+    /// type. See `type_infer.rs`'s `substitute`.
+    Param(usize),
+
     // ── Modifiers ────────────────────────────────────────────────
     /// `T!` — may fail.
     Fallible(TypeId),
@@ -142,6 +153,17 @@ pub enum SemaType {
         params:      Vec<TypeId>,
         return_type: TypeId,
         is_fallible: bool,
+        /// How many of the *declaring* fn/method's own generic params
+        /// (`fn identity<T>(x: T) T`) appear as `Param(i)` placeholders
+        /// inside `params`/`return_type`. Zero for non-generic functions,
+        /// closures, and bare `fn(int) bool` type annotations — those
+        /// never contain a `Param`. A call site uses this to know how
+        /// many fresh `Var`s to allocate before substituting, without
+        /// having to re-scan `params`/`return_type` for the highest
+        /// `Param` index actually used (a param declared but never
+        /// referenced in a signature, e.g. only used inside the body,
+        /// would otherwise be invisible to that scan).
+        generic_arity: usize,
     },
 
     // ── Inference variables ──────────────────────────────────────
@@ -304,7 +326,7 @@ impl SemaType {
                 }
             }
 
-            SemaType::Function { params, return_type, is_fallible } => format!(
+            SemaType::Function { params, return_type, is_fallible, .. } => format!(
                 "fn({}) {}{}",
                 params.iter()
                     .map(|t| table.get(*t).display(table, symbols))
@@ -313,6 +335,11 @@ impl SemaType {
                 table.get(*return_type).display(table, symbols),
                 if *is_fallible { "!" } else { "" },
             ),
+
+            // Should always be substituted away before display() sees it
+            // (see the `Param` variant's own doc comment) — this arm is a
+            // safety net, not an expected real-diagnostic rendering.
+            SemaType::Param(i) => format!("<generic param #{}>", i),
 
             SemaType::Var(n) => format!("?T{}", n),
             SemaType::Unknown => "<unknown>".into(),
@@ -345,6 +372,21 @@ enum Internable {
     I8, I16, I32, I64, U8, U16, U32, U64,
     F32, F64, Isize, Usize,
     Null, Unknown,
+    /// `SemaType::Param(usize)` — see that variant's own doc comment.
+    /// Interned by index alone (not per-declaration), so `Param(0)`
+    /// inside one generic decl's stored signature and `Param(0)`
+    /// rebuilt in a later pass over the *same* decl (e.g.
+    /// `collect_struct_sig`'s vs. `infer_struct_bodies`'s own
+    /// independently-built placeholder set) are the identical `TypeId`
+    /// rather than merely equal-by-value — required for `unify`'s `a ==
+    /// b` fast path (and everything downstream of it) to recognize two
+    /// references to "the enclosing decl's own Nth generic param" as
+    /// trivially the same type. Safe to share globally across unrelated
+    /// decls too: a `Param` placeholder never leaks into a value's real,
+    /// finished type — every real use site substitutes concrete args in
+    /// before the result is unified against anything from a different
+    /// decl's scope (GENERICS_RULES.md).
+    Param(usize),
     List(TypeId),
     Optional(TypeId),
     Fallible(TypeId),
@@ -378,6 +420,7 @@ impl TypeTable {
             SemaType::Void    => Some(Internable::Void),
             SemaType::Null    => Some(Internable::Null),
             SemaType::Unknown => Some(Internable::Unknown),
+            SemaType::Param(i) => Some(Internable::Param(*i)),
             SemaType::List(t) => Some(Internable::List(*t)),
             SemaType::Optional(t) => Some(Internable::Optional(*t)),
             SemaType::Fallible(t) => Some(Internable::Fallible(*t)),

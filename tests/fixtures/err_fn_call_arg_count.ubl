@@ -1,0 +1,14 @@
+// tests/fixtures/err_fn_call_arg_count.ubl
+// GENERICS_RULES.md — plain function calls never unified arguments
+// against declared param types at all before this file (generic or
+// not) — `call_return_type` computed and discarded every arg's type.
+// `add` takes two params; called here with three.
+// Expected: sema FAIL (ArgumentCountMismatch).
+
+fn add(a: int, b: int) int {
+    return a + b
+}
+
+fn main() void {
+    let x = add(1, 2, 3)
+}

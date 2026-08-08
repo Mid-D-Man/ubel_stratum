@@ -1,0 +1,48 @@
+// tests/fixtures/ok_generic_enums.ubl
+// GENERICS_RULES.md — Option<T>/Result<T,E>-shaped generic enums:
+// construction, pattern matching and payload binding, two independent
+// instantiations of the same enum with different T in one program, and
+// annotation-driven inference for a fieldless variant (`None`) that has
+// no payload argument of its own to infer T from.
+// Expected: zero errors, all assertions pass.
+
+enum Option<T> {
+    Some(T),
+    None
+}
+
+enum Result<T, E> {
+    Ok(T),
+    Err(E)
+}
+
+fn unwrap_or(o: Option<int>, default: int) int {
+    match o {
+        Some(value) => return value,
+        None        => return default,
+    }
+}
+
+fn describe(r: Result<int, string>) string {
+    match r {
+        Ok(value) => return "ok: " + to_string(value),
+        Err(msg)  => return "err: " + msg,
+    }
+}
+
+fn main() void {
+    let a = Option.Some(5)
+    assert(unwrap_or(a, 0) == 5, "Option<int>.Some binds its payload")
+
+    let b: Option<int> = Option.None
+    assert(unwrap_or(b, -1) == -1, "annotation-driven inference for a fieldless generic variant")
+
+    let s = Option.Some("hello")
+    match s {
+        Some(value) => assert(value == "hello", "Option<string>.Some binds a different T cleanly"),
+        None        => assert(false, "unreachable"),
+    }
+
+    assert(describe(Result.Ok(42)) == "ok: 42", "Result<T,E>.Ok binds T")
+    assert(describe(Result.Err("bad")) == "err: bad", "Result<T,E>.Err binds E")
+}

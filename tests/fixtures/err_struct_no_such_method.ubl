@@ -1,0 +1,19 @@
+// tests/fixtures/err_struct_no_such_method.ubl
+// GENERICS_RULES.md — general struct instance-method dispatch didn't
+// exist at all before this file (every `foo.method()` silently typed
+// as `Unknown`). `shrink` isn't a method of Rectangle.
+// Expected: sema FAIL (NoSuchMethod).
+
+struct Rectangle {
+    width:  int
+    height: int
+
+    pub fn new(w: int, h: int) Rectangle {
+        return Rectangle { width = w, height = h }
+    }
+}
+
+fn main() void {
+    let rect = Rectangle.new(10, 5)
+    rect.shrink()
+}

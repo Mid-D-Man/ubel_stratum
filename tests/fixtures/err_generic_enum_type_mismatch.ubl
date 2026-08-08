@@ -1,0 +1,17 @@
+// tests/fixtures/err_generic_enum_type_mismatch.ubl
+// GENERICS_RULES.md — `take_int_option` declares `Option<int>`; passing
+// an `Option<string>` must be rejected. Proves the two instantiations
+// are genuinely distinct, checked types now, not both silently
+// `Unknown`-compatible the way every generic use was before this file.
+// Expected: sema FAIL (TypeMismatch).
+
+enum Option<T> {
+    Some(T),
+    None
+}
+
+fn take_int_option(o: Option<int>) void {}
+
+fn main() void {
+    take_int_option(Option.Some("not an int"))
+}

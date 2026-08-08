@@ -1,0 +1,14 @@
+// tests/fixtures/err_generic_arg_count.ubl
+// GENERICS_RULES.md — `Option<T>` declares exactly one generic param;
+// annotating a binding with two type arguments is a real arity error,
+// not silently accepted.
+// Expected: sema FAIL (GenericArgCountMismatch).
+
+enum Option<T> {
+    Some(T),
+    None
+}
+
+fn main() void {
+    let bad: Option<int, string> = Option.None
+}
