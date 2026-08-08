@@ -1,9 +1,30 @@
 // Brought to u by MidManStudio
-// display()-catch-all-fix + MEMORY_MODEL.md §9 delivery: cleanup of the
-// now-stale method-tier-gating.tar.gz replacements bundle from the previous
+// Generic enums/structs delivery: cleanup of the now-stale
+// enum-sema-implementation.tar.gz replacements bundle from the previous
 // session (already applied, and would otherwise get re-extracted alongside
-// this session's bundle, clobbering files both bundles touch — tier/mod.rs
-// and type_infer.rs — with its older content).
+// this session's generics-implementation.tar.gz, clobbering the files both
+// bundles touch — type_infer.rs in particular — with its older content).
+// Also patches a small, real, pre-existing parser bug found and fixed
+// while building the generics work: try_parse_generic_args() speculatively
+// backed out of a real generic-args parse whenever the token right after
+// the closing `>` was `=`/`==`, on the theory it might be a misparsed
+// comparison — a heuristic that only makes sense in expression position,
+// but the function is only ever called from type-grammar positions
+// (parse_type_base's Named arm, and the impl-Foo-for-Bar trait-impl check
+// in parse_decl.rs), where it only ever misfired. `let x: Option<int> = ..`
+// — `=` right after `>`, the single most ordinary shape a generic type
+// annotation takes — failed to parse at all before this patch.
+//
+// NOTE: patch_replace_text (exact literal substring, Mode 1) is used here
+// deliberately instead of patch_replace_fn — try_parse_generic_args's own
+// NAME also appears as a plain call site (self.try_parse_generic_args())
+// earlier in this same file, and patch_replace_fn's declaration-finding
+// regex matches on the function name alone, not `fn `-prefixed
+// declarations specifically, so it latches onto the call site instead of
+// the real declaration — confirmed by testing patch_replace_fn against a
+// throwaway clone first; it corrupted the file with a duplicated function
+// body. patch_replace_text's anchor is a big, multi-line block (verified
+// unique in the original file before writing this) with no such ambiguity.
 
 @CONFIG(
   version  -> "1.0.0",
@@ -12,5 +33,13 @@
 
 @DATA(
   delete_files::
-    { path = ".mdix/replacements/method-tier-gating.tar.gz" }
+    { path = ".mdix/replacements/enum-sema-implementation.tar.gz" }
+
+  patch_files::
+    {
+      path    = "crates/rd_parser/src/parsers/parse_type.rs",
+      op      = "replace_text",
+      anchor  = "        // Confirm close `>` AND that what follows isn't `=` (that would be a\n        // comparison `a < b >= c` which we'd misparse)\n        if ok && self.cursor.is_at(&TokenType::Greater) {\n            self.cursor.advance(); // consume `>`\n            // Validate: next token should be something that can follow a type,\n            // not an `=` (which would indicate this was `<=`)\n            let next = self.cursor.peek();\n            if matches!(next, TokenType::Equal | TokenType::EqualEqual) {\n                // Looks like a comparison — restore\n                self.cursor.restore(saved);\n                self.memo_set(start_pos, crate::parser::MemoRule::GenericArgs,\n                    crate::parser::MemoEntry::Miss);\n                return &[];\n            }\n\n            self.memo_set(start_pos, crate::parser::MemoRule::GenericArgs,\n",
+      content = "        // Confirm close `>`. NOTE: earlier revisions of this function also\n        // speculatively backed out if the token right after `>` was `=`/`==`\n        // (worried about misparsing a chained comparison `a < b >= c`) — but\n        // both real call sites (`parse_type_base`'s `Named` arm, and the\n        // `impl Foo<T> for Bar` trait-impl check in `parse_decl.rs`) are\n        // *type*-grammar positions, not expression positions; there's no\n        // comparison-expression interpretation possible there at all, so\n        // that guard only ever misfired — e.g. `let x: Option<int> = ...`\n        // (`=` right after `>`, the single most ordinary case for a\n        // generic type annotation) would wrongly restore and leave a bare\n        // `<` for the caller to choke on. Removed; nothing currently calls\n        // this from expression/Pratt context, where a real ambiguity could\n        // exist (see PARSER_RULES.md §5.1 — that disambiguation isn't\n        // wired through this function).\n        if ok && self.cursor.is_at(&TokenType::Greater) {\n            self.cursor.advance(); // consume `>`\n            self.memo_set(start_pos, crate::parser::MemoRule::GenericArgs,\n"
+    }
 )
