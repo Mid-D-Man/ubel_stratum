@@ -1,13 +1,24 @@
 # Data Structures — Design & Discussion Notes
 
-**Status:** Discussion only. Nothing in this document is implemented or
-decided — it's the promised home for the data-structure conversation
-that kept surfacing mid-session, so it stops being ad-hoc. This is also
-the deferred item already flagged in a prior session's handover: `Hive<T>`,
-`Unique<T>`/`Shared<T>`/`SyncShared<T>`, FFI wrappers (`FfiSpan`/
-`ExternBuffer`/`MemGuard`), `Span<T>`, and tier-aware `List<T>` backend
-switching were all noted as "deserves a dedicated design document rather
-than ad-hoc conversation" — this is that document.
+**Status:** Decisions below are locked in (discussed and confirmed
+directly). Nothing here is implemented yet — this is design-record, not
+shipped code. This is also the deferred item already flagged in a prior
+session's handover: `Hive<T>`, `Unique<T>`/`Shared<T>`/`SyncShared<T>`,
+FFI wrappers (`FfiSpan`/`ExternBuffer`/`MemGuard`), `Span<T>`, and
+tier-aware `List<T>` backend switching were all noted as "deserves a
+dedicated design document rather than ad-hoc conversation" — this is
+that document.
+
+## Decisions locked in
+
+| Question | Decision |
+|---|---|
+| Rust `Box<T>` equivalent naming | **`Unique<T>`** — not `Heap<T>`. The family is `Unique`/`Shared`/`SyncShared`; `Unique`/`Shared`/`SyncShared` all describe *ownership model*, which is the axis that actually matters (and is what the borrow checker cares about). `Heap<T>` would break that pattern by describing *location* instead — and arena/pool are heap-backed too, so "heap" doesn't even uniquely distinguish this type from Ubel's other tiers the way "unique ownership" does. |
+| FFI boundary wrapper naming | **`FfiSpan`** |
+| Hive-shaped capability | **Extend `Pool<T>`, no separate `Hive<T>` type.** Two additions: `.growable()` (block-chained, not naive `Vec::resize` — see §1) and `.iter()` (skipfield-style, skips erased slots). Matches the project's existing precedent of unifying rather than duplicating (`pool<T>(count)`/`Pool<T>` themselves were explicitly unified for the same reason). |
+| `List<T>` arena-tier `.remove()` | **Swap-remove.** O(1), no reclamation needed (fits arena's append-only nature). Reorders the list, which invalidates a *plain index* into the swapped element — pair with `Handle<T>`-style generational references (same pattern `Pool<T>` already uses) from the start rather than raw indices now and a migration later. |
+| Fixed-capacity inline vector | **A genuinely separate structure from `Pool<T>`, not another face of it.** `Pool<T>` is inherently heap-backed (`PoolData.slots` is a `Vec`; `Handle<T>` exists specifically to indirect into that heap allocation). An inline vector's entire premise is the opposite — storage lives on the stack or embedded directly in a parent struct, zero heap allocation, zero indirection. Structurally incompatible with sitting on top of `Pool<T>`. |
+| "Static Core, Dynamic Shell" | **Not real, established terminology anywhere** — searched two different phrasings (`"static core" "dynamic shell" ECS`, `"static core dynamic shell" compiler`), nothing in any engine, language, or writeup uses this term. Almost certainly flavor-text framing (from the earlier external conversation) for a real, describable concept — the compiler transparently batching clean OOP-looking code into flat ECS storage — dressed up with a name that sounds established but isn't. Recommendation: drop the phrase; describe the mechanism plainly if/when it gets written up, rather than anchoring to a borrowed name nobody else will recognize. |
 
 ---
 
@@ -59,7 +70,7 @@ one instruction; every consumer would hand-roll `for i in
 capability from (a) — worth tracking as its own follow-up
 (`.iter()` on `Pool<T>`), not bundled into "growable."
 
-### Recommendation
+### Decision
 
 Extend `Pool<T>` with these two capabilities rather than introducing a
 separate `Hive<T>` type. This matches the project's own established
@@ -174,11 +185,12 @@ conclusion (alignment still matters, still worth enforcing), just softens
 performance depending on target."
 
 This connects directly to the already-flagged `FfiSpan`/`ExternBuffer`/
-`MemGuard` naming discussion from an earlier session — same open
-question, still open: which name, and does it live as its own type or as
+`MemGuard` naming discussion from an earlier session — **naming resolved:
+`FfiSpan`.** Still genuinely open: whether it lives as its own type or as
 a validated construction path into an existing one (e.g. a checked way
 to build a `Span<T>`-if-that-ships, or a checked way to build a raw
-`@tier(low)` slice).
+`@tier(low)` slice) — not a naming question, an architecture one, not
+addressed yet.
 
 ---
 
@@ -192,42 +204,38 @@ system generally: the developer writes one thing, the compiler picks the
 mechanism the declared tier actually allows. Worth taking seriously as a
 real direction, not just a nice-sounding idea.
 
-The specific open question raised — what `.remove()` does inside a
-`@tier(mid)` arena-backed list, where individual deallocation isn't a
-thing arenas do — has a few real answers worth weighing against each
-other later, not resolved here:
-
-- **Disallow it outright** for arena-tier lists (compile error) — safest,
-  least useful.
-- **Swap-remove** (swap the last live element into the removed slot,
-  shrink logical length) — O(1), no memory reclamation needed at all
-  (fits arena's append-only nature exactly), but reorders the list and
-  invalidates any *plain index* into the swapped element. Note this
-  invalidation risk goes away if the reference type is a generational
-  `Handle<T>` rather than a raw index — another point of overlap with
-  `Pool<T>`'s already-solved staleness story.
-- **Tombstone/skipfield** — mark removed, skip during iteration, never
-  reclaim within the block's lifetime — this is the Hive idea again,
-  applied to `List<T>` instead of `Pool<T>`, and raises the same
-  "is this actually a `Pool<T>` under a different name" question from
-  §1.
-
-Not deciding this now — flagging the real options and how they connect
-to the Hive/Pool discussion above, since they're clearly the same
-underlying question wearing different names.
+**Resolved: swap-remove.** O(1), fits arena's append-only nature exactly
+(no reclamation needed), no new mechanism to build beyond what a plain
+index-swap already is. The real cost — reordering invalidates a *plain
+index* into the swapped element — is handled by using `Handle<T>`-style
+generational references for anything that needs to survive a `.remove()`
+elsewhere in the list, rather than raw indices, from the start. This
+also means the "is this actually `Pool<T>` under a different name"
+question raised while weighing tombstone/skipfield against swap-remove
+turned out not to matter — swap-remove sidesteps needing a skipfield on
+`List<T>` at all; the skipfield idea stays scoped to `Pool<T>`'s own
+`.iter()` (§1), not duplicated here.
 
 ---
 
-## 5. Open questions (none decided here)
+## 5. Fixed-capacity inline vector
 
-1. Does `Pool<T>` get `.growable()` (block-chained) and `.iter()`
-   (skipfield-style) as two separate follow-ups, or one combined round?
-2. `FfiSpan` vs `ExternBuffer` vs `MemGuard` vs something else — still
-   open from the earlier session.
-3. Is a fixed-capacity inline vector a distinct type from `Pool<T>`, or
-   does it turn out to be another face of the same underlying mechanism
-   once actually designed?
-4. `List<T>`'s arena-tier `.remove()` semantics — swap-remove vs
-   tombstone vs disallow.
-5. Whether "Static Core, Dynamic Shell" is established terminology from
-   elsewhere that this doc should be using, or not.
+**Confirmed as its own structure**, not a face of `Pool<T>` — see the
+decision table at the top for the concrete reason (`Pool<T>` is
+inherently heap+indirection-backed; an inline vector's entire premise is
+the opposite). Not designed yet — naming, capacity-overflow behavior
+(hard error vs silent truncation vs fallback to heap), and exact method
+surface are all still open, just now correctly scoped as a distinct type
+rather than something to retrofit onto `Pool<T>`.
+
+---
+
+## 6. Remaining open questions
+
+Everything raised in this conversation is resolved except:
+
+1. **`FfiSpan`'s architecture** — own type, or a validated construction
+   path into something else (§3).
+2. **Fixed-capacity inline vector's actual design** — naming,
+   overflow behavior, method surface (§5) — scoping is settled, the
+   design itself isn't started.
