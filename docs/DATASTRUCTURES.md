@@ -1,8 +1,8 @@
 # Data Structures — Design & Discussion Notes
 
 **Status:** Decisions below are locked in (discussed and confirmed
-directly). Nothing here is implemented yet — this is design-record, not
-shipped code. This is also the deferred item already flagged in a prior
+directly). `Pool<T>`'s `.growable()`/`.fifo()`/iteration (§1) are now
+implemented — everything else is still just the design record. This is also the deferred item already flagged in a prior
 session's handover: `Hive<T>`, `Unique<T>`/`Shared<T>`/`SyncShared<T>`,
 FFI wrappers (`FfiSpan`/`ExternBuffer`/`MemGuard`), `Span<T>`, and
 tier-aware `List<T>` backend switching were all noted as "deserves a
@@ -15,9 +15,9 @@ that document.
 |---|---|
 | Rust `Box<T>` equivalent naming | **`Unique<T>`** — not `Heap<T>`. The family is `Unique`/`Shared`/`SyncShared`; `Unique`/`Shared`/`SyncShared` all describe *ownership model*, which is the axis that actually matters (and is what the borrow checker cares about). `Heap<T>` would break that pattern by describing *location* instead — and arena/pool are heap-backed too, so "heap" doesn't even uniquely distinguish this type from Ubel's other tiers the way "unique ownership" does. |
 | FFI boundary wrapper naming | **`FfiSpan`** |
-| Hive-shaped capability | **Extend `Pool<T>`, no separate `Hive<T>` type.** Two additions: `.growable()` (block-chained, not naive `Vec::resize` — see §1) and `.iter()` (skipfield-style, skips erased slots). Matches the project's existing precedent of unifying rather than duplicating (`pool<T>(count)`/`Pool<T>` themselves were explicitly unified for the same reason). |
+| Hive-shaped capability | **Extended `Pool<T>`, no separate `Hive<T>` type — implemented.** `.growable()` (block-chained: a new `count`-sized block appended on exhaustion, existing blocks never reallocated/copied) and `for x in pool { }` (skipfield-style, holes skipped — no `.iter()` method needed, matching every other collection). Plus `.fifo()` (oldest-freed-first reuse, opt-in) alongside the growability work since it touched the same free-list code. Matches the project's existing precedent of unifying rather than duplicating (`pool<T>(count)`/`Pool<T>` themselves were explicitly unified for the same reason). |
 | `List<T>` arena-tier `.remove()` | **Swap-remove.** O(1), no reclamation needed (fits arena's append-only nature). Reorders the list, which invalidates a *plain index* into the swapped element — pair with `Handle<T>`-style generational references (same pattern `Pool<T>` already uses) from the start rather than raw indices now and a migration later. |
-| Fixed-capacity inline vector | **A genuinely separate structure from `Pool<T>`, not another face of it.** `Pool<T>` is inherently heap-backed (`PoolData.slots` is a `Vec`; `Handle<T>` exists specifically to indirect into that heap allocation). An inline vector's entire premise is the opposite — storage lives on the stack or embedded directly in a parent struct, zero heap allocation, zero indirection. Structurally incompatible with sitting on top of `Pool<T>`. |
+| Fixed-capacity inline vector | **A genuinely separate structure from `Pool<T>`, not another face of it.** `Pool<T>` is inherently heap-backed (`PoolData.blocks` is a `Vec<Vec<Option<Value>>>`; `Handle<T>` exists specifically to indirect into that heap allocation). An inline vector's entire premise is the opposite — storage lives on the stack or embedded directly in a parent struct, zero heap allocation, zero indirection. Structurally incompatible with sitting on top of `Pool<T>`. |
 | "Static Core, Dynamic Shell" | **Not real, established terminology anywhere** — searched two different phrasings (`"static core" "dynamic shell" ECS`, `"static core dynamic shell" compiler`), nothing in any engine, language, or writeup uses this term. Almost certainly flavor-text framing (from the earlier external conversation) for a real, describable concept — the compiler transparently batching clean OOP-looking code into flat ECS storage — dressed up with a name that sounds established but isn't. Recommendation: drop the phrase; describe the mechanism plainly if/when it gets written up, rather than anchoring to a borrowed name nobody else will recognize. |
 
 ---
@@ -48,27 +48,23 @@ future idea but as shipped code.
 
 So the two real, separable pieces of "add Hive" are:
 
-**(a) Growable without a reallocation-copy.** `PoolData.slots` is
-currently a plain `Vec<Option<Value>>` (checked directly:
-`crates/core/src/interpreter/value.rs`) — a naive `.growable()` (already
-flagged as an unbuilt gap in §10 item 2) implemented as "just
-`Vec::resize`" would **not** dangle any `Handle<T>` — indices stay valid
-across a resize, unlike a raw pointer. What it would cost is a real
-O(n) copy on every grow, and it would rule out ever handing out a raw,
-stable address (relevant to (b) below and to the FFI section). A
-block-chained pool (new block on overflow, existing blocks never move
-or copy) gets `.growable()` for real, gets it without the copy cost, and
-additionally makes a future raw-address FFI escape hatch possible later
-without a redesign.
+**(a) Growable without a reallocation-copy — implemented.** `PoolData`
+was a plain `Vec<Option<Value>>` (`crates/core/src/interpreter/value.rs`)
+— a naive `.growable()` implemented as "just `Vec::resize`" would **not**
+have dangled any `Handle<T>` (indices stay valid across a resize, unlike
+a raw pointer), but would've paid a real O(n) copy on every grow and
+ruled out ever handing out a raw, stable address later (relevant to (b)
+and to the FFI section). Went with genuine block-chaining instead —
+`PoolData.blocks: Vec<Vec<Option<Value>>>`, a fresh `count`-sized block
+appended on exhaustion when `.growable()` was called, existing blocks
+never move or get copied — `.growable()` for real, no copy cost, and it
+leaves a future raw-address FFI escape hatch possible without a redesign.
 
-**(b) Skipfield-style fast iteration.** This one's genuinely new — Pool<T>
-today has no bulk-iteration story at all, only point access
-(`.acquire()`/`.release()`/`.at()`). A component table with mostly-live
-slots and a handful of holes currently has no way to skip the holes in
-one instruction; every consumer would hand-roll `for i in
-0..capacity { if slots[i].is_some() { ... } }`. This is a distinct
-capability from (a) — worth tracking as its own follow-up
-(`.iter()` on `Pool<T>`), not bundled into "growable."
+**(b) Skipfield-style fast iteration — implemented.** `for x in pool { }`
+now works directly (no `.iter()` method — matches every other collection,
+none of which have one either), walking every occupied slot in index
+order via `PoolData::iter_occupied`, holes skipped entirely — the actual
+skipfield behavior, not hand-rolled per call site.
 
 ### Decision
 

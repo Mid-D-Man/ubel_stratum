@@ -407,14 +407,28 @@ actually got built against them, and where it deliberately stops short).
    the separate scope-tag wrapper, structurally identical to `ArenaRef` but
    kept as its own variant so diagnostics say "&pool"/"with pool<...>(...)"
    accurately instead of reusing arena's wording for a different block kind.
-2. **Fixed capacity, built. `.growable()` — not built.** `with pool<T>(count)`
+2. **Fixed capacity by default; `.growable()` — built.** `with pool<T>(count)`
    evaluates `count` once at block entry (must unify against `int`) and
-   allocates exactly that many slots. There is no growable variant yet;
-   `.growable()` remains a real follow-up, not implemented here.
-3. **LIFO free list, built. `.fifo()` — not built.** `PoolData.free_list` is a
-   plain `Vec<usize>`; release pushes, acquire pops — cache-friendly reuse of
-   the most-recently-freed slot, matching item 3's stated default. No FIFO
-   opt-in exists yet.
+   allocates exactly that many slots as the first *block* — `.growable()`
+   opts into block-chained growth on exhaustion (a fresh `count`-sized
+   block appended, existing blocks never reallocated/copied — the actual
+   Hive-shaped property; `PoolData` absorbed this rather than a separate
+   `Hive<T>` type, DATASTRUCTURES.md §1) instead of `.acquire()` returning
+   `null`. `Handle`s stay valid across a grow (flat, cross-block indices;
+   nothing moves).
+3. **LIFO free list by default; `.fifo()` — built.** `PoolData.free_list` is
+   a `VecDeque<usize>` (not a plain `Vec` any more — needed O(1) pops from
+   either end); release always pushes to the back, LIFO (default) pops the
+   back too (most-recently-freed reused first), `.fifo()` opts into popping
+   the front instead (oldest-freed reused first). Reuse-order correctness
+   is proved directly against `PoolData` in `pool_methods.rs`'s own Rust
+   unit tests — `Handle` is deliberately opaque at the Ubel-language level
+   (no accessor for its raw index), so the exact order isn't something a
+   `.ubl` fixture can observe at all; the fixtures
+   (`ok_pool_growable.ubl`/`ok_pool_iterate.ubl`/`ok_pool_fifo.ubl`) cover
+   what a real program actually can observe instead (growth doesn't fail,
+   holes get skipped during iteration, `.fifo()` doesn't break basic
+   acquire/release/at).
 4. **Generational handles, built — and not optional.** `Value::Handle {
    index, generation }`; every slot carries a `u64` generation counter,
    bumped on release. There is no raw-index opt-out — item 4's "opt-out"
@@ -457,6 +471,21 @@ Three methods, on `Pool<T>` itself (not on `Handle<T>`, which is an opaque
   `Dictionary.at(key)` already established this exact naming for "keyed
   lookup"; `Pool.at(handle)` follows the same precedent rather than
   colliding with a reserved word.
+- **`.growable()`** → `void`. Opts into block-chained growth on
+  exhaustion — see item 2 above. No-arg, mutates the pool's own flag.
+- **`.fifo()`** → `void`. Opts into oldest-freed-first reuse — see item 3
+  above. No-arg, mutates the pool's own flag.
+
+`for x in pool { }` also works directly — no `.iter()` method call needed,
+matching every other collection here (none of `List`/`Queue`/`Stack` have
+one either). Skipfield-style: walks every currently-occupied slot in
+index order, holes skipped entirely, via `PoolData::iter_occupied`. Yields
+bare `T` values, deliberately not `(Handle<T>, T)` pairs — pairing would
+need `for (h, v) in pool { }` to actually type `h`/`v` separately, which
+needs per-name destructure-binding typing `record_binding` doesn't do yet
+(`BindingTarget::Destructure` records one type for the whole pattern's
+span, not a type per bound name — a real, separate, pre-existing gap, not
+solved here).
 
 ### Where it lives
 

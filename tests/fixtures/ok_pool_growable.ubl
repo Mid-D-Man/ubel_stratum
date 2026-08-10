@@ -1,0 +1,46 @@
+// tests/fixtures/ok_pool_growable.ubl
+// DATASTRUCTURES.md §1 / Pool<T>.growable() — block-chained growth on
+// exhaustion instead of acquire() returning null. Proves: exhaustion
+// without growable() still returns null (unchanged default behavior),
+// growable() lets acquire keep succeeding past the original capacity,
+// the original block's already-stored data survives the grow untouched
+// (the actual "no reallocation-copy" property), and a second grow past
+// the second block also works (not just a one-time special case).
+// Expected: zero errors, all assertions pass.
+
+@tier(mid)
+fn run_pool_growable() void {
+    with pool<int>(2) {
+        let p = Pool.new()
+
+        let a = p.acquire(1)
+        let b = p.acquire(2)
+        assert(p.at(a) == 1, "pool: first slot readable before exhaustion")
+        assert(p.at(b) == 2, "pool: second slot readable before exhaustion")
+
+        let blocked = p.acquire(3)
+        assert(blocked == null, "pool: exhausted non-growable pool returns null")
+
+        p.growable()
+
+        let c = p.acquire(3)
+        assert(c != null, "pool: growable pool succeeds past original capacity")
+        assert(p.at(c) == 3, "pool: value in the newly-grown block reads back correctly")
+
+        // Original block's data must survive the grow untouched.
+        assert(p.at(a) == 1, "pool: original slot a survives growth")
+        assert(p.at(b) == 2, "pool: original slot b survives growth")
+
+        // A second grow, not just a one-time special case.
+        let d = p.acquire(4)
+        let e = p.acquire(5)
+        assert(d != null, "pool: filling the grown block still works")
+        assert(e != null, "pool: growing a second time still works")
+        assert(p.at(d) == 4, "pool: second block's first value correct")
+        assert(p.at(e) == 5, "pool: third block's value correct")
+    }
+}
+
+fn main() void {
+    run_pool_growable()
+}

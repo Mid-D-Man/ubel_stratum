@@ -1,0 +1,41 @@
+// tests/fixtures/ok_pool_iterate.ubl
+// DATASTRUCTURES.md §1 — `for x in pool { }` (the skipfield capability:
+// Pool absorbs this rather than a separate Hive<T> type). Proves holes
+// left by release() are actually skipped during iteration, not visited
+// as some placeholder/null value and not causing a panic, by summing
+// and counting only the values that should still be live.
+// Expected: zero errors, all assertions pass.
+
+@tier(mid)
+fn run_pool_iterate() void {
+    with pool<int>(5) {
+        let p = Pool.new()
+
+        let a = p.acquire(10)
+        let b = p.acquire(20)
+        let c = p.acquire(30)
+        let d = p.acquire(40)
+        let e = p.acquire(50)
+
+        p.release(b)
+        p.release(d)
+
+        let mut sum = 0
+        let mut count = 0
+        for x in p {
+            sum += x
+            count += 1
+        }
+
+        assert(count == 3, "pool iteration: released slots must be skipped, not visited")
+        assert(sum == 90, "pool iteration: sum of remaining live values (10+30+50)")
+
+        p.release(a)
+        p.release(c)
+        p.release(e)
+    }
+}
+
+fn main() void {
+    run_pool_iterate()
+}

@@ -809,13 +809,15 @@ fn eval_method_call(
             }
         }
 
-        // ── Built-in Pool methods (MEMORY_MODEL.md §11) ──────────────
+        // ── Built-in Pool methods (MEMORY_MODEL.md §11, DATASTRUCTURES.md §1) ──
         Value::Pool(rc) => {
             use crate::builtins::instance::pool_methods as m;
             match method_name {
-                "acquire" => return m::acquire(rc, args),
-                "release" => return m::release(rc, args),
-                "at"      => return m::at(rc, args),
+                "acquire"  => return m::acquire(rc, args),
+                "release"  => return m::release(rc, args),
+                "at"       => return m::at(rc, args),
+                "growable" => return m::growable(rc, args),
+                "fifo"     => return m::fifo(rc, args),
                 _ => {}
             }
         }

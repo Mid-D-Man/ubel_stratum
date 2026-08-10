@@ -1681,6 +1681,11 @@ impl<'a> InferCtx<'a> {
         }
     }
 
+    /// DATASTRUCTURES.md §1 — `for x in pool { }` iterates a `Pool<T>`
+    /// directly, same as every other collection here; no `.iter()`
+    /// method call needed (none of `List`/`Queue`/`Stack` have one
+    /// either). Bare `T` values, not paired with their `Handle` — see
+    /// `value_to_iter_vec`'s own doc comment on why.
     fn element_type_of(&mut self, collection_ty: TypeId) -> TypeId {
         let resolved = self.apply(collection_ty);
         match self.ctx.types.get(resolved) {
@@ -1688,7 +1693,8 @@ impl<'a> InferCtx<'a> {
             | SemaType::Set(e)
             | SemaType::Queue(e)
             | SemaType::Stack(e)
-            | SemaType::Slice(e)         => *e,
+            | SemaType::Slice(e)
+            | SemaType::Pool(e)          => *e,
             SemaType::Array { elem, .. } => *elem,
             SemaType::ArenaRef { inner, .. } => {
                 let inner = *inner;

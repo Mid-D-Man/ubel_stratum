@@ -1,0 +1,51 @@
+// tests/fixtures/ok_pool_fifo.ubl
+// DATASTRUCTURES.md §1 / Pool<T>.fifo() — opts into oldest-freed-first
+// reuse instead of the LIFO default. `Handle<T>` is deliberately opaque
+// at the Ubel-language level (no way to read its raw index), so the
+// exact reuse *order* isn't provable from a fixture -- that's covered
+// directly against PoolData in pool_methods.rs's own Rust unit tests
+// (fifo_opt_in_reuses_oldest_freed_first). What this fixture proves is
+// what a real Ubel program can actually observe: acquire/release/at all
+// still work correctly, and exhaustion/reuse still functions, with
+// fifo() toggled on.
+// Expected: zero errors, all assertions pass.
+
+@tier(mid)
+fn run_pool_fifo() void {
+    with pool<int>(3) {
+        let p = Pool.new()
+        p.fifo()
+
+        let a = p.acquire(1)
+        let b = p.acquire(2)
+        let c = p.acquire(3)
+        assert(p.at(a) == 1, "pool fifo: values readable before any release")
+        assert(p.at(b) == 2, "pool fifo: values readable before any release")
+        assert(p.at(c) == 3, "pool fifo: values readable before any release")
+
+        p.release(a)
+        p.release(b)
+
+        // Two slots freed -> the next TWO acquires both succeed; only
+        // the one after that should hit exhaustion.
+        let d  = p.acquire(4)
+        let d2 = p.acquire(5)
+        assert(d != null, "pool fifo: acquire after release still succeeds")
+        assert(d2 != null, "pool fifo: second acquire still succeeds (two slots were freed)")
+
+        let full = p.acquire(6)
+        assert(full == null, "pool fifo: exhaustion still returns null, same as LIFO")
+
+        assert(p.at(c) == 3, "pool fifo: untouched slot c still reads correctly")
+        assert(p.at(d) == 4, "pool fifo: reused slot reads the new value")
+        assert(p.at(a) == null, "pool fifo: stale handle a still fails after its slot was reused")
+
+        p.release(c)
+        p.release(d)
+        p.release(d2)
+    }
+}
+
+fn main() void {
+    run_pool_fifo()
+}

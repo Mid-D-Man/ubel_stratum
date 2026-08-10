@@ -329,11 +329,32 @@ pub fn bind_target<'ast>(
 /// Range expressions (`0..10`) are evaluated to `Value::List` by
 /// the BinOp evaluator in `eval_expr.rs`, so they arrive here already
 /// as lists.
+/// `for x in <expr> { }`'s runtime side — DATASTRUCTURES.md §1 for the
+/// `Value::Pool` arm specifically: walks every currently-occupied slot
+/// in index order (via `PoolData::iter_occupied`), holes skipped — the
+/// actual skipfield behavior. Deliberately bare values, not `(Handle, T)`
+/// pairs: pairing would need `for (h, v) in pool { }` to work, which
+/// needs per-name destructure-binding typing that `record_binding`
+/// doesn't actually do yet (`BindingTarget::Destructure` records one
+/// type for the whole pattern's span, not a type per bound name — see
+/// that function's own doc comment) — a real, separate gap, not solved
+/// here. Bare-value iteration doesn't depend on it and covers the
+/// "process every live entry" case; handle-per-item is a genuine
+/// follow-up once destructure-binding typing exists for real.
+///
+/// Note for whoever eventually wires up `Value::Queue`/`Value::Stack`/
+/// `Value::Set`/arrays here too: `element_type_of` (sema) already treats
+/// all of those as directly iterable, but this function doesn't handle
+/// any of them yet — a pre-existing gap, found while adding the `Pool`
+/// arm, not introduced by it and not fixed here (out of scope for this
+/// change; every current fixture that iterates only ever iterates a
+/// `List`/`Tuple`/`Str`).
 fn value_to_iter_vec(val: Value) -> Result<Vec<Value>, Signal> {
     match val {
         Value::List(rc)  => Ok(rc.borrow().clone()),
         Value::Tuple(v)  => Ok(v),
         Value::Str(s)    => Ok(s.chars().map(Value::Char).collect()),
+        Value::Pool(rc)  => Ok(rc.borrow().iter_occupied().cloned().collect()),
         other => Err(Signal::Panic(format!(
             "cannot iterate over value of type '{}'", other.type_name()
         ))),

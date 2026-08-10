@@ -68,24 +68,105 @@ pub enum Value {
     Handle { index: usize, generation: u64 },
 }
 
-/// Backing storage for `Value::Pool`. `slots[i]` and `generations[i]`
-/// are always the same length (`capacity`); `free_list` holds indices
-/// currently unoccupied, popped LIFO (most-recently-released reused
-/// first) per MEMORY_MODEL.md §11 item 3.
+/// Backing storage for `Value::Pool`. Block-chained (DATASTRUCTURES.md —
+/// Pool absorbs Hive's growability rather than a separate `Hive<T>` type):
+/// `blocks[i]`/`generations[i]` are always the same length (`block_size`,
+/// fixed at construction, from the enclosing `with pool<T>(count) { }`).
+/// A full pool with `growable == true` appends a brand-new block rather
+/// than reallocating/copying the existing ones — existing `Handle`s
+/// (flat, cross-block indices) stay valid, and no live slot's data ever
+/// moves. `free_list` is a `VecDeque` so both LIFO (default, pop from the
+/// back — matches §10 item 3's "most-recently-freed reused first") and
+/// FIFO (`.fifo()` opt-in, pop from the front) are O(1); `.push_back` on
+/// release either way, only the acquire-side pop direction differs.
 #[derive(Debug, Clone)]
 pub struct PoolData {
-    pub slots:       Vec<Option<Value>>,
-    pub generations: Vec<u64>,
-    pub free_list:   Vec<usize>,
+    pub blocks:      Vec<Vec<Option<Value>>>,
+    pub generations: Vec<Vec<u64>>,
+    pub free_list:   std::collections::VecDeque<usize>,
+    pub block_size:  usize,
+    pub growable:    bool,
+    pub fifo:        bool,
 }
 
 impl PoolData {
     pub fn with_capacity(capacity: usize) -> Self {
         PoolData {
-            slots:       vec![None; capacity],
-            generations: vec![0; capacity],
+            blocks:      vec![vec![None; capacity]],
+            generations: vec![vec![0; capacity]],
             free_list:   (0..capacity).collect(),
+            block_size:  capacity,
+            growable:    false,
+            fifo:        false,
         }
+    }
+
+    #[inline]
+    fn locate(&self, flat_index: usize) -> (usize, usize) {
+        (flat_index / self.block_size, flat_index % self.block_size)
+    }
+
+    pub fn total_capacity(&self) -> usize {
+        self.blocks.len() * self.block_size
+    }
+
+    pub fn slot(&self, flat_index: usize) -> Option<&Value> {
+        let (b, o) = self.locate(flat_index);
+        self.blocks.get(b)?.get(o)?.as_ref()
+    }
+
+    pub fn slot_mut(&mut self, flat_index: usize) -> Option<&mut Option<Value>> {
+        let (b, o) = self.locate(flat_index);
+        self.blocks.get_mut(b)?.get_mut(o)
+    }
+
+    pub fn generation(&self, flat_index: usize) -> Option<u64> {
+        let (b, o) = self.locate(flat_index);
+        self.generations.get(b)?.get(o).copied()
+    }
+
+    pub fn generation_mut(&mut self, flat_index: usize) -> Option<&mut u64> {
+        let (b, o) = self.locate(flat_index);
+        self.generations.get_mut(b)?.get_mut(o)
+    }
+
+    /// Append one new block (`block_size` fresh slots) if `growable`,
+    /// returning whether it did. Existing blocks are untouched — this is
+    /// the actual "no reallocation-copy" property that makes it Hive-
+    /// shaped rather than just `Vec::resize` wearing a new name; the
+    /// latter would've been just as `Handle`-safe (indices, not raw
+    /// pointers, so nothing would dangle) but would pay an O(n) copy on
+    /// every grow and rule out a raw-pointer-stable FFI escape hatch
+    /// later (DATASTRUCTURES.md §1).
+    pub fn try_grow(&mut self) -> bool {
+        if !self.growable { return false; }
+        let start = self.blocks.len() * self.block_size;
+        self.blocks.push(vec![None; self.block_size]);
+        self.generations.push(vec![0; self.block_size]);
+        for i in start..start + self.block_size {
+            self.free_list.push_back(i);
+        }
+        true
+    }
+
+    /// LIFO (default) pops the back — most-recently-freed reused first.
+    /// FIFO (`.fifo()`) pops the front. Release always pushes to the
+    /// back either way; only the acquire-side end differs.
+    pub fn free_pop(&mut self) -> Option<usize> {
+        if self.fifo { self.free_list.pop_front() } else { self.free_list.pop_back() }
+    }
+
+    pub fn free_push(&mut self, index: usize) {
+        self.free_list.push_back(index);
+    }
+
+    /// Every currently-occupied slot, in index order, holes skipped —
+    /// the actual skipfield behavior (`for x in pool { }`,
+    /// DATASTRUCTURES.md §1's ".iter()"). Bare values only, not paired
+    /// with their `Handle` — see `value_to_iter_vec`'s own doc comment
+    /// on why that pairing is deliberately not done yet.
+    pub fn iter_occupied(&self) -> impl Iterator<Item = &Value> + '_ {
+        self.blocks.iter().flatten().filter_map(|s| s.as_ref())
     }
 }
 
@@ -290,7 +371,7 @@ impl fmt::Display for Value {
             }
             Value::Pool(rc) => {
                 let pool = rc.borrow();
-                write!(f, "Pool(capacity={}, free={})", pool.slots.len(), pool.free_list.len())
+                write!(f, "Pool(capacity={}, free={})", pool.total_capacity(), pool.free_list.len())
             }
             Value::Handle { index, generation } => write!(f, "Handle(#{}/{})", index, generation),
             Value::Enum { type_name, variant, payload } => {
