@@ -82,6 +82,14 @@ jobs:
             --run-url "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
             --generated-at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
+      - name: Write job summary
+        # A Pages-independent view of the exact same report.json — GitHub
+        # renders this on the run's own Summary tab regardless of Pages
+        # status, so a Pages deploy failure (or lag; see the incident this
+        # was added after) doesn't mean pipeline results are unreachable.
+        if: always()
+        run: python3 scripts/build_job_summary.py --report web/dashboard/report.json >> "$GITHUB_STEP_SUMMARY"
+
       - name: Upload dashboard log
         if: always()
         uses: actions/upload-artifact@v4
