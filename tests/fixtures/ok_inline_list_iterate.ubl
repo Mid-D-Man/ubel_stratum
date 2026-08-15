@@ -1,0 +1,22 @@
+// tests/fixtures/ok_inline_list_iterate.ubl
+// DATASTRUCTURES.md §5 — `for x in v { }` over an InlineList<T>, same
+// direct-iterability as List<T>/Pool<T> (no `.iter()` method anywhere
+// in this language).
+// Expected: zero errors, all assertions pass.
+
+fn main() void {
+    let v = InlineList.new(5)
+    v.push(1)
+    v.push(2)
+    v.push(3)
+
+    let mut sum = 0
+    let mut count = 0
+    for x in v {
+        sum += x
+        count += 1
+    }
+
+    assert(count == 3, "inline list iteration: visits every current element")
+    assert(sum == 6, "inline list iteration: sum of 1+2+3")
+}

@@ -21,6 +21,7 @@ pub mod tuple_methods;
 pub mod queue_methods;
 pub mod stack_methods;
 pub mod pool_methods;
+pub mod inline_list_methods;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReceiverKind {
@@ -31,6 +32,7 @@ pub enum ReceiverKind {
     Queue,
     Stack,
     Pool,
+    InlineList,
 }
 
 /// Returns the valid method names for a given receiver kind — consulted
@@ -45,6 +47,7 @@ pub fn method_names(kind: ReceiverKind) -> &'static [&'static str] {
         ReceiverKind::Queue => queue_methods::METHOD_NAMES,
         ReceiverKind::Stack => stack_methods::METHOD_NAMES,
         ReceiverKind::Pool  => pool_methods::METHOD_NAMES,
+        ReceiverKind::InlineList => inline_list_methods::METHOD_NAMES,
     }
 }
 
@@ -95,6 +98,7 @@ pub fn resolve_receiver(table: &TypeTable, ty: TypeId) -> Option<(ReceiverWrap, 
         SemaType::Queue(_)       => ReceiverKind::Queue,
         SemaType::Stack(_)       => ReceiverKind::Stack,
         SemaType::Pool(_)        => ReceiverKind::Pool,
+        SemaType::InlineList(_)  => ReceiverKind::InlineList,
         _ => return None,
     };
     Some((wrap, kind, bare))
@@ -168,6 +172,7 @@ pub fn signature(kind: ReceiverKind, name: &str) -> Option<(MethodReturn, usize)
         ReceiverKind::Queue => queue_methods::signature(name),
         ReceiverKind::Stack => stack_methods::signature(name),
         ReceiverKind::Pool  => pool_methods::signature(name),
+        ReceiverKind::InlineList => inline_list_methods::signature(name),
     }
 }
 
@@ -187,6 +192,7 @@ pub fn is_high_only(kind: ReceiverKind, name: &str) -> bool {
         ReceiverKind::Queue => queue_methods::HIGH_ONLY,
         ReceiverKind::Stack => stack_methods::HIGH_ONLY,
         ReceiverKind::Pool  => pool_methods::HIGH_ONLY,
+        ReceiverKind::InlineList => inline_list_methods::HIGH_ONLY,
     };
     list.contains(&name)
 }

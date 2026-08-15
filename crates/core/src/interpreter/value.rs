@@ -66,6 +66,23 @@ pub enum Value {
     /// constructible from a tuple literal or any other user-facing
     /// value, so a handle can only ever come from a real `acquire()`.
     Handle { index: usize, generation: u64 },
+    /// `InlineList<T>` — fixed-capacity collection (DATASTRUCTURES.md
+    /// §5). `items.len() <= capacity` always; `.push()` is checked
+    /// (`bool` return, never grows past capacity, no silent
+    /// truncation). Rust-heap-backed like every other `Value` variant
+    /// here — there's no real codegen yet, so "inline/stack" is
+    /// currently a language-level *contract* (bounded, checked) rather
+    /// than a literal memory-placement guarantee, same honesty already
+    /// applied to how Pool/Arena/GC tiers all share Rust-heap-backed
+    /// representations today.
+    InlineList(Rc<RefCell<InlineListData>>),
+}
+
+/// Backing storage for `Value::InlineList`.
+#[derive(Debug, Clone)]
+pub struct InlineListData {
+    pub items:    Vec<Value>,
+    pub capacity: usize,
 }
 
 /// Backing storage for `Value::Pool`. Block-chained (DATASTRUCTURES.md —
@@ -222,6 +239,7 @@ impl Value {
             Value::Function(_)   => "function",
             Value::Pool(_)       => "Pool",
             Value::Handle { .. } => "Handle",
+            Value::InlineList(_) => "InlineList",
         }
     }
 
@@ -267,6 +285,7 @@ impl Value {
             (Value::Pool(a), Value::Pool(b)) => Rc::ptr_eq(a, b),
             (Value::Handle { index: ia, generation: ga },
              Value::Handle { index: ib, generation: gb }) => ia == ib && ga == gb,
+            (Value::InlineList(a), Value::InlineList(b)) => Rc::ptr_eq(a, b),
             _ => false,
         }
     }
@@ -274,6 +293,15 @@ impl Value {
     /// Convenience: make an empty `Value::Pool` with the given capacity.
     pub fn new_pool(capacity: usize) -> Self {
         Value::Pool(Rc::new(RefCell::new(PoolData::with_capacity(capacity))))
+    }
+
+    /// Convenience: make an empty `Value::InlineList` with the given
+    /// (sema-checked-literal) capacity.
+    pub fn new_inline_list(capacity: usize) -> Self {
+        Value::InlineList(Rc::new(RefCell::new(InlineListData {
+            items: Vec::with_capacity(capacity),
+            capacity,
+        })))
     }
 
     /// Convenience: make a `Value::Str` from a `&str`.
@@ -359,6 +387,15 @@ impl fmt::Display for Value {
                     write!(f, "{}", v)?;
                 }
                 write!(f, "]")
+            }
+            Value::InlineList(rc) => {
+                let data = rc.borrow();
+                write!(f, "InlineList[")?;
+                for (i, v) in data.items.iter().enumerate() {
+                    if i > 0 { write!(f, ", ")?; }
+                    write!(f, "{}", v)?;
+                }
+                write!(f, "] (len={}, capacity={})", data.items.len(), data.capacity)
             }
             Value::Struct { type_name, fields } => {
                 let fields = fields.borrow();

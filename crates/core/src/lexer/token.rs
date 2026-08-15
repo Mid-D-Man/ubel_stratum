@@ -37,8 +37,7 @@ pub enum TokenType {
     KwSet,
     KwQueue,
     KwStack,
-
-    // ── Wildcard / infer placeholder ─────────────────────────────
+    KwInlineList,
     Underscore,
 
     // ── Literals ─────────────────────────────────────────────────
@@ -167,6 +166,7 @@ impl fmt::Display for TokenType {
             TokenType::KwSet         => write!(f, "Set"),
             TokenType::KwQueue       => write!(f, "Queue"),
             TokenType::KwStack       => write!(f, "Stack"),
+            TokenType::KwInlineList  => write!(f, "InlineList"),
             TokenType::Underscore    => write!(f, "_"),
             TokenType::IntLit(n)     => write!(f, "{}", n),
             TokenType::FloatLit(v)   => write!(f, "{}f", v),

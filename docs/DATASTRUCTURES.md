@@ -17,7 +17,7 @@ that document.
 | FFI boundary wrapper naming | **`FfiSpan`** |
 | Hive-shaped capability | **Extended `Pool<T>`, no separate `Hive<T>` type — implemented.** `.growable()` (block-chained: a new `count`-sized block appended on exhaustion, existing blocks never reallocated/copied) and `for x in pool { }` (skipfield-style, holes skipped — no `.iter()` method needed, matching every other collection). Plus `.fifo()` (oldest-freed-first reuse, opt-in) alongside the growability work since it touched the same free-list code. Matches the project's existing precedent of unifying rather than duplicating (`pool<T>(count)`/`Pool<T>` themselves were explicitly unified for the same reason). |
 | `List<T>` arena-tier `.remove()` | **Swap-remove.** O(1), no reclamation needed (fits arena's append-only nature). Reorders the list, which invalidates a *plain index* into the swapped element — pair with `Handle<T>`-style generational references (same pattern `Pool<T>` already uses) from the start rather than raw indices now and a migration later. |
-| Fixed-capacity inline vector | **A genuinely separate structure from `Pool<T>`, not another face of it.** `Pool<T>` is inherently heap-backed (`PoolData.blocks` is a `Vec<Vec<Option<Value>>>`; `Handle<T>` exists specifically to indirect into that heap allocation). An inline vector's entire premise is the opposite — storage lives on the stack or embedded directly in a parent struct, zero heap allocation, zero indirection. Structurally incompatible with sitting on top of `Pool<T>`. |
+| Fixed-capacity inline vector | **`InlineList<T>` — implemented, its own structure, not a face of `Pool<T>`.** `Pool<T>` is inherently heap-backed (`PoolData.blocks` is a `Vec<Vec<Option<Value>>>`; `Handle<T>` exists specifically to indirect into that heap allocation). An inline vector's entire premise is the opposite — storage lives on the stack or embedded directly in a parent struct, zero heap allocation, zero indirection. Capacity ended up as a checked constructor argument (`InlineList.new(64)`) rather than a type-level parameter — see §5. |
 | "Static Core, Dynamic Shell" | **Not real, established terminology anywhere** — searched two different phrasings (`"static core" "dynamic shell" ECS`, `"static core dynamic shell" compiler`), nothing in any engine, language, or writeup uses this term. Almost certainly flavor-text framing (from the earlier external conversation) for a real, describable concept — the compiler transparently batching clean OOP-looking code into flat ECS storage — dressed up with a name that sounds established but isn't. Recommendation: drop the phrase; describe the mechanism plainly if/when it gets written up, rather than anchoring to a borrowed name nobody else will recognize. |
 
 ---
@@ -214,15 +214,54 @@ turned out not to matter — swap-remove sidesteps needing a skipfield on
 
 ---
 
-## 5. Fixed-capacity inline vector
+## 5. Fixed-capacity inline vector — `InlineList<T>`, implemented
 
 **Confirmed as its own structure**, not a face of `Pool<T>` — see the
 decision table at the top for the concrete reason (`Pool<T>` is
 inherently heap+indirection-backed; an inline vector's entire premise is
-the opposite). Not designed yet — naming, capacity-overflow behavior
-(hard error vs silent truncation vs fallback to heap), and exact method
-surface are all still open, just now correctly scoped as a distinct type
-rather than something to retrofit onto `Pool<T>`.
+the opposite).
+
+**Naming:** `InlineList<T>` — reads consistently next to `List`/
+`Dictionary`/`Pool`, signals both "List-like" and the storage
+distinction in one word.
+
+**Capacity is deliberately not part of the type.** `InlineList<T, N>`
+(capacity as a type-level parameter) was the original framing, but it
+turned out not to be necessary — two `InlineList`s with different
+capacities don't need to be different *types*, the same way `List<T>`'s
+current length isn't part of its type either. Capacity is a checked,
+literal-integer-only *constructor argument* instead — `InlineList.new(64)`
+— sema-validated directly against the argument's own AST node (must be
+`ExprKind::Lit(Literal::Int(n))`, `TypeError::InlineListCapacityNotLiteral`
+/ `TYPE-113` otherwise). This sidesteps needing any const-generics
+grammar at all — confirmed the language has none anywhere
+(`parse_generic_params` only ever parses `Ident (: Bound)?`, checked at
+the parser level, not just sema) — while still guaranteeing the capacity
+is known at compile time, which genuine inline storage requires.
+
+**Overflow behavior:** `.push()` returns `bool` (`false` when full),
+never panics, never silently truncates. Matches the *existing* codebase
+convention more closely than my first instinct (`Optional`, matching
+`Pool<T>.acquire()`) would have — `List<T>`'s own `pop()`/`first()`/
+`last()` already return `Value::Null` on empty rather than panicking, so
+"fail via a sentinel value, not a panic, for a completely ordinary
+outcome" turned out to be the more established pattern already, not
+something new being introduced.
+
+**Method surface**, grounded in `List<T>`'s own actual current one
+(checked directly: `len, push, pop, contains, first, last, is_empty,
+reverse`) plus one new addition: `capacity()`. `for x in v { }` also
+works directly, same direct-iterability as `List`/`Pool`, no `.iter()`
+method anywhere in this language.
+
+**Interpreter honesty note:** like every tier concept in this codebase,
+`InlineList` is Rust-heap-backed under the hood today (there's no real
+codegen yet — the tree-walking interpreter can't literally place values
+in different memory regions). "Inline/stack" is currently a
+*language-level contract* (bounded, checked, no silent truncation), not
+yet a literal memory-placement guarantee — same honesty already applied
+to how `Pool`/`Arena`/GC tiers all share Rust-heap-backed `Value`
+representations today.
 
 ---
 
@@ -232,6 +271,3 @@ Everything raised in this conversation is resolved except:
 
 1. **`FfiSpan`'s architecture** — own type, or a validated construction
    path into something else (§3).
-2. **Fixed-capacity inline vector's actual design** — naming,
-   overflow behavior, method surface (§5) — scoping is settled, the
-   design itself isn't started.

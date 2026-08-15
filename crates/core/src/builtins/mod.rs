@@ -97,7 +97,7 @@ pub struct BuiltinSignature {
 /// `Pool.new()` needs the interpreter's own ambient `pool_capacity_stack`
 /// (MEMORY_MODEL.md §11) and is special-cased directly in
 /// `eval_call_with_receiver` before that table is ever consulted.
-pub const BUILTIN_NAMESPACES: &[&str] = &["Math", "List", "Dictionary", "Queue", "Stack", "Pool"];
+pub const BUILTIN_NAMESPACES: &[&str] = &["Math", "List", "Dictionary", "Queue", "Stack", "Pool", "InlineList"];
 
 pub fn is_builtin_namespace(name: &str) -> bool {
     BUILTIN_NAMESPACES.contains(&name)
@@ -123,6 +123,7 @@ static LIST_NAMESPACE: &[(&str, BuiltinFn)] = &[("new", constructors::list_new)]
 static DICTIONARY_NAMESPACE: &[(&str, BuiltinFn)] = &[("new", constructors::dictionary_new)];
 static QUEUE_NAMESPACE: &[(&str, BuiltinFn)] = &[("new", constructors::queue_new)];
 static STACK_NAMESPACE: &[(&str, BuiltinFn)] = &[("new", constructors::stack_new)];
+static INLINE_LIST_NAMESPACE: &[(&str, BuiltinFn)] = &[("new", constructors::inline_list_new)];
 
 pub fn resolve_namespace_member(namespace: &str, method: &str) -> Option<BuiltinFn> {
     let table = match namespace {
@@ -131,6 +132,7 @@ pub fn resolve_namespace_member(namespace: &str, method: &str) -> Option<Builtin
         "Dictionary" => DICTIONARY_NAMESPACE,
         "Queue"      => QUEUE_NAMESPACE,
         "Stack"      => STACK_NAMESPACE,
+        "InlineList" => INLINE_LIST_NAMESPACE,
         _ => return None,
     };
     table.iter().find(|(n, _)| *n == method).map(|(_, f)| *f)
@@ -145,6 +147,7 @@ pub fn namespace_member_names(namespace: &str) -> &'static [&'static str] {
         "Dictionary" => &["new"],
         "Queue"      => &["new"],
         "Stack"      => &["new"],
+        "InlineList" => &["new"],
         _ => &[],
     }
     }

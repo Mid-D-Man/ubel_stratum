@@ -77,6 +77,12 @@ pub enum SemaType {
     Set(TypeId),
     Queue(TypeId),
     Stack(TypeId),
+    /// `InlineList<T>` — DATASTRUCTURES.md: fixed-capacity, stack/inline
+    /// storage, genuinely separate from `List<T>`/`Pool<T>`. Capacity is
+    /// deliberately not part of the type (same reasoning as `List<T>`'s
+    /// current length not being part of its type either) — it's a
+    /// checked, literal-int-only constructor argument instead.
+    InlineList(TypeId),
     Tuple(Vec<TypeId>),
     Array { len: u64, elem: TypeId },
     Slice(TypeId),
@@ -191,6 +197,7 @@ impl SemaType {
             | SemaType::Set(t)
             | SemaType::Queue(t)
             | SemaType::Stack(t)
+            | SemaType::InlineList(t)
             | SemaType::Slice(t)
             | SemaType::Fallible(t)
             | SemaType::Task(t)
@@ -262,6 +269,7 @@ impl SemaType {
             SemaType::Set(t)   => format!("Set<{}>", table.get(*t).display(table, symbols)),
             SemaType::Queue(t) => format!("Queue<{}>", table.get(*t).display(table, symbols)),
             SemaType::Stack(t) => format!("Stack<{}>", table.get(*t).display(table, symbols)),
+            SemaType::InlineList(t) => format!("InlineList<{}>", table.get(*t).display(table, symbols)),
             SemaType::Slice(t) => format!("[]{}", table.get(*t).display(table, symbols)),
 
             SemaType::Dictionary(k, v) => format!(

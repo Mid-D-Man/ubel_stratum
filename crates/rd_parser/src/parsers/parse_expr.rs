@@ -159,7 +159,7 @@ fn parse_prefix<'ast, 'tok>(p: &mut Parser<'ast, 'tok>) -> Option<&'ast Expr<'as
         // `List.new()`, `Dictionary.new()`. Route through the same path
         // as a plain identifier, using the canonical spelling.
         TokenType::KwList | TokenType::KwDictionary | TokenType::KwSet
-        | TokenType::KwQueue | TokenType::KwStack => {
+        | TokenType::KwQueue | TokenType::KwStack | TokenType::KwInlineList => {
             let name = p.cursor.peek().to_string();
             parse_ident_expr(p, name, lo)
         }
@@ -236,7 +236,7 @@ fn parse_ident_expr<'ast, 'tok>(
         let seg_name = match p.cursor.peek() {
             TokenType::Ident(s) => Some(s.clone()),
             TokenType::KwList | TokenType::KwDictionary | TokenType::KwSet
-            | TokenType::KwQueue | TokenType::KwStack => Some(p.cursor.peek().to_string()),
+            | TokenType::KwQueue | TokenType::KwStack | TokenType::KwInlineList => Some(p.cursor.peek().to_string()),
             _ => None,
         };
         if let Some(seg) = seg_name {

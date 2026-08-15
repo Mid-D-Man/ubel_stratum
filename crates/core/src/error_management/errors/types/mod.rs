@@ -107,6 +107,18 @@ pub enum TypeError {
         enum_name: String,
         span:      Span,
     },
+
+    // ── InlineList (DATASTRUCTURES.md §5) ────────────────────────
+
+    /// `InlineList.new(capacity)` — `capacity` must be a literal
+    /// integer, checked directly against the argument's own AST node
+    /// (not a general const-expression evaluator — genuine inline/stack
+    /// storage needs its size known at compile time, and a literal is
+    /// the narrowest thing that guarantees that without building real
+    /// const generics, which the language has nowhere else either).
+    InlineListCapacityNotLiteral {
+        span: Span,
+    },
 }
 
 impl TypeError {
@@ -124,6 +136,7 @@ impl TypeError {
             TypeError::VariantArityMismatch       { span, .. } => *span,
             TypeError::NonExhaustiveMatch         { span, .. } => *span,
             TypeError::MixedDiscriminantAndPayload{ span, .. } => *span,
+            TypeError::InlineListCapacityNotLiteral{ span, .. } => *span,
         }
     }
 
@@ -176,6 +189,9 @@ impl TypeError {
                     "enum `{}` mixes an explicit discriminant variant with a payload-carrying variant",
                     enum_name
                 ),
+
+            TypeError::InlineListCapacityNotLiteral { .. } =>
+                "InlineList.new(capacity) requires a literal integer capacity".to_string(),
         }
     }
 
@@ -189,6 +205,9 @@ impl TypeError {
 
             TypeError::MixedDiscriminantAndPayload { .. } =>
                 Some("use either explicit discriminants on every fieldless variant, or payload variants — not both in the same enum".to_string()),
+
+            TypeError::InlineListCapacityNotLiteral { .. } =>
+                Some("write the capacity as a plain integer literal, e.g. InlineList.new(64) — a variable or computed expression can't be used here".to_string()),
 
             _ => None,
         }
@@ -221,6 +240,7 @@ impl crate::error_management::render::Diagnosable for TypeError {
             TypeError::VariantArityMismatch { .. }       => "TYPE-110",
             TypeError::NonExhaustiveMatch { .. }         => "TYPE-111",
             TypeError::MixedDiscriminantAndPayload { .. } => "TYPE-112",
+            TypeError::InlineListCapacityNotLiteral { .. } => "TYPE-113",
         }
     }
     fn span(&self) -> Span { self.span() }

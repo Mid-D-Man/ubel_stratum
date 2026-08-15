@@ -75,6 +75,7 @@ pub static KEYWORDS: phf::Map<&'static str, TokenType> = phf_map! {
     "Set"        => TokenType::KwSet,
     "Queue"      => TokenType::KwQueue,
     "Stack"      => TokenType::KwStack,
+    "InlineList" => TokenType::KwInlineList,
 };
 
 #[inline]

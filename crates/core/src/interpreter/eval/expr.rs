@@ -822,6 +822,23 @@ fn eval_method_call(
             }
         }
 
+        // ── Built-in InlineList methods (DATASTRUCTURES.md §5) ──────
+        Value::InlineList(rc) => {
+            use crate::builtins::instance::inline_list_methods as m;
+            match method_name {
+                "len"      => return Ok(m::len(rc)),
+                "push"     => return m::push(rc, args),
+                "pop"      => return Ok(m::pop(rc)),
+                "contains" => return m::contains(rc, args),
+                "first"    => return Ok(m::first(rc)),
+                "last"     => return Ok(m::last(rc)),
+                "is_empty" => return Ok(m::is_empty(rc)),
+                "reverse"  => return Ok(m::reverse(rc)),
+                "capacity" => return Ok(m::capacity(rc)),
+                _ => {}
+            }
+        }
+
         // ── Built-in String methods ────────────────────────────────
         Value::Str(s) => {
             let s = s.clone(); // Rc clone so we don't hold borrow across returns

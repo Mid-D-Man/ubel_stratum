@@ -355,6 +355,7 @@ fn value_to_iter_vec(val: Value) -> Result<Vec<Value>, Signal> {
         Value::Tuple(v)  => Ok(v),
         Value::Str(s)    => Ok(s.chars().map(Value::Char).collect()),
         Value::Pool(rc)  => Ok(rc.borrow().iter_occupied().cloned().collect()),
+        Value::InlineList(rc) => Ok(rc.borrow().items.clone()),
         other => Err(Signal::Panic(format!(
             "cannot iterate over value of type '{}'", other.type_name()
         ))),

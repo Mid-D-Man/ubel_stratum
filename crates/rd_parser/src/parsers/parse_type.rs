@@ -168,7 +168,7 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
             // annotation at all (only as an expression-position
             // constructor, `List.new()`) — see docs/MEMORY_MODEL.md.
             TokenType::KwList | TokenType::KwDictionary | TokenType::KwSet
-            | TokenType::KwQueue | TokenType::KwStack => {
+            | TokenType::KwQueue | TokenType::KwStack | TokenType::KwInlineList => {
                 let name = self.cursor.peek().to_string();
                 self.cursor.advance();
                 self.try_collection_type(&name)
@@ -290,6 +290,10 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
             "Stack" => {
                 let inner = self.try_single_generic_arg();
                 Some(TypeKind::Stack(inner))
+            }
+            "InlineList" => {
+                let inner = self.try_single_generic_arg();
+                Some(TypeKind::InlineList(inner))
             }
             _ => None,
         }
@@ -527,6 +531,7 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
             | TokenType::KwSet
             | TokenType::KwQueue
             | TokenType::KwStack
+            | TokenType::KwInlineList
         )
     }
 

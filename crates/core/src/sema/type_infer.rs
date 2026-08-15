@@ -670,6 +670,11 @@ impl<'a> InferCtx<'a> {
                     .unwrap_or_else(|| self.fresh_var());
                 self.ctx.types.insert(SemaType::Stack(elem))
             }
+            TypeKind::InlineList(inner) => {
+                let elem = inner.map(|t| self.ast_type_to_sema(t))
+                    .unwrap_or_else(|| self.fresh_var());
+                self.ctx.types.insert(SemaType::InlineList(elem))
+            }
             TypeKind::Named { path, args } => {
                 let root = path.first().copied().unwrap_or("");
                 // GENERICS_RULES.md — a bare single-segment name that
@@ -1694,6 +1699,7 @@ impl<'a> InferCtx<'a> {
             | SemaType::Queue(e)
             | SemaType::Stack(e)
             | SemaType::Slice(e)
+            | SemaType::InlineList(e)
             | SemaType::Pool(e)          => *e,
             SemaType::Array { elem, .. } => *elem,
             SemaType::ArenaRef { inner, .. } => {
@@ -1881,6 +1887,36 @@ impl<'a> InferCtx<'a> {
                             // before the generic path below so a bare
                             // `Pool.new()` outside any pool block gets a
                             // clear, dedicated error instead of silently
+                            // DATASTRUCTURES.md §5 — `InlineList.new(capacity)`:
+                            // capacity must be a literal integer, checked
+                            // directly against the argument's own AST
+                            // node — genuine inline storage needs its
+                            // size known at compile time, and this is
+                            // the narrowest thing that guarantees that
+                            // without building real const generics
+                            // (confirmed the language has none anywhere:
+                            // `parse_generic_params` only ever parses
+                            // `Ident (: Bound)?`). Checked before the
+                            // generic path below, same reasoning as the
+                            // `Pool` special case just below this one.
+                            if ns == "InlineList" {
+                                let capacity_lit = args.first().and_then(|a| match a.kind {
+                                    ArgKind::Positional(e) => match e.kind {
+                                        ExprKind::Lit(Literal::Int(n)) if n >= 0 => Some(n as u64),
+                                        _ => None,
+                                    },
+                                    _ => None,
+                                });
+                                if args.len() != 1 || capacity_lit.is_none() {
+                                    self.errors.add_type_error(TypeError::InlineListCapacityNotLiteral {
+                                        span: expr.span,
+                                    });
+                                    return self.unknown();
+                                }
+                                let elem = self.fresh_var();
+                                let inline_list_ty = self.ctx.types.insert(SemaType::InlineList(elem));
+                                return self.maybe_arena_ref(inline_list_ty);
+                            }
                             // falling through to Unknown.
                             if ns == "Pool" {
                                 match self.current_pool() {
@@ -2779,6 +2815,26 @@ impl<'a> InferCtx<'a> {
             let bt = self.ctx.types.get(b);
             match (at, bt) {
                 (SemaType::List(ia),     SemaType::List(ib))     => Some((*ia, *ib)),
+                // Set/Queue/Stack/Pool/Handle were missing here entirely
+                // until now — found while adding InlineList alongside
+                // them. Same bug class as the Function/Named fix
+                // (GENERICS_RULES.md §2): two separately-constructed
+                // instances of the same wrapping type never actually
+                // unified their inner element type — e.g. `Set<int>` and
+                // `Set<int>` built independently were "compatible" by
+                // shape alone, with the element types never reconciled.
+                // Only `List` had ever been wired up. Fixed all of them
+                // together since the fix is mechanically identical and
+                // this exact spot was already being touched for
+                // `InlineList` — leaving five known-identical instances
+                // of the same bug sitting right next to the fix would've
+                // been an odd thing to knowingly walk past.
+                (SemaType::Set(ia),        SemaType::Set(ib))        => Some((*ia, *ib)),
+                (SemaType::Queue(ia),      SemaType::Queue(ib))      => Some((*ia, *ib)),
+                (SemaType::Stack(ia),      SemaType::Stack(ib))      => Some((*ia, *ib)),
+                (SemaType::InlineList(ia), SemaType::InlineList(ib)) => Some((*ia, *ib)),
+                (SemaType::Pool(ia),       SemaType::Pool(ib))       => Some((*ia, *ib)),
+                (SemaType::Handle(ia),     SemaType::Handle(ib))     => Some((*ia, *ib)),
                 (SemaType::Optional(ia), SemaType::Optional(ib)) => Some((*ia, *ib)),
                 (SemaType::Fallible(ia), SemaType::Fallible(ib)) => Some((*ia, *ib)),
                 (SemaType::Task(ia),     SemaType::Task(ib))     => Some((*ia, *ib)),

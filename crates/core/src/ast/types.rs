@@ -33,6 +33,17 @@ pub enum TypeKind<'ast> {
     Queue(Option<&'ast Type<'ast>>),
     /// `Stack<T>`
     Stack(Option<&'ast Type<'ast>>),
+    /// `InlineList<T>` — fixed-capacity, stack/inline-storage collection
+    /// (DATASTRUCTURES.md — genuinely separate from `List<T>`/`Pool<T>`,
+    /// not another face of either). Capacity is deliberately *not* part
+    /// of the type — same reasoning as `List<T>`'s current length not
+    /// being part of *its* type — it's a checked, literal-int-only
+    /// argument to `InlineList.new(capacity)` instead (checked directly
+    /// against the AST node in sema, not inferred, not a general
+    /// expression — see `type_infer.rs`). Sidesteps needing any const-
+    /// generics grammar; confirmed the language has none anywhere
+    /// (`parse_generic_params` only ever parses `Ident (: Bound)?`).
+    InlineList(Option<&'ast Type<'ast>>),
 
     // ── User-defined / imported types ────────────────────────────
     /// A named type, possibly with generic arguments: `Foo<T, U>`

@@ -1,0 +1,13 @@
+// tests/fixtures/err_inline_list_capacity_not_literal.ubl
+// DATASTRUCTURES.md §5 — InlineList.new(capacity) requires capacity to
+// be a literal integer, checked directly against the argument's own AST
+// node. A variable, even one holding a known-at-runtime int, is
+// rejected -- genuine inline storage needs its size known at compile
+// time, and this is the narrowest possible guarantee of that (no const-
+// expression evaluator, just "is this literally a number token").
+// Expected: sema FAIL (InlineListCapacityNotLiteral).
+
+fn main() void {
+    let n = 10
+    let v = InlineList.new(n)
+}

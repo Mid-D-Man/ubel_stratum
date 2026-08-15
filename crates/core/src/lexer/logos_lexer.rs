@@ -88,6 +88,7 @@ enum LogosToken {
     #[token("Set")]        KwSet,
     #[token("Queue")]      KwQueue,
     #[token("Stack")]      KwStack,
+    #[token("InlineList")] KwInlineList,
 
     // ── Wildcard / infer: must appear BEFORE the Ident regex so
     //    a bare `_` is tokenised as Underscore, not Ident("_").
@@ -433,6 +434,7 @@ impl<'a> LogosLexer<'a> {
             LogosToken::KwSet        => TokenType::KwSet,
             LogosToken::KwQueue      => TokenType::KwQueue,
             LogosToken::KwStack      => TokenType::KwStack,
+            LogosToken::KwInlineList => TokenType::KwInlineList,
             LogosToken::Underscore   => TokenType::Underscore,
             LogosToken::Plus          => TokenType::Plus,
             LogosToken::Minus         => TokenType::Minus,

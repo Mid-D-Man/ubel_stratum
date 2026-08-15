@@ -1,0 +1,40 @@
+// tests/fixtures/ok_inline_list_basic.ubl
+// DATASTRUCTURES.md §5 — InlineList<T>: construction via a literal
+// capacity argument, element type inferred from usage (matching
+// List<T>'s own inference, not annotation-required), checked push
+// (including the actual overflow case — the real point of this type
+// over a plain List<T>), pop, and capacity() staying fixed regardless
+// of current length.
+// Expected: zero errors, all assertions pass.
+
+fn main() void {
+    let v = InlineList.new(3)
+    assert(v.is_empty(), "inline list: starts empty")
+    assert(v.len() == 0, "inline list: starts at length 0")
+    assert(v.capacity() == 3, "inline list: capacity is the literal given at construction")
+
+    assert(v.push(10) == true, "inline list: push succeeds within capacity")
+    assert(v.push(20) == true, "inline list: push succeeds within capacity")
+    assert(v.push(30) == true, "inline list: push succeeds exactly at capacity")
+    assert(v.len() == 3, "inline list: length after filling to capacity")
+
+    // The actual point of this type: overflow fails cleanly, no panic,
+    // no silent truncation, no data loss for what was already there.
+    assert(v.push(40) == false, "inline list: push past capacity is rejected, not truncated or panicked")
+    assert(v.len() == 3, "inline list: rejected push must not change length")
+    assert(v.capacity() == 3, "inline list: capacity never changes")
+
+    assert(v.contains(20), "inline list: contains an element that was pushed")
+    assert(!v.contains(99), "inline list: does not contain an element never pushed")
+    assert(v.first() == 10, "inline list: first element")
+    assert(v.last() == 30, "inline list: last element")
+
+    let popped = v.pop()
+    assert(popped == 30, "inline list: pop returns the last-pushed value")
+    assert(v.len() == 2, "inline list: length after pop")
+
+    // Room again after the pop -- capacity is about current occupancy,
+    // not a one-time budget.
+    assert(v.push(99) == true, "inline list: push succeeds again after a pop frees a slot")
+    assert(v.len() == 3, "inline list: back to full")
+}
