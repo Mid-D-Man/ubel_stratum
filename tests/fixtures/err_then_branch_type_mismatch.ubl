@@ -1,0 +1,20 @@
+// tests/fixtures/err_then_branch_type_mismatch.ubl
+// Cross-branch type unification still fires when styles are mixed —
+// `then` is pure surface syntax over the same IfBranchBody the block
+// form produces, so type_infer's existing then/else unify() check
+// (type_infer.rs, StmtKind::If / ExprKind::If) doesn't need to know or
+// care which surface form either branch used.
+// `then` branch produces string, `{ block }` branch's tail value is int.
+// Expected: sema FAIL (TypeMismatch).
+
+fn pick(flag: bool) string {
+    let result = if flag {
+        1
+    } else then "not a number"
+    return result
+}
+
+fn main() void {
+    let r = pick(true)
+    println(r)
+}

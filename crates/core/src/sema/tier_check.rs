@@ -43,7 +43,7 @@ use crate::ast::declarations::{
     FunctionDecl, MethodDecl, StructDecl, StructMember, TraitItem,
 };
 use crate::ast::expressions::{
-    ArgKind, Expr, ExprKind, LambdaBody, LinqClause,
+    ArgKind, Expr, ExprKind, IfBranchBody, LambdaBody, LinqClause,
     MatchArmBody, OrElseFallback,
 };
 use crate::ast::root::{Item, Program};
@@ -187,6 +187,16 @@ impl<'a> TierChecker<'a> {
         }
     }
 
+    /// Check an `if`/`elif`/`else` branch body — either a `{ block }`
+    /// or the single-line `then expr` form. Mirrors the `MatchArmBody`
+    /// dispatch used elsewhere in this file.
+    fn check_if_branch_body<'ast>(&mut self, body: &IfBranchBody<'ast>) {
+        match body {
+            IfBranchBody::Expr(e)  => self.check_expr(e),
+            IfBranchBody::Block(b) => self.check_block(b),
+        }
+    }
+
     fn check_stmt<'ast>(&mut self, stmt: &Stmt<'ast>) {
         match &stmt.kind {
             // Rule: `with arena(…)` / `with pool<T>(count)` only in MID
@@ -227,13 +237,13 @@ impl<'a> TierChecker<'a> {
 
             StmtKind::If(if_node) => {
                 self.check_expr(if_node.condition);
-                self.check_block(&if_node.then_block);
+                self.check_if_branch_body(&if_node.then_body);
                 for elif in if_node.elif_branches {
                     self.check_expr(elif.condition);
-                    self.check_block(&elif.block);
+                    self.check_if_branch_body(&elif.body);
                 }
-                if let Some(else_b) = &if_node.else_block {
-                    self.check_block(else_b);
+                if let Some(else_b) = &if_node.else_body {
+                    self.check_if_branch_body(else_b);
                 }
             }
 
@@ -376,13 +386,13 @@ impl<'a> TierChecker<'a> {
             ExprKind::Block(b) => self.check_block(b),
             ExprKind::If(if_node) => {
                 self.check_expr(if_node.condition);
-                self.check_block(&if_node.then_block);
+                self.check_if_branch_body(&if_node.then_body);
                 for elif in if_node.elif_branches {
                     self.check_expr(elif.condition);
-                    self.check_block(&elif.block);
+                    self.check_if_branch_body(&elif.body);
                 }
-                if let Some(else_b) = &if_node.else_block {
-                    self.check_block(else_b);
+                if let Some(else_b) = &if_node.else_body {
+                    self.check_if_branch_body(else_b);
                 }
             }
             ExprKind::Match(m) => {

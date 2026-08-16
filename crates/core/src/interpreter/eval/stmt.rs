@@ -3,7 +3,7 @@
 
 #![allow(dead_code)]
 
-use crate::ast::expressions::Expr;
+use crate::ast::expressions::{Expr, IfBranchBody};
 use crate::ast::statements::{AllocatorKind, BindingTarget, Block, Stmt, StmtKind};
 use crate::interpreter::eval::{expr, pattern, Interpreter};
 use crate::interpreter::value::{EvalResult, Signal, Value};
@@ -61,6 +61,21 @@ pub fn eval_block_in_scope<'ast>(
 
     run_deferred(interp, &deferred);
     Ok(last)
+}
+
+/// Evaluate an `if`/`elif`/`else` branch body — either a `{ block }`
+/// (via `eval_block`, its own scope) or the single-line `then expr`
+/// form. Shared by `StmtKind::If` (below) and `ExprKind::If`
+/// (eval/expr.rs), same relationship `eval_block` already has to its
+/// two callers.
+pub(crate) fn eval_if_branch_body<'ast>(
+    interp: &mut Interpreter<'ast>,
+    body: &IfBranchBody<'ast>,
+) -> EvalResult {
+    match body {
+        IfBranchBody::Expr(e)  => expr::eval_expr(interp, e),
+        IfBranchBody::Block(b) => eval_block(interp, b),
+    }
 }
 
 /// Run deferred expressions in LIFO order.
@@ -133,16 +148,16 @@ pub fn eval_stmt<'ast>(
         StmtKind::If(if_node) => {
             let cond = expr::eval_expr(interp, if_node.condition)?;
             if cond.is_truthy()? {
-                return eval_block(interp, &if_node.then_block);
+                return eval_if_branch_body(interp, &if_node.then_body);
             }
             for elif in if_node.elif_branches {
                 let c = expr::eval_expr(interp, elif.condition)?;
                 if c.is_truthy()? {
-                    return eval_block(interp, &elif.block);
+                    return eval_if_branch_body(interp, &elif.body);
                 }
             }
-            match &if_node.else_block {
-                Some(b) => eval_block(interp, b),
+            match &if_node.else_body {
+                Some(b) => eval_if_branch_body(interp, b),
                 None    => Ok(Value::Void),
             }
         }

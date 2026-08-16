@@ -25,8 +25,8 @@ use ubel_stratum::{
         common::{AssignOp, BinOp, TierAnnotation, UnaryOp},
         expressions::{
             Arg, ArgKind, DictEntry, ElifBranch, Expr, ExprKind,
-            FieldInit, IfExpr, Lambda, LambdaBody, LambdaParam,
-            LinqClause, LinqExpr, MatchArm, MatchArmBody, MatchExpr,
+            FieldInit, IfBranchBody, IfExpr, Lambda, LambdaBody, LambdaParam,
+            LinqClause, LinqExpr, MatchArm, MatchExpr,
             ObjectField, OptionalAccess, OrElseFallback,
         },
         literals::{InterpolationPart, Literal},
@@ -440,19 +440,25 @@ fn parse_array_lit<'ast, 'tok>(p: &mut Parser<'ast, 'tok>, lo: LSpan) -> Option<
 
 fn parse_if_expr<'ast, 'tok>(p: &mut Parser<'ast, 'tok>, lo: LSpan) -> Option<&'ast Expr<'ast>> {
     p.cursor.advance(); // `if`
-    let condition   = parse_expr(p)?;
-    let then_block  = crate::parsers::parse_stmt::parse_block_inner(p)?;
+    let condition = parse_expr(p)?;
+    let then_body = crate::parsers::parse_stmt::parse_if_branch_body(p)?;
     let mut elif_branches: Vec<ElifBranch<'ast>> = Vec::with_capacity(2);
     while p.cursor.eat(&TokenType::Elif) {
         let blo  = p.span();
         let cond = parse_expr(p)?;
-        let blk  = crate::parsers::parse_stmt::parse_block_inner(p)?;
-        elif_branches.push(ElifBranch { condition: cond, block: blk, span: blo.merge(&blk.span) });
+        let body = crate::parsers::parse_stmt::parse_if_branch_body(p)?;
+        let bspan = match &body {
+            IfBranchBody::Block(b) => b.span,
+            IfBranchBody::Expr(e)  => e.span,
+        };
+        elif_branches.push(ElifBranch { condition: cond, body, span: blo.merge(&bspan) });
     }
-    let else_block = if p.cursor.eat(&TokenType::Else) { Some(crate::parsers::parse_stmt::parse_block_inner(p)?) } else { None };
+    let else_body = if p.cursor.eat(&TokenType::Else) {
+        Some(crate::parsers::parse_stmt::parse_if_branch_body(p)?)
+    } else { None };
     let span          = lo.merge(&p.span());
     let elif_branches = p.arena.alloc_slice_copy(elif_branches.as_slice());
-    let node          = p.alloc(IfExpr { condition, then_block, elif_branches, else_block, span });
+    let node          = p.alloc(IfExpr { condition, then_body, elif_branches, else_body, span });
     Some(p.alloc(Expr { kind: ExprKind::If(node), span }))
 }
 
@@ -483,7 +489,15 @@ fn parse_match_arm<'ast, 'tok>(p: &mut Parser<'ast, 'tok>) -> Option<MatchArm<'a
     let lo      = p.span();
     let pattern = crate::parsers::parse_pattern::parse_pattern(p)?;
     let guard   = if p.cursor.eat(&TokenType::Where) { Some(parse_expr(p)?) } else { None };
-    if let Err(e) = p.cursor.expect(&TokenType::FatArrow) { p.emit(crate::error::from_cursor(e, ParseContext::MatchArm)); return None; }
+    // `then` is an accepted alternate spelling for `=>` here — purely
+    // stylistic, since match arms already support brace-free single
+    // expressions via `=>` (`Some(x) => x`); `then` doesn't change the
+    // body-parsing rules below, just the separator token.
+    if !p.cursor.eat(&TokenType::FatArrow) && !p.cursor.eat(&TokenType::Then) {
+        let found = p.cursor.peek_token();
+        p.emit(crate::error::unexpected(found, &["'=>'", "'then'"], ParseContext::MatchArm));
+        return None;
+    }
     let body = crate::parsers::parse_stmt::parse_match_arm_body(p)?;
     Some(MatchArm { pattern, guard, body, span: lo.merge(&p.span()) })
 }

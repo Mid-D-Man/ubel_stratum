@@ -14,6 +14,7 @@ pub static KEYWORDS: phf::Map<&'static str, TokenType> = phf_map! {
     "else"       => TokenType::Else,
     "match"      => TokenType::Match,
     "where"      => TokenType::Where,
+    "then"       => TokenType::Then,
     "for"        => TokenType::For,
     "in"         => TokenType::In,
     "while"      => TokenType::While,

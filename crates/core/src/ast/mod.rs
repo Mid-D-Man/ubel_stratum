@@ -55,7 +55,7 @@ pub use patterns::{
 
 pub use expressions::{
     Arg, ArgKind, DictEntry, ElifBranch, Expr, ExprKind,
-    FieldInit, IfExpr, Lambda, LambdaBody, LambdaParam,
+    FieldInit, IfBranchBody, IfExpr, Lambda, LambdaBody, LambdaParam,
     LinqClause, LinqExpr, MatchArm, MatchArmBody, MatchExpr,
     ObjectField, OptionalAccess, OrElseFallback,
 };

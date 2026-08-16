@@ -305,16 +305,16 @@ pub fn eval_expr<'ast>(interp: &mut Interpreter<'ast>, expr: &Expr<'ast>) -> Eva
         ExprKind::If(if_node) => {
             let cond = eval_expr(interp, if_node.condition)?;
             if cond.is_truthy()? {
-                return stmt::eval_block(interp, &if_node.then_block);
+                return stmt::eval_if_branch_body(interp, &if_node.then_body);
             }
             for elif in if_node.elif_branches {
                 let c = eval_expr(interp, elif.condition)?;
                 if c.is_truthy()? {
-                    return stmt::eval_block(interp, &elif.block);
+                    return stmt::eval_if_branch_body(interp, &elif.body);
                 }
             }
-            match &if_node.else_block {
-                Some(b) => stmt::eval_block(interp, b),
+            match &if_node.else_body {
+                Some(b) => stmt::eval_if_branch_body(interp, b),
                 None    => Ok(Value::Void),
             }
         }

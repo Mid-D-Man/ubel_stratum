@@ -362,6 +362,16 @@ impl<'a> Resolver<'a> {
         self.scopes.pop();
     }
 
+    /// Resolve an `if`/`elif`/`else` branch body — either a `{ block }`
+    /// or the single-line `then expr` form. Mirrors the existing
+    /// `MatchArmBody` dispatch below.
+    fn resolve_if_branch_body<'ast>(&mut self, body: &crate::ast::expressions::IfBranchBody<'ast>) {
+        match body {
+            crate::ast::expressions::IfBranchBody::Expr(e)  => self.resolve_expr(e),
+            crate::ast::expressions::IfBranchBody::Block(b) => self.resolve_block(b),
+        }
+    }
+
     fn resolve_stmt<'ast>(&mut self, stmt: &Stmt<'ast>) {
         match &stmt.kind {
             StmtKind::Let { mutable, binding, value, .. } => {
@@ -381,13 +391,13 @@ StmtKind::Continue    => {}
 
 StmtKind::Defer(e)    => self.resolve_expr(e),StmtKind::If(if_node) => {
             self.resolve_expr(if_node.condition);
-            self.resolve_block(&if_node.then_block);
+            self.resolve_if_branch_body(&if_node.then_body);
             for elif in if_node.elif_branches {
                 self.resolve_expr(elif.condition);
-                self.resolve_block(&elif.block);
+                self.resolve_if_branch_body(&elif.body);
             }
-            if let Some(else_b) = &if_node.else_block {
-                self.resolve_block(else_b);
+            if let Some(else_b) = &if_node.else_body {
+                self.resolve_if_branch_body(else_b);
             }
         }
 
@@ -693,13 +703,13 @@ fn resolve_expr<'ast>(&mut self, expr: &Expr<'ast>) {
         ExprKind::Block(b) => self.resolve_block(b),
         ExprKind::If(if_node) => {
             self.resolve_expr(if_node.condition);
-            self.resolve_block(&if_node.then_block);
+            self.resolve_if_branch_body(&if_node.then_body);
             for elif in if_node.elif_branches {
                 self.resolve_expr(elif.condition);
-                self.resolve_block(&elif.block);
+                self.resolve_if_branch_body(&elif.body);
             }
-            if let Some(else_b) = &if_node.else_block {
-                self.resolve_block(else_b);
+            if let Some(else_b) = &if_node.else_body {
+                self.resolve_if_branch_body(else_b);
             }
         }
         ExprKind::Match(m) => {

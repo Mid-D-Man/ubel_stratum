@@ -73,7 +73,7 @@ use crate::ast::declarations::{
     TraitItem, TypeAlias, MethodSig,
 };
 use crate::ast::expressions::{
-    Arg, ArgKind, Expr, ExprKind, LambdaBody, LinqClause,
+    Arg, ArgKind, Expr, ExprKind, IfBranchBody, LambdaBody, LinqClause,
     MatchArmBody, OrElseFallback,
 };
 use crate::ast::literals::Literal;
@@ -1527,6 +1527,17 @@ impl<'a> InferCtx<'a> {
         last
     }
 
+    /// Infer an `if`/`elif`/`else` branch body's type — either a
+    /// `{ block }` (type of its last statement) or the single-line
+    /// `then expr` form (type of the expression). Mirrors the
+    /// `MatchArmBody` dispatch used for match arms below.
+    fn infer_if_branch<'ast>(&mut self, body: &IfBranchBody<'ast>) -> TypeId {
+        match body {
+            IfBranchBody::Expr(e)  => self.infer_expr(e),
+            IfBranchBody::Block(b) => self.infer_block(b),
+        }
+    }
+
     // ── Statements ────────────────────────────────────────────────
 
     fn infer_stmt<'ast>(&mut self, stmt: &Stmt<'ast>) -> TypeId {
@@ -1576,14 +1587,14 @@ impl<'a> InferCtx<'a> {
                 let cond    = self.infer_expr(if_node.condition);
                 let bool_ty = self.bool_ty();
                 self.unify(bool_ty, cond, if_node.condition.span);
-                let then_ty = self.infer_block(&if_node.then_block);
+                let then_ty = self.infer_if_branch(&if_node.then_body);
                 for elif in if_node.elif_branches {
                     let ct = self.infer_expr(elif.condition);
                     self.unify(bool_ty, ct, elif.condition.span);
-                    self.infer_block(&elif.block);
+                    self.infer_if_branch(&elif.body);
                 }
-                if let Some(else_b) = &if_node.else_block {
-                    let else_ty = self.infer_block(else_b);
+                if let Some(else_b) = &if_node.else_body {
+                    let else_ty = self.infer_if_branch(else_b);
                     let void_ty = self.void_ty();
                     if then_ty != void_ty && else_ty != void_ty {
                         self.unify(then_ty, else_ty, stmt.span);
@@ -2488,14 +2499,14 @@ impl<'a> InferCtx<'a> {
                 let cond    = self.infer_expr(if_node.condition);
                 let bool_ty = self.bool_ty();
                 self.unify(bool_ty, cond, if_node.condition.span);
-                let then_ty = self.infer_block(&if_node.then_block);
+                let then_ty = self.infer_if_branch(&if_node.then_body);
                 for elif in if_node.elif_branches {
                     let ct = self.infer_expr(elif.condition);
                     self.unify(bool_ty, ct, elif.condition.span);
-                    self.infer_block(&elif.block);
+                    self.infer_if_branch(&elif.body);
                 }
-                if let Some(else_b) = &if_node.else_block {
-                    let else_ty = self.infer_block(else_b);
+                if let Some(else_b) = &if_node.else_body {
+                    let else_ty = self.infer_if_branch(else_b);
                     let void_ty = self.void_ty();
                     if then_ty != void_ty { self.unify(then_ty, else_ty, expr.span); }
                     then_ty

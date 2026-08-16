@@ -209,17 +209,34 @@ pub enum LambdaBody<'ast> {
 #[derive(Debug, Clone, Copy)]
 pub struct IfExpr<'ast> {
     pub condition: &'ast Expr<'ast>,
-    pub then_block: Block<'ast>,
+    pub then_body: IfBranchBody<'ast>,
     pub elif_branches: &'ast [ElifBranch<'ast>],
-    pub else_block: Option<Block<'ast>>,
+    pub else_body: Option<IfBranchBody<'ast>>,
     pub span: Span,
 }
 
 #[derive(Debug, Clone, Copy)]
 pub struct ElifBranch<'ast> {
     pub condition: &'ast Expr<'ast>,
-    pub block: Block<'ast>,
+    pub body: IfBranchBody<'ast>,
     pub span: Span,
+}
+
+/// The body of an `if` / `elif` / `else` branch — either a full
+/// `{ block }` or the single-line `then expr` form. Mirrors
+/// `MatchArmBody` exactly; every consumer dispatches on this the same
+/// way it already dispatches on `MatchArmBody`.
+///
+/// `then` exists (rather than reusing the brace-optional trick `Lambda`
+/// and `MatchArmBody` use) because the condition has no hard delimiter
+/// before it — `Lambda` has `)` and match arms have `=>`, but an `if`
+/// condition is parsed by the general Pratt expression parser with no
+/// closing token, so `if a - 1 { ... }` would be genuinely ambiguous
+/// (`- 1` reads as more condition) without an explicit marker.
+#[derive(Debug, Clone, Copy)]
+pub enum IfBranchBody<'ast> {
+    Block(Block<'ast>),
+    Expr(&'ast Expr<'ast>),
 }
 
 // ── Match expression ──────────────────────────────────────────────

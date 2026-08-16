@@ -541,6 +541,42 @@ The parser knows which position it is in from context. Pattern parsing is
 only called from `parse_match_arm` and `parse_let_pattern`, never from the
 Pratt loop directly.
 
+### 5.5 `then` — Single-Line if/elif/else Bodies (and an Alt Spelling for `=>`)
+
+An `if`/`elif`/`else` branch body is either a full `{ block }` or the
+single-line `then Expr` form:
+
+```
+IfBranchBody ::= "{" Stmt* "}" | "then" Expr
+```
+
+Unlike `Lambda` and match-arm bodies — both of which pick block-vs-expr
+for free by checking whether `{` follows a hard delimiter (`)` for
+`Lambda`, `=>` for match arms) — `if`'s condition has **no** hard
+delimiter before its body: the condition is parsed by the general Pratt
+expression parser, so `if a - 1 { ... }` would be genuinely ambiguous
+(`- 1` reads as more condition) without an explicit marker. `then` is
+that marker; it is not optional sugar the way the brace-free trick is
+elsewhere.
+
+`parse_if_branch_body` (in `parse_stmt.rs`) is the single shared
+implementation, called from both `parse_if_stmt` (this file) and
+`parse_if_expr` (`parse_expr.rs`) — same relationship
+`parse_match_arm_body` already has to its two callers. It shares that
+function's carve-out for `return`/`break`/`continue`/`fail` immediately
+after `then` (those are statements, not expressions, in this language;
+`if x < 0 then return null` parses as `IfBranchBody::Block` wrapping a
+single statement, not as `IfBranchBody::Expr`).
+
+Each branch of an `if`/`elif`/`else` chain is parsed independently — a
+chain may freely mix `{ block }` and `then expr` branch-to-branch.
+
+Separately, `then` is also accepted as an alternate spelling for `=>`
+in match arms (`Some(x) then x`, identical to `Some(x) => x`). This is
+purely stylistic — match arms already support brace-free single
+expressions via `=>` alone — so it doesn't touch arm-body parsing at
+all, only the separator token accepted in `parse_match_arm`.
+
 ---
 
 ## 6. LINQ Query Parsing

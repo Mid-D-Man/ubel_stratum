@@ -5,7 +5,7 @@ use std::time::Duration;
 use ubel_stratum::ast::arena::AstArena;
 use ubel_stratum::ast::common::{BinOp, Span, TierAnnotation, Visibility};
 use ubel_stratum::ast::expressions::{
-    ElifBranch, Expr, ExprKind, FieldInit, IfExpr, MatchArm, MatchArmBody, MatchExpr,
+    ElifBranch, Expr, ExprKind, FieldInit, IfBranchBody, IfExpr, MatchArm, MatchArmBody, MatchExpr,
 };
 use ubel_stratum::ast::literals::Literal;
 use ubel_stratum::ast::patterns::{Pattern, PatternKind};
@@ -55,14 +55,14 @@ fn make_branch<'ast>(
     arena: &'ast AstArena,
     cond_name: &str,
     ret_val: i64,
-) -> (&'ast Expr<'ast>, Block<'ast>) {
+) -> (&'ast Expr<'ast>, IfBranchBody<'ast>) {
     let cond = ident_expr(arena, cond_name);
     let stmt = arena.alloc(Stmt {
         kind: StmtKind::Return(Some(int_lit(arena, ret_val))),
         span: DUMMY,
     });
     let stmts = arena.alloc_slice_copy(&[*stmt]);
-    (cond, Block { stmts, span: DUMMY })
+    (cond, IfBranchBody::Block(Block { stmts, span: DUMMY }))
 }
 
 // Standalone function so the 'ast lifetime can be expressed properly.
@@ -207,25 +207,25 @@ fn bench_if_expr(c: &mut Criterion) {
                 kind: StmtKind::Return(Some(int_lit(&arena, 1))),
                 span: DUMMY,
             });
-            let then_block = Block {
+            let then_body = IfBranchBody::Block(Block {
                 stmts: arena.alloc_slice_copy(&[*then_stmt]),
                 span: DUMMY,
-            };
+            });
 
             let else_stmt = arena.alloc(Stmt {
                 kind: StmtKind::Return(Some(int_lit(&arena, 0))),
                 span: DUMMY,
             });
-            let else_block = Block {
+            let else_body = IfBranchBody::Block(Block {
                 stmts: arena.alloc_slice_copy(&[*else_stmt]),
                 span: DUMMY,
-            };
+            });
 
             let if_expr = arena.alloc(IfExpr {
                 condition: cond,
-                then_block,
+                then_body,
                 elif_branches: &[],
-                else_block: Some(else_block),
+                else_body: Some(else_body),
                 span: DUMMY,
             });
 
@@ -237,22 +237,22 @@ fn bench_if_expr(c: &mut Criterion) {
         b.iter(|| {
             let arena = AstArena::new();
 
-            let (cond, then_block) = make_branch(&arena, "is_admin", 3);
+            let (cond, then_body) = make_branch(&arena, "is_admin", 3);
             let (c1, b1) = make_branch(&arena, "is_mod", 2);
             let (c2, b2) = make_branch(&arena, "is_user", 1);
 
             let mut elifs = arena.vec::<ElifBranch>();
-            elifs.push(ElifBranch { condition: c1, block: b1, span: DUMMY });
-            elifs.push(ElifBranch { condition: c2, block: b2, span: DUMMY });
+            elifs.push(ElifBranch { condition: c1, body: b1, span: DUMMY });
+            elifs.push(ElifBranch { condition: c2, body: b2, span: DUMMY });
             let elif_branches = elifs.into_bump_slice();
 
-            let (_, else_block) = make_branch(&arena, "_unused", 0);
+            let (_, else_body) = make_branch(&arena, "_unused", 0);
 
             let if_node = arena.alloc(IfExpr {
                 condition: cond,
-                then_block,
+                then_body,
                 elif_branches,
-                else_block: Some(else_block),
+                else_body: Some(else_body),
                 span: DUMMY,
             });
 

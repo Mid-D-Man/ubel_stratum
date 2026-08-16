@@ -6,7 +6,7 @@
 use ubel_stratum::{
     ast::{
         common::AssignOp,
-        expressions::{ElifBranch, IfExpr, MatchArm, MatchArmBody},
+        expressions::{ElifBranch, IfBranchBody, IfExpr, MatchArm, MatchArmBody},
         statements::{
             AllocatorKind, BindingTarget, Block, SizeExpr,
             Stmt, StmtKind, UsingBinding,
@@ -157,26 +157,66 @@ fn parse_if_stmt<'ast, 'tok>(p: &mut Parser<'ast, 'tok>) -> Option<StmtKind<'ast
     let lo = p.span();
     p.cursor.advance(); // `if`
 
-    let condition  = parse_expr::parse_expr(p)?;
-    let then_block = parse_block_inner(p)?;
+    let condition = parse_expr::parse_expr(p)?;
+    let then_body = parse_if_branch_body(p)?;
 
     let mut elif_branches: Vec<ElifBranch<'ast>> = Vec::with_capacity(2);
     while p.cursor.eat(&TokenType::Elif) {
         let elif_lo = p.span();
         let cond    = parse_expr::parse_expr(p)?;
-        let block   = parse_block_inner(p)?;
-        let span    = elif_lo.merge(&block.span);
-        elif_branches.push(ElifBranch { condition: cond, block, span });
+        let body    = parse_if_branch_body(p)?;
+        let bspan   = match &body {
+            IfBranchBody::Block(b) => b.span,
+            IfBranchBody::Expr(e)  => e.span,
+        };
+        let span    = elif_lo.merge(&bspan);
+        elif_branches.push(ElifBranch { condition: cond, body, span });
     }
 
-    let else_block = if p.cursor.eat(&TokenType::Else) {
-        Some(parse_block_inner(p)?)
+    let else_body = if p.cursor.eat(&TokenType::Else) {
+        Some(parse_if_branch_body(p)?)
     } else { None };
 
     let span          = lo.merge(&p.span());
     let elif_branches = p.arena.alloc_slice_clone(&elif_branches);
-    let node          = p.alloc(IfExpr { condition, then_block, elif_branches, else_block, span });
+    let node          = p.alloc(IfExpr { condition, then_body, elif_branches, else_body, span });
     Some(StmtKind::If(node))
+}
+
+/// Parse an `if` / `elif` / `else` branch body: either a `{ block }` or
+/// the single-line `then Expr` form (`then` is required for the
+/// single-line form — see the doc comment on `IfBranchBody` for why a
+/// keyword is structurally necessary here, unlike `Lambda`/match arms).
+///
+/// Shared between the statement-position (`parse_if_stmt`, this file)
+/// and expression-position (`parse_if_expr`, parse_expr.rs) parsers —
+/// same relationship `parse_match_arm_body` already has to its two
+/// callers.
+pub(crate) fn parse_if_branch_body<'ast, 'tok>(
+    p: &mut Parser<'ast, 'tok>,
+) -> Option<IfBranchBody<'ast>> {
+    if p.cursor.is_at(&TokenType::LeftBrace) {
+        Some(IfBranchBody::Block(parse_block_inner(p)?))
+    } else if p.cursor.eat(&TokenType::Then) {
+        if matches!(
+            p.cursor.peek(),
+            TokenType::Return | TokenType::Break | TokenType::Continue | TokenType::Fail
+        ) {
+            // Same carve-out as parse_match_arm_body: return/break/continue/fail
+            // are statements, not expressions, in this language.
+            let lo    = p.span();
+            let stmt  = parse_stmt(p)?;
+            let span  = lo.merge(&stmt.span);
+            let stmts = p.arena.alloc_slice_copy(&[stmt]);
+            Some(IfBranchBody::Block(Block { stmts, span }))
+        } else {
+            Some(IfBranchBody::Expr(parse_expr::parse_expr(p)?))
+        }
+    } else {
+        let found = p.cursor.peek_token();
+        p.emit(crate::error::unexpected(found, &["'{'", "'then'"], ParseContext::Statement));
+        None
+    }
 }
 
 // ── match arm body (shared with parse_expr.rs) ─────────────────────────────────
@@ -237,8 +277,11 @@ fn parse_match_arm<'ast, 'tok>(p: &mut Parser<'ast, 'tok>) -> Option<MatchArm<'a
     let guard   = if p.cursor.eat(&TokenType::Where) {
         Some(parse_expr::parse_expr(p)?)
     } else { None };
-    if let Err(e) = p.cursor.expect(&TokenType::FatArrow) {
-        p.emit(crate::error::from_cursor(e, ParseContext::MatchArm));
+    // `then` is an accepted alternate spelling for `=>` here — see the
+    // matching comment in parse_expr.rs's copy of this function.
+    if !p.cursor.eat(&TokenType::FatArrow) && !p.cursor.eat(&TokenType::Then) {
+        let found = p.cursor.peek_token();
+        p.emit(crate::error::unexpected(found, &["'=>'", "'then'"], ParseContext::MatchArm));
         return None;
     }
     let body = parse_match_arm_body(p)?;

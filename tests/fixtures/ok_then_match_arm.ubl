@@ -1,0 +1,30 @@
+// tests/fixtures/ok_then_match_arm.ubl
+// `then` as an accepted alternate spelling for `=>` in match arms —
+// purely stylistic, since match arms already support brace-free single
+// expressions via `=>` (`Some(x) => x`). `then` doesn't change arm-body
+// parsing rules at all, just the separator token. `=>` and `then` can
+// be mixed freely within the same match, same as if/elif/else styles.
+// Expected: zero errors, all assertions pass.
+
+enum Direction {
+    North,
+    South,
+    East,
+    West
+}
+
+fn describe(d: Direction) string {
+    match d {
+        North then "heading north",
+        South => "heading south",
+        East  then "heading east",
+        West  => "heading west",
+    }
+}
+
+fn main() void {
+    assert(describe(Direction.North) == "heading north", "then as match-arm separator")
+    assert(describe(Direction.South) == "heading south", "=> still works, unchanged")
+    assert(describe(Direction.East)  == "heading east",  "then again, mixed with => above")
+    assert(describe(Direction.West)  == "heading west",  "=> for the last arm")
+}
