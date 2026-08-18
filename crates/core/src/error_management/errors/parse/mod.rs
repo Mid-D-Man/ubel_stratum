@@ -74,8 +74,6 @@ pub enum ParseContext {
 
     // ── Expressions ───────────────────────────────────────────────
     Expr,
-    /// Parsing a `from e in X where Y select Z` LINQ query expression.
-    LinqQuery,
 
     // ── Statements ────────────────────────────────────────────────
     Statement,
@@ -108,7 +106,6 @@ impl ParseContext {
             ParseContext::CfgAttribute    => "@cfg attribute",
             ParseContext::TierAnnotation  => "tier annotation",
             ParseContext::Expr            => "expression",
-            ParseContext::LinqQuery       => "LINQ query expression",
             ParseContext::Statement       => "statement",
             ParseContext::Block           => "block",
             ParseContext::MatchArm        => "match arm",

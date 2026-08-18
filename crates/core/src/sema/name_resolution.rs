@@ -725,26 +725,6 @@ fn resolve_expr<'ast>(&mut self, expr: &Expr<'ast>) {
                 self.scopes.pop();
             }
         }
-        ExprKind::Linq(linq) => {
-            self.resolve_expr(linq.source);
-            self.scopes.push();
-            self.declare(linq.binding.to_string(),
-                DefKind::Local { mutable: false }, expr.span, Visibility::Private);
-            for clause in linq.clauses.iter() {
-                match clause {
-                    crate::ast::expressions::LinqClause::Where(e)
-                    | crate::ast::expressions::LinqClause::OrderBy { expr: e, .. }
-                    | crate::ast::expressions::LinqClause::GroupBy(e) => self.resolve_expr(e),
-                    crate::ast::expressions::LinqClause::Let { name, value } => {
-                        self.resolve_expr(value);
-                        self.declare(name.to_string(),
-                            DefKind::Local { mutable: false }, expr.span, Visibility::Private);
-                    }
-                }
-            }
-            self.resolve_expr(linq.select);
-            self.scopes.pop();
-        }
         ExprKind::OrElse { expr: e, fallback } => {
             self.resolve_expr(e);
             if let crate::ast::expressions::OrElseFallback::Expr(fb) = fallback {

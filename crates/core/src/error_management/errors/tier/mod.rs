@@ -64,17 +64,10 @@ pub enum TierError {
         span:        Span,
     },
 
-    // ── LINQ tier violation ───────────────────────────────────────
-    /// LINQ query expressions are only valid in `@tier(high)`.
-    LinqInWrongTier {
-        actual: TierAnnotation,
-        span:   Span,
-    },
-
     // ── Instance method tier violation (MEMORY_MODEL.md §8) ────────
     /// A builtin instance method flagged HIGH-only in
     /// `builtins::instance::is_high_only` was called outside
-    /// `@tier(high)`. Same shape as `AwaitInWrongTier`/`LinqInWrongTier`
+    /// `@tier(high)`. Same shape as `AwaitInWrongTier`
     /// — the method isn't a keyword, so it carries its own name.
     MethodInWrongTier {
         method: String,
@@ -142,7 +135,6 @@ impl TierError {
             TierError::ArenaRefEscapesBoundary    { span, .. } => *span,
             TierError::IllegalTierCall            { span, .. } => *span,
             TierError::MidReturnContainsArenaRef  { span, .. } => *span,
-            TierError::LinqInWrongTier            { span, .. } => *span,
             TierError::MethodInWrongTier          { span, .. } => *span,
             TierError::CollectionConstructionInLowTier { span, .. } => *span,
             TierError::PoolInWrongTier            { span, .. } => *span,
@@ -190,13 +182,6 @@ impl TierError {
                     "return type `{}` contains an arena-lifetime reference; \
                      this makes the function uncallable from `@tier(high)`",
                     return_type
-                ),
-
-            TierError::LinqInWrongTier { actual, .. } =>
-                format!(
-                    "LINQ query expressions are only valid in `@tier(high)`; \
-                     this function is `@tier({})`",
-                    tier_name(*actual)
                 ),
 
             TierError::MethodInWrongTier { method, actual, .. } =>
@@ -257,9 +242,6 @@ impl TierError {
 
             TierError::IllegalTierCall { caller_tier: TierAnnotation::High, .. } =>
                 Some("HIGH tier may only call MID-tier functions directly — wrap the LOW-tier logic in a MID-tier function".to_string()),
-
-            TierError::LinqInWrongTier { .. } =>
-                Some("move the LINQ query into a `@tier(high)` function, or use `.where()` / `.map()` method chains instead (which work in all tiers)".to_string()),
 
             TierError::MethodInWrongTier { method, .. } =>
                 Some(format!(
@@ -323,7 +305,6 @@ impl crate::error_management::render::Diagnosable for TierError {
             TierError::ArenaRefEscapesBoundary { .. }    => "TIER-004",
             TierError::IllegalTierCall { .. }            => "TIER-005",
             TierError::MidReturnContainsArenaRef { .. }  => "TIER-006",
-            TierError::LinqInWrongTier { .. }            => "TIER-007",
             TierError::MethodInWrongTier { .. }          => "TIER-008",
             TierError::CollectionConstructionInLowTier { .. } => "TIER-009",
             TierError::PoolInWrongTier { .. }             => "TIER-010",

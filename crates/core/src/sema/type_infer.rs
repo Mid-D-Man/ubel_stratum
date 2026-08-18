@@ -73,7 +73,7 @@ use crate::ast::declarations::{
     TraitItem, TypeAlias, MethodSig,
 };
 use crate::ast::expressions::{
-    Arg, ArgKind, Expr, ExprKind, IfBranchBody, LambdaBody, LinqClause,
+    Arg, ArgKind, Expr, ExprKind, IfBranchBody, LambdaBody,
     MatchArmBody, OrElseFallback,
 };
 use crate::ast::literals::Literal;
@@ -2532,20 +2532,6 @@ impl<'a> InferCtx<'a> {
                 }
                 self.check_match_exhaustiveness(scrutinee_ty, &coverage, m.span);
                 result
-            }
-
-            ExprKind::Linq(linq) => {
-                self.infer_expr(linq.source);
-                for clause in linq.clauses.iter() {
-                    match clause {
-                        LinqClause::Where(e)
-                        | LinqClause::OrderBy { expr: e, .. }
-                        | LinqClause::GroupBy(e) => { self.infer_expr(e); }
-                        LinqClause::Let { value, .. } => { self.infer_expr(value); }
-                    }
-                }
-                let select_ty = self.infer_expr(linq.select);
-                self.ctx.types.intern(SemaType::List(select_ty))
             }
 
             ExprKind::OrElse { expr: inner, fallback } => {

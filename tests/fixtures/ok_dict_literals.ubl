@@ -1,7 +1,7 @@
 // tests/fixtures/ok_dict_literals.ubl
 // The `{ key = value, ... }` dict-literal syntax from the grammar
 // (docs/ubel.ebnf DictExpr), covering single-entry, multi-entry, and
-// bool-valued literals. Depends on Dictionary.insert()/.at() (see
+// bool-valued literals. Depends on Dictionary.set()/.get() (see
 // ok_collections_full.ubl) to verify contents.
 //
 // This previously failed to parse at all — parse_dict's key parsing used
@@ -16,17 +16,17 @@
 fn main() void {
     let single = { "a" = 1 }
     assert(single.len() == 1, "single-entry dict literal len")
-    assert(single.at("a") == 1, "single-entry dict literal value")
+    assert(single.get("a") == 1, "single-entry dict literal value")
 
     let multi = { "width" = 1920, "height" = 1080, "depth" = 32 }
     assert(multi.len() == 3, "multi-entry dict literal len")
-    assert(multi.at("width") == 1920, "multi width")
-    assert(multi.at("height") == 1080, "multi height")
-    assert(multi.at("depth") == 32, "multi depth")
+    assert(multi.get("width") == 1920, "multi width")
+    assert(multi.get("height") == 1080, "multi height")
+    assert(multi.get("depth") == 32, "multi depth")
 
     let flags = { "fullscreen" = true, "vsync" = false }
-    assert(flags.at("fullscreen") == true, "bool-valued dict literal")
-    assert(flags.at("vsync") == false, "bool-valued dict literal 2")
+    assert(flags.get("fullscreen") == true, "bool-valued dict literal")
+    assert(flags.get("vsync") == false, "bool-valued dict literal 2")
 
     println($"dict literals ok: single_len={single.len()}, multi_len={multi.len()}, flags_len={flags.len()}")
 }

@@ -43,7 +43,7 @@ use crate::ast::declarations::{
     FunctionDecl, MethodDecl, StructDecl, StructMember, TraitItem,
 };
 use crate::ast::expressions::{
-    ArgKind, Expr, ExprKind, IfBranchBody, LambdaBody, LinqClause,
+    ArgKind, Expr, ExprKind, IfBranchBody, LambdaBody,
     MatchArmBody, OrElseFallback,
 };
 use crate::ast::root::{Item, Program};
@@ -299,26 +299,6 @@ impl<'a> TierChecker<'a> {
                     });
                 }
                 self.check_expr(inner);
-            }
-
-            // Rule: LINQ only in HIGH tier.
-            ExprKind::Linq(linq) => {
-                if self.current_tier != TierAnnotation::High {
-                    self.errors.add_tier_error(TierError::LinqInWrongTier {
-                        actual: self.current_tier,
-                        span:   expr.span,
-                    });
-                }
-                self.check_expr(linq.source);
-                for clause in linq.clauses.iter() {
-                    match clause {
-                        LinqClause::Where(e)
-                        | LinqClause::OrderBy { expr: e, .. }
-                        | LinqClause::GroupBy(e) => self.check_expr(e),
-                        LinqClause::Let { value, .. } => self.check_expr(value),
-                    }
-                }
-                self.check_expr(linq.select);
             }
 
             // Rule: cross-tier call restrictions.

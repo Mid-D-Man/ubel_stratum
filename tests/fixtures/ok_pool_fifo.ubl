@@ -19,9 +19,9 @@ fn run_pool_fifo() void {
         let a = p.acquire(1)
         let b = p.acquire(2)
         let c = p.acquire(3)
-        assert(p.at(a) == 1, "pool fifo: values readable before any release")
-        assert(p.at(b) == 2, "pool fifo: values readable before any release")
-        assert(p.at(c) == 3, "pool fifo: values readable before any release")
+        assert(p.get(a) == 1, "pool fifo: values readable before any release")
+        assert(p.get(b) == 2, "pool fifo: values readable before any release")
+        assert(p.get(c) == 3, "pool fifo: values readable before any release")
 
         p.release(a)
         p.release(b)
@@ -36,9 +36,9 @@ fn run_pool_fifo() void {
         let full = p.acquire(6)
         assert(full == null, "pool fifo: exhaustion still returns null, same as LIFO")
 
-        assert(p.at(c) == 3, "pool fifo: untouched slot c still reads correctly")
-        assert(p.at(d) == 4, "pool fifo: reused slot reads the new value")
-        assert(p.at(a) == null, "pool fifo: stale handle a still fails after its slot was reused")
+        assert(p.get(c) == 3, "pool fifo: untouched slot c still reads correctly")
+        assert(p.get(d) == 4, "pool fifo: reused slot reads the new value")
+        assert(p.get(a) == null, "pool fifo: stale handle a still fails after its slot was reused")
 
         p.release(c)
         p.release(d)

@@ -31,9 +31,6 @@ candidate was considered and dismissed:
 │                                                             │
 │  Specific ambiguities only                                  │
 │  → Targeted cursor-restore memoisation (≤3 rules)           │
-│                                                             │
-│  LINQ queries                                               │
-│  → Dedicated sub-parser called from expression Pratt loop   │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -377,12 +374,6 @@ pub(crate) fn parse_expr(&mut self, min_bp: u8) -> Option<&'ast Expr<'ast>> {
     loop {
         let op_tok = self.cursor.peek_token().clone();  // cheap: Token is Clone
 
-        // LINQ: `from` in expression position starts a query
-        if matches!(op_tok.kind, TokenType::From) {
-            lhs = self.parse_linq_as_expr(lhs)?;
-            continue;
-        }
-
         let (l_bp, r_bp) = match infix_binding_power(&op_tok.kind) {
             Some(pair) => pair,
             None       => break,
@@ -445,9 +436,6 @@ fn parse_prefix(&mut self) -> Option<&'ast Expr<'ast>> {
         // Try block
         TokenType::Try => self.parse_try_block(),
 
-        // LINQ query starting in expression position
-        TokenType::From => self.parse_linq_query(),
-
         // Unsafe block
         TokenType::Unsafe => self.parse_unsafe_block(),
 
@@ -490,30 +478,22 @@ same generic expression appears in multiple positions:
 type GenericMemo = FxHashMap<usize, (Option<GenericArgList<'ast>>, usize)>;
 ```
 
-### 5.2 `from` — LINQ Query vs Import Statement
+### 5.2 `from` — Single Meaning Now (Was: LINQ Query vs Import Statement)
 
-Disambiguation is position-based, not lookahead-based:
-
-- `from` at **statement/top-level** position → impossible in expression; `from` is only valid here as an import (`from mid.ecs summon`). The statement parser handles it.
-- `from` **inside an expression** → LINQ query. Any other use is a parse error.
-- Lookahead check: if we see `From Ident In` → LINQ. Anything else → error.
+`from` used to need position-based disambiguation: statement/top-level
+position meant an import (`from mid.ecs summon`), expression position
+used to mean a LINQ query start. LINQ is gone (§6), so `from` is back to
+having exactly one meaning — it's only ever valid at statement/top-level
+position, handled entirely by `parse_import_stmt` in `parse_stmt.rs`.
+There's no expression-prefix arm for `TokenType::From` at all anymore;
+`from` in expression position is simply a parse error (falls through to
+`parse_prefix`'s `_ => { self.expected(&["expression"]); None }`
+catch-all, same as any other token with no valid expression-starting
+role).
 
 ```rust
-// In parse_stmt.rs — statement-level
+// In parse_stmt.rs — statement-level, the only place `from` is legal
 TokenType::From => self.parse_import_stmt(),     // `from X summon [Y]`
-
-// In parse_expr.rs — expression prefix
-TokenType::From => {
-    // Quick lookahead: From Ident In → LINQ
-    if matches!(self.cursor.peek_nth(1), TokenType::Ident(_))
-    && matches!(self.cursor.peek_nth(2), TokenType::In)
-    {
-        self.parse_linq_query()
-    } else {
-        self.expected(&["identifier after 'from'"]);
-        None
-    }
-}
 ```
 
 ### 5.3 `(` — Tuple vs Grouped Expression vs Closure
@@ -579,29 +559,46 @@ all, only the separator token accepted in `parse_match_arm`.
 
 ---
 
-## 6. LINQ Query Parsing
+## 6. LINQ Query Parsing — Removed
 
-LINQ is a dedicated sub-parser called from the Pratt prefix arm.
+There used to be a dedicated LINQ sub-parser here (`from x in expr where
+... select ...`, called from the Pratt prefix arm same as `parse_if_expr`
+still is). It's gone — removed outright, not deprecated — as of the
+session that decided `Linqerizer<T>` (see `docs/DATASTRUCTURES.md`) would
+be the actual query mechanism going forward.
 
-```
-LINQ ::= "from" Ident "in" Expr
-         ("where" Expr)?
-         ("order_by" Expr ("desc")?)?
-         ("group_by" Expr)?
-         ("select" Expr | "group_into" Expr)
-```
+**Why removal, not "keep both":** the old implementation was fully wired
+end-to-end — real parser, name resolution, type inference, tier
+enforcement (`TierError::LinqInWrongTier`, `TIER-007`, now retired per
+`docs/DIAGNOSTICS_RULES.md` §4's "never reassign a retired code" rule),
+and a real interpreter routine (`eval_linq`). But it was eager (not
+lazy), hardcoded to `Value::List` only (`Dictionary`/`Queue`/`Stack`/
+`Pool` sources would have panicked), `group_by` was a literal `// TODO`
+no-op, and — the deciding factor — it had **zero fixture coverage**. It
+had never actually been run. Keeping it running alongside `Linqerizer<T>`
+would mean two different implementations of "iterate, filter, project"
+that could silently drift apart from each other over time, which this
+codebase has explicitly avoided elsewhere (see `list_methods.rs`'s own
+header comment on why `len`/`push`/`pop`/`contains` were consolidated
+into one real implementation instead of two hand-written copies).
+`Linqerizer<T>` covers everything the old grammar did and more, as an
+ordinary value/type with chainable methods rather than special
+expression-level grammar — no dedicated sub-parser, no contextual-keyword
+handling, no grammar-level ambiguity with plain method calls.
 
-Rules:
-- `from` binding in LINQ is a **new scope** — the bound identifier is a
-  pattern variable visible only within the rest of the query clauses
-- `where` / `order_by` / `group_by` / `select` are **contextual keywords**
-  — they are `Ident` tokens in the lexer, not reserved words. The LINQ
-  sub-parser must check `lexeme == "where"` etc.
-- LINQ produces an `ExprKind::Linq` node that the semantic pass desugars into
-  a chain of iterator/closure calls, or into a direct ECS query in the `mid.ecs`
-  standard library context
-- LINQ is only legal in `@tier(high)` functions — the parser emits a warning
-  (not an error) and the tier checker enforces the error
+**What's still true of the surrounding grammar:** `from` remains a real
+token — it's still how `@IMPORTS`-equivalent `from X summon Y` import
+statements start (§5.2's disambiguation notes there are unaffected,
+since that was always position-based: `from` at statement/top-level was
+never the LINQ path to begin with). `where` remains a real reserved
+token too, used for match-arm guards (`pattern where expr => ...`,
+§8's `parse_match_arm`) — LINQ's `where` clause reused that same token,
+so removing LINQ cost it nothing. `order_by`/`group_by`/`select` were
+never real lexer keywords in the first place — always plain `Ident`
+tokens the old LINQ sub-parser lexeme-matched — so they needed no
+cleanup beyond deleting the `LINQ_KEYWORDS` phf map and
+`is_linq_keyword` helper that did that matching (`rd_parser/src/
+keywords.rs`).
 
 ---
 
@@ -756,7 +753,6 @@ would couple parsing and semantics, which we specifically avoid.
 | Is this attribute recognised? | **Parser**: known vs unknown via phf; **ECS codegen**: ECS-specific validation |
 | Are these lifetime constraints satisfiable? | **TierChecker / Borrow pass**: not the parser |
 | Is this `edge struct` used in the right tier? | **TierChecker**: not the parser |
-| Does this LINQ query produce a valid type? | **TypeInfer**: not the parser |
 
 The parser's job: turn a flat token stream into a tree. No more.
 

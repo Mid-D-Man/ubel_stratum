@@ -1,0 +1,38 @@
+// tests/fixtures/ok_list_get_set.ubl
+// List.get(i)/List.set(i, v) — new capability. Before this, List had no
+// indexed access at all (no `[]` operator, no named method) — only
+// push/pop/first/last/contains/reverse. `get`/`set` were freed up for
+// exactly this once the property-accessor feature squatting those
+// keywords turned out to have never been built (see
+// docs/NAMING_CONVENTIONS.md §12; that feature is `getter`/`setter` now).
+//
+// get() returns null out-of-bounds (matches pop/first/last's existing
+// "nothing there" convention). set() returns false out-of-bounds rather
+// than panicking or silently growing the list (matches InlineList.push's
+// existing checked-write convention).
+// Expected: zero errors, all assertions pass.
+
+fn main() void {
+    let nums = List.new()
+    nums.push(10)
+    nums.push(20)
+    nums.push(30)
+
+    assert(nums.get(0) == 10, "get: first element")
+    assert(nums.get(1) == 20, "get: middle element")
+    assert(nums.get(2) == 30, "get: last element")
+    assert(nums.get(3) == null, "get: one past the end returns null")
+    assert(nums.get(-1) == null, "get: negative index returns null")
+
+    let ok = nums.set(1, 99)
+    assert(ok == true, "set: in-bounds write reports success")
+    assert(nums.get(1) == 99, "set: write is visible through get")
+    assert(nums.len() == 3, "set: does not change list length")
+
+    let failed = nums.set(10, 1)
+    assert(failed == false, "set: out-of-bounds write reports failure")
+    assert(nums.len() == 3, "set: failed write does not grow the list")
+
+    let neg_failed = nums.set(-1, 1)
+    assert(neg_failed == false, "set: negative index reports failure")
+}

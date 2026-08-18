@@ -26,7 +26,7 @@ use ubel_stratum::{
         expressions::{
             Arg, ArgKind, DictEntry, ElifBranch, Expr, ExprKind,
             FieldInit, IfBranchBody, IfExpr, Lambda, LambdaBody, LambdaParam,
-            LinqClause, LinqExpr, MatchArm, MatchExpr,
+            MatchArm, MatchExpr,
             ObjectField, OptionalAccess, OrElseFallback,
         },
         literals::{InterpolationPart, Literal},
@@ -180,14 +180,6 @@ fn parse_prefix<'ast, 'tok>(p: &mut Parser<'ast, 'tok>) -> Option<&'ast Expr<'as
         TokenType::LeftBrace    => parse_brace_expr(p, lo),
         TokenType::If           => parse_if_expr(p, lo),
         TokenType::Match        => parse_match_expr(p, lo),
-        TokenType::From         => {
-            // LINQ: from Ident in Expr ...
-            if matches!(p.cursor.peek_nth(1), TokenType::Ident(_)) && matches!(p.cursor.peek_nth(2), TokenType::In) {
-                parse_linq(p, lo)
-            } else {
-                p.expected(&["identifier after 'from' (LINQ query)"]); None
-            }
-        }
         TokenType::Fn           => parse_lambda(p, lo),
         TokenType::Async        => {
             // async block (not async fn — that's a declaration)
@@ -529,39 +521,13 @@ fn parse_lambda<'ast, 'tok>(p: &mut Parser<'ast, 'tok>, lo: LSpan) -> Option<&'a
 }
 
 // ── LINQ query ────────────────────────────────────────────────────────────────
-
-fn parse_linq<'ast, 'tok>(p: &mut Parser<'ast, 'tok>, lo: LSpan) -> Option<&'ast Expr<'ast>> {
-    if p.tier != TierAnnotation::High {
-        p.emit(crate::error::illegal_here("LINQ", "LINQ is only valid in @tier(high)", lo, Some("use method chains in MID/LOW tier")));
-    }
-    let prev = p.enter(ParseContext::LinqQuery);
-    p.cursor.advance(); // `from`
-    let (binding, _) = p.expect_ident()?;
-    if let Err(e) = p.cursor.expect(&TokenType::In) { p.emit(crate::error::from_cursor(e, ParseContext::LinqQuery)); p.leave(prev); return None; }
-    let source = parse_expr(p)?;
-    let mut clauses: Vec<LinqClause<'ast>> = Vec::with_capacity(p.estimates.linq_clauses);
-    loop {
-        match p.cursor.peek().clone() {
-            TokenType::Where => { p.cursor.advance(); clauses.push(LinqClause::Where(parse_expr(p)?)); }
-            TokenType::Let   => { p.cursor.advance(); let (n, _) = p.expect_ident()?; p.cursor.eat(&TokenType::Equal); clauses.push(LinqClause::Let { name: n, value: parse_expr(p)? }); }
-            TokenType::Ident(ref kw) => match kw.as_str() {
-                "orderby"  => { p.cursor.advance(); let e = parse_expr(p)?; let desc = if let TokenType::Ident(ref d) = p.cursor.peek().clone() { if d == "descending" { p.cursor.advance(); true } else if d == "ascending" { p.cursor.advance(); false } else { false } } else { false }; clauses.push(LinqClause::OrderBy { expr: e, descending: desc }); }
-                "groupby"  => { p.cursor.advance(); clauses.push(LinqClause::GroupBy(parse_expr(p)?)); }
-                "select"   => break,
-                _          => break,
-            },
-            _ => break,
-        }
-    }
-    let select = if let TokenType::Ident(kw) = p.cursor.peek().clone() {
-        if kw == "select" { p.cursor.advance(); parse_expr(p)? } else { p.expected(&["'select'"]); p.leave(prev); return None; }
-    } else { p.expected(&["'select'"]); p.leave(prev); return None; };
-    let span    = lo.merge(&select.span);
-    let clauses = p.arena.alloc_slice_copy(clauses.as_slice());
-    let node    = p.alloc(LinqExpr { binding, source, clauses, select, span });
-    p.leave(prev);
-    Some(p.alloc(Expr { kind: ExprKind::Linq(node), span }))
-}
+// Removed: `from x in expr where ... select ...` was fully wired
+// end-to-end (parser, name resolution, type inference, tier checking,
+// interpreter) but eager, hardcoded to `Value::List` only, `groupby`
+// was an unimplemented no-op, and it had zero fixture coverage — never
+// actually run. Replaced by `Linqerizer<T>`, a real value/type with
+// chainable, lazy query methods, rather than dedicated expression-level
+// grammar. See docs/PARSER_RULES.md §6 for the reasoning.
 
 // ── Interpolated string ───────────────────────────────────────────────────────
 

@@ -11,12 +11,14 @@
 //!     handle's generation still matches; a stale/invalid handle is a
 //!     silent no-op (fails safe, matching `Optional`'s "checked failure,
 //!     not memory corruption" philosophy — not a panic).
-//!   - `at(handle)` — read the slot's current value if the generation
+//!   - `get(handle)` — read the slot's current value if the generation
 //!     matches, else `Optional::None`. This is where staleness actually
 //!     gets caught: an old handle held past release provably fails here
 //!     instead of silently reading whatever's been written into a
-//!     reused slot. Named `at` (not `get`) to match `Dictionary.at(key)`'s
-//!     existing precedent — `get`/`set` are reserved lexer tokens.
+//!     reused slot. Was named `at` (matching `Dictionary.at(key)`) back
+//!     when `get`/`set` were still reserved for the never-built
+//!     property-accessor feature; renamed once that reservation was
+//!     freed up (see `docs/NAMING_CONVENTIONS.md` §12).
 //!   - `growable()` — opt in to block-chained growth on exhaustion
 //!     instead of `acquire()` returning `null`. Void, no args, mutates
 //!     the pool's own flag in place.
@@ -33,7 +35,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use crate::interpreter::value::{EvalResult, PoolData, Signal, Value};
 
-pub const METHOD_NAMES: &[&str] = &["acquire", "release", "at", "growable", "fifo"];
+pub const METHOD_NAMES: &[&str] = &["acquire", "release", "get", "growable", "fifo"];
 
 /// No `Pool` method is HIGH-only today. Real, consulted registry — not
 /// a stub — see `instance::is_high_only`.
@@ -45,7 +47,7 @@ pub fn signature(name: &str) -> Option<(crate::builtins::instance::MethodReturn,
     Some(match name {
         "acquire"  => (R::AcquireHandle, 1),
         "release"  => (R::Void, 1),
-        "at"       => (R::Elem, 1),
+        "get"      => (R::Elem, 1),
         "growable" => (R::Void, 0),
         "fifo"     => (R::Void, 0),
         _ => return None,
@@ -91,10 +93,10 @@ pub fn release(p: &PoolInner, args: &[Value]) -> EvalResult {
     Ok(Value::Void)
 }
 
-pub fn at(p: &PoolInner, args: &[Value]) -> EvalResult {
+pub fn get(p: &PoolInner, args: &[Value]) -> EvalResult {
     let (index, generation) = match args.first() {
         Some(Value::Handle { index, generation }) => (*index, *generation),
-        _ => return Err(Signal::Panic("at() needs a Handle argument".into())),
+        _ => return Err(Signal::Panic("get() needs a Handle argument".into())),
     };
     let pool = p.borrow();
     if pool.generation(index) == Some(generation) {
@@ -176,7 +178,7 @@ mod tests {
         assert!(!matches!(c, Value::Null), "growable pool should not return null once grown");
         // The original handle must still read correctly -- proves the
         // grow didn't reallocate/move the first block's existing data.
-        assert_eq!(at(&p, &[a]).unwrap(), Value::Int(1));
+        assert_eq!(get(&p, &[a]).unwrap(), Value::Int(1));
         assert_eq!(p.borrow().blocks.len(), 2, "should have appended exactly one new block");
         assert_eq!(p.borrow().total_capacity(), 4);
     }

@@ -1,0 +1,48 @@
+// tests/fixtures/ok_list_find_find_all.ubl
+// List.find(predicate)/find_all(predicate) — C#'s List<T>.Find/.FindAll
+// naming pair (first-match vs every-match), picked specifically to avoid
+// the ambiguity a renamed `filter` would have carried: `find` returning
+// "all matches" would contradict what `find` means in basically every
+// other mainstream language. `find_all` says "many" right in the name.
+//
+// These are also the first builtin instance methods that actually
+// invoke a user-supplied closure — `interp.call_function` already
+// existed for named-function calls, this just threads `&mut Interpreter`
+// through to the two methods that need it (list_methods::find/find_all
+// take it; push/pop/get/set/etc. don't and are untouched).
+// Expected: zero errors, all assertions pass.
+
+fn main() void {
+    let nums = List.new()
+    nums.push(3)
+    nums.push(12)
+    nums.push(7)
+    nums.push(20)
+    nums.push(5)
+
+    // find: first match, no braces needed for a single-expression lambda
+    // body (same brace-optional rule Lambda already had before `then`
+    // existed — `then` was never needed here, only `if` needed it).
+    let first_big = nums.find(fn(x) x > 10)
+    assert(first_big == 12, "find: returns first element matching the predicate")
+
+    let none_match = nums.find(fn(x) x > 100)
+    assert(none_match == null, "find: returns null when nothing matches")
+
+    // find_all: every match, as a new List — original list untouched.
+    let all_big = nums.find_all(fn(x) x > 10)
+    assert(all_big.len() == 2, "find_all: collects every match")
+    assert(all_big.get(0) == 12, "find_all: preserves original order")
+    assert(all_big.get(1) == 20, "find_all: preserves original order")
+    assert(nums.len() == 5, "find_all: does not mutate the source list")
+
+    let none_at_all = nums.find_all(fn(x) x > 100)
+    assert(none_at_all.len() == 0, "find_all: empty list when nothing matches")
+    assert(none_at_all.is_empty(), "find_all: empty result is_empty() is true")
+
+    // Predicate can capture an outer variable (closures, not just
+    // top-level named functions, are valid predicates).
+    let threshold = 6
+    let above_threshold = nums.find_all(fn(x) x > threshold)
+    assert(above_threshold.len() == 3, "find_all: predicate closure captures outer scope")
+}

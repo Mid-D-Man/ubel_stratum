@@ -28,7 +28,6 @@ pub struct ParseEstimates {
     pub impl_methods:    usize,
     pub attr_args:       usize,
     pub path_segs:       usize,
-    pub linq_clauses:    usize,
 }
 
 impl ParseEstimates {
@@ -63,8 +62,6 @@ impl ParseEstimates {
             attr_args:       usize::max(2,  total / 300),
             // Dotted path segments
             path_segs:       usize::max(2,  3),
-            // LINQ clauses
-            linq_clauses:    usize::max(2,  total / 100),
         }
     }
 
@@ -84,7 +81,6 @@ impl ParseEstimates {
             impl_methods:    4,
             attr_args:       2,
             path_segs:       3,
-            linq_clauses:    2,
         }
     }
 }

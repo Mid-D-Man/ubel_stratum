@@ -40,19 +40,6 @@ pub static COLLECTION_TYPES: Map<&'static str, ()> = phf_map! {
     "Stack"      => (),
 };
 
-// ── LINQ contextual keywords ──────────────────────────────────────────────────
-
-/// Keywords with special meaning inside a LINQ query expression.
-/// These are NOT lexer keywords (TokenType::Ident in the token stream),
-/// so we detect them by comparing the Ident lexeme against this map.
-pub static LINQ_KEYWORDS: Map<&'static str, ()> = phf_map! {
-    "select"     => (),
-    "orderby"    => (),
-    "groupby"    => (),
-    "ascending"  => (),
-    "descending" => (),
-};
-
 // ── @cfg composition operators ────────────────────────────────────────────────
 
 /// The three valid composition operators inside `@cfg(...)`.
@@ -86,12 +73,6 @@ pub fn is_primitive_type(name: &str) -> bool {
 #[inline]
 pub fn is_collection_type(name: &str) -> bool {
     COLLECTION_TYPES.contains_key(name)
-}
-
-/// O(1) check: is `name` a LINQ contextual keyword?
-#[inline]
-pub fn is_linq_keyword(name: &str) -> bool {
-    LINQ_KEYWORDS.contains_key(name)
 }
 
 /// O(1) check: is `name` a @cfg composition operator (not/any/all)?

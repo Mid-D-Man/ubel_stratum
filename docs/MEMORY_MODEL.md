@@ -297,9 +297,11 @@ now so it isn't designed away later.
 
 ## 8. Method Availability Per Tier ("Method Tier Inheritance")
 
-✅ **Existing precedent:** `await` (`ExprKind::Await`) and LINQ
-(`ExprKind::Linq`) are already hard-gated to `@tier(high)` functions only, at
-the expression level.
+✅ **Existing precedent:** `await` (`ExprKind::Await`) is already
+hard-gated to `@tier(high)` functions only, at the expression level.
+(LINQ query-comprehension syntax used to be the second example here —
+removed in favor of `Linqerizer<T>`, a HIGH-tier-only *type* rather than
+special expression-level grammar; see `docs/PARSER_RULES.md` §6.)
 
 ✅ **Implemented.** Getting here required more than the two rules below —
 builtin instance methods (`myList.push(x)`, `"s".to_upper()`, ...) had *no*
@@ -464,13 +466,13 @@ Three methods, on `Pool<T>` itself (not on `Handle<T>`, which is an opaque
   silent no-op — fails safe, doesn't panic, matching `Optional`'s existing
   "checked failure, not memory corruption" philosophy elsewhere in the
   language.
-- **`.at(handle: Handle<T>)`** → `Optional<T>`. Reads the slot if the
-  generation matches, else `null`. **Named `at`, not `get`** — `get`/`set`
-  are reserved lexer tokens (`TokenType::Get`/`Set`) in this language, not
-  usable as a method name after `.` without a separate parser change.
-  `Dictionary.at(key)` already established this exact naming for "keyed
-  lookup"; `Pool.at(handle)` follows the same precedent rather than
-  colliding with a reserved word.
+- **`.get(handle: Handle<T>)`** → `Optional<T>`. Reads the slot if the
+  generation matches, else `null`. Was named `at` — `get`/`set` were
+  reserved lexer tokens for a property-accessor feature that turned out
+  to have never actually been implemented (see §12 of
+  `docs/NAMING_CONVENTIONS.md`); once that reservation was freed up and
+  the accessor keywords renamed to `getter`/`setter`, `get`/`set` moved
+  to the collections that actually wanted them all along.
 - **`.growable()`** → `void`. Opts into block-chained growth on
   exhaustion — see item 2 above. No-arg, mutates the pool's own flag.
 - **`.fifo()`** → `void`. Opts into oldest-freed-first reuse — see item 3
@@ -556,9 +558,9 @@ grammar rules) but is a distinct, additive follow-up, not done here.
 ### Verified
 
 `tests/fixtures/ok_pool_basic.ubl` — full pipeline (lex → parse → sema →
-interpret), exercising acquire/release/at, LIFO reuse of a just-released
+interpret), exercising acquire/release/get, LIFO reuse of a just-released
 slot, exhaustion returning `null`, and — the actual point of generational
-handles — a stale handle held past `.release()` provably failing `.at()`
+handles — a stale handle held past `.release()` provably failing `.get()`
 instead of silently reading the slot's next occupant. Plus three sema-fail
 fixtures, one per new `TierError` variant reachable today:
 `err_pool_wrong_tier.ubl` (`PoolInWrongTier`), `err_pool_escapes_block.ubl`

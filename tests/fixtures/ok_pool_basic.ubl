@@ -12,14 +12,14 @@ fn run_pool() void {
 
         let a = p.acquire(10)
         let b = p.acquire(20)
-        assert(p.at(a) == 10, "pool: get after acquire returns stored value")
-        assert(p.at(b) == 20, "pool: second acquire independent of first")
+        assert(p.get(a) == 10, "pool: get after acquire returns stored value")
+        assert(p.get(b) == 20, "pool: second acquire independent of first")
 
         p.release(a)
-        assert(p.at(a) == null, "pool: stale handle fails get after release")
+        assert(p.get(a) == null, "pool: stale handle fails get after release")
 
         let c = p.acquire(30)
-        assert(p.at(c) == 30, "pool: reacquire after release returns new value")
+        assert(p.get(c) == 30, "pool: reacquire after release returns new value")
 
         let d = p.acquire(40)
         let e = p.acquire(50)

@@ -64,8 +64,8 @@ enum LogosToken {
     #[token("false")]    False,
     #[token("null")]     Null,
     #[token("self")]     SelfKw,
-    #[token("get")]      Get,
-    #[token("set")]      Set,
+    #[token("getter")]   Getter,
+    #[token("setter")]   Setter,
 
     // ── Declaration / statement keywords ─────────────────────────
     #[token("extend")]   Extend,
@@ -414,8 +414,8 @@ impl<'a> LogosLexer<'a> {
             LogosToken::False     => TokenType::False,
             LogosToken::Null      => TokenType::Null,
             LogosToken::SelfKw    => TokenType::SelfKw,
-            LogosToken::Get       => TokenType::Get,
-            LogosToken::Set       => TokenType::Set,
+            LogosToken::Getter    => TokenType::Getter,
+            LogosToken::Setter    => TokenType::Setter,
             LogosToken::Extend    => TokenType::Extend,
             LogosToken::TypeKw    => TokenType::TypeKw,
             LogosToken::Extract   => TokenType::Extract,

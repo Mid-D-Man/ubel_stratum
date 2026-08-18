@@ -477,6 +477,7 @@ identifiers, regardless of what kind of thing you're trying to name
 | `high`, `mid`, `low` (lowercase, inside `@tier(...)`) | `TierValue` — the *only* three legal values, and case-sensitive |
 | `arena`, `pool`, `gc`, `heap` (lowercase, inside `with ...`) | `AllocatorExpr` keyword tokens |
 | `edge` (as a struct modifier) | LOW-tier manual-heap-node marker — `StructDecl ::= "pub"? "edge"? "struct" ...` |
+| `getter`, `setter` | Reserved for a not-yet-implemented property-accessor feature. **`get`/`set` themselves are deliberately *not* reserved** — they're ordinary identifiers, used as the read/write method names on collections (`Dictionary.get(key)`/`.set(key, value)`, `Pool.get(handle)`, `List.get(i)`/`.set(i, v)`). Renamed from `get`/`set` specifically so collections could have the names everyone expects; if you're about to reserve a bare word for a future feature, check whether something more common already wants it first — that's exactly how the previous version of this row went unused for an entire feature's lifetime. |
 
 A capitalized form of one of the lowercase allocator/tier keywords
 (`Arena`, `Pool`, `Gc`, `Heap`, `Tier`) is lexically a *different*,

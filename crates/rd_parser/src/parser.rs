@@ -309,6 +309,5 @@ pub(crate) mod cap {
     pub const IMPL_ITEMS:     usize = 8;
     pub const TRAIT_ITEMS:    usize = 8;
     pub const ENUM_VARIANTS:  usize = 8;
-    pub const LINQ_CLAUSES:   usize = 4;
     pub const PATH_SEGS:      usize = 3;
 }

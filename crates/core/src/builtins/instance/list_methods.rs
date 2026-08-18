@@ -10,10 +10,13 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use crate::interpreter::eval::Interpreter;
 use crate::interpreter::value::{EvalResult, Signal, Value};
 
-pub const METHOD_NAMES: &[&str] =
-    &["len", "push", "pop", "contains", "first", "last", "is_empty", "reverse"];
+pub const METHOD_NAMES: &[&str] = &[
+    "len", "push", "pop", "contains", "first", "last", "is_empty", "reverse",
+    "get", "set", "find", "find_all",
+];
 
 /// No `List` method is HIGH-only today. Real, consulted registry — not
 /// a stub — see `instance::is_high_only`.
@@ -31,6 +34,10 @@ pub fn signature(name: &str) -> Option<(crate::builtins::instance::MethodReturn,
         "last"     => (R::Elem, 0),
         "is_empty" => (R::Bool, 0),
         "reverse"  => (R::Void, 0),
+        "get"      => (R::Elem, 1),
+        "set"      => (R::Bool, 2),
+        "find"     => (R::Elem, 1),
+        "find_all" => (R::NewSelf, 1),
         _ => return None,
     })
 }
@@ -71,4 +78,92 @@ pub fn is_empty(list: &Rc<RefCell<Vec<Value>>>) -> Value {
 pub fn reverse(list: &Rc<RefCell<Vec<Value>>>) -> Value {
     list.borrow_mut().reverse();
     Value::Void
+}
+
+/// Indexed read. Out-of-bounds (including negative) returns `Value::Null`
+/// rather than panicking — the same convention `pop`/`first`/`last`
+/// already established for "nothing there" outcomes.
+pub fn get(list: &Rc<RefCell<Vec<Value>>>, args: &[Value]) -> EvalResult {
+    let idx = match args.first() {
+        Some(Value::Int(i)) => *i,
+        _ => return Err(Signal::Panic("get() needs 1 integer argument".into())),
+    };
+    if idx < 0 {
+        return Ok(Value::Null);
+    }
+    Ok(list.borrow().get(idx as usize).cloned().unwrap_or(Value::Null))
+}
+
+/// Indexed write. Out-of-bounds (including negative) returns `false`
+/// rather than panicking or silently growing the list — the checked,
+/// never-panics convention `InlineList.push()` already established for
+/// a write that might legitimately fail based on runtime data.
+pub fn set(list: &Rc<RefCell<Vec<Value>>>, args: &[Value]) -> EvalResult {
+    let idx = match args.first() {
+        Some(Value::Int(i)) => *i,
+        _ => return Err(Signal::Panic("set() needs 2 arguments: index, value".into())),
+    };
+    let val = args.get(1).cloned()
+        .ok_or_else(|| Signal::Panic("set() needs 2 arguments: index, value".into()))?;
+    if idx < 0 {
+        return Ok(Value::Bool(false));
+    }
+    let idx = idx as usize;
+    let mut l = list.borrow_mut();
+    if idx < l.len() {
+        l[idx] = val;
+        Ok(Value::Bool(true))
+    } else {
+        Ok(Value::Bool(false))
+    }
+}
+
+/// First element for which `predicate(element)` is truthy, or `Null` if
+/// none match. `predicate` must be a `Value::Function` (named fn or
+/// lambda — both are `FunctionId` under the hood, see `Value::Function`'s
+/// own doc comment).
+///
+/// Snapshots the list into a plain `Vec` before iterating, same as
+/// `eval_linq` used to (and every other closure-invoking iteration here
+/// will) — `interp.call_function` re-enters interpretation, and the
+/// predicate body could in principle touch this same list, so no
+/// `Ref`/`RefMut` borrow may be held live across that call.
+pub fn find<'ast>(
+    interp: &mut Interpreter<'ast>,
+    list: &Rc<RefCell<Vec<Value>>>,
+    args: &[Value],
+) -> EvalResult {
+    let pred_id = match args.first() {
+        Some(Value::Function(id)) => *id,
+        _ => return Err(Signal::Panic("find() needs 1 argument: a predicate function".into())),
+    };
+    let items = list.borrow().clone();
+    for item in items {
+        if interp.call_function(pred_id, &[item.clone()])?.is_truthy()? {
+            return Ok(item);
+        }
+    }
+    Ok(Value::Null)
+}
+
+/// Every element for which `predicate(element)` is truthy, as a new
+/// `List<T>` (possibly empty). See `find` above for the predicate-call
+/// and snapshot-before-iterating notes — identical here.
+pub fn find_all<'ast>(
+    interp: &mut Interpreter<'ast>,
+    list: &Rc<RefCell<Vec<Value>>>,
+    args: &[Value],
+) -> EvalResult {
+    let pred_id = match args.first() {
+        Some(Value::Function(id)) => *id,
+        _ => return Err(Signal::Panic("find_all() needs 1 argument: a predicate function".into())),
+    };
+    let items = list.borrow().clone();
+    let mut matches = Vec::with_capacity(items.len());
+    for item in items {
+        if interp.call_function(pred_id, &[item.clone()])?.is_truthy()? {
+            matches.push(item);
+        }
+    }
+    Ok(Value::List(Rc::new(RefCell::new(matches))))
 }

@@ -12,6 +12,6 @@
 
 fn main() void {
     let ages = Dictionary.new()
-    ages.insert("alice", 31)
+    ages.set("alice", 31)
     ages.frobnicate()
 }

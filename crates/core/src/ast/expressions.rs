@@ -99,8 +99,6 @@ pub enum ExprKind<'ast> {
     If(&'ast IfExpr<'ast>),
     /// Match expression — boxed because it embeds MatchArms
     Match(&'ast MatchExpr<'ast>),
-    /// LINQ query expression (HIGH tier only) — boxed
-    Linq(&'ast LinqExpr<'ast>),
 
     // ── `expr or continue/break/return/default` ───────────────────
     OrElse {
@@ -263,40 +261,6 @@ pub struct MatchArm<'ast> {
 pub enum MatchArmBody<'ast> {
     Expr(&'ast Expr<'ast>),
     Block(Block<'ast>),
-}
-
-// ── LINQ ──────────────────────────────────────────────────────────
-
-/// A LINQ query expression (only valid in HIGH tier).
-///
-/// ```text
-/// from user in users
-/// where user.age >= 18
-/// orderby user.name
-/// select user.name
-/// ```
-#[derive(Debug, Clone, Copy)]
-pub struct LinqExpr<'ast> {
-    /// Variable name after `from`
-    pub binding: &'ast str,
-    pub source: &'ast Expr<'ast>,
-    pub clauses: &'ast [LinqClause<'ast>],
-    pub select: &'ast Expr<'ast>,
-    pub span: Span,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub enum LinqClause<'ast> {
-    Where(&'ast Expr<'ast>),
-    OrderBy {
-        expr: &'ast Expr<'ast>,
-        descending: bool,
-    },
-    GroupBy(&'ast Expr<'ast>),
-    Let {
-        name: &'ast str,
-        value: &'ast Expr<'ast>,
-    },
 }
 
 // ── Or-else fallback ──────────────────────────────────────────────

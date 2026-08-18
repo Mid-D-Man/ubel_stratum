@@ -9,7 +9,7 @@ use std::rc::Rc;
 
 use crate::ast::common::{AssignOp, BinOp, UnaryOp};
 use crate::ast::expressions::{
-    ArgKind, Expr, ExprKind, LambdaBody, LinqClause, MatchArmBody, OrElseFallback,
+    ArgKind, Expr, ExprKind, LambdaBody, MatchArmBody, OrElseFallback,
 };
 use crate::ast::literals::{InterpolationPart, Literal};
 use crate::ast::types::{Type, TypeKind};
@@ -343,9 +343,6 @@ pub fn eval_expr<'ast>(interp: &mut Interpreter<'ast>, expr: &Expr<'ast>) -> Eva
             }
             Ok(Value::Void)
         }
-
-        // ── LINQ: from x in source where ... select projection ────
-        ExprKind::Linq(linq) => eval_linq(interp, linq),
 
         // ── Or-else: expr or fallback ─────────────────────────────
         ExprKind::OrElse { expr: inner, fallback } => {
@@ -775,6 +772,10 @@ fn eval_method_call(
                 "last"     => return Ok(m::last(rc)),
                 "is_empty" => return Ok(m::is_empty(rc)),
                 "reverse"  => return Ok(m::reverse(rc)),
+                "get"      => return m::get(rc, args),
+                "set"      => return m::set(rc, args),
+                "find"     => return m::find(interp, rc, args),
+                "find_all" => return m::find_all(interp, rc, args),
                 _ => {}
             }
         }
@@ -815,7 +816,7 @@ fn eval_method_call(
             match method_name {
                 "acquire"  => return m::acquire(rc, args),
                 "release"  => return m::release(rc, args),
-                "at"       => return m::at(rc, args),
+                "get"      => return m::get(rc, args),
                 "growable" => return m::growable(rc, args),
                 "fifo"     => return m::fifo(rc, args),
                 _ => {}
@@ -905,8 +906,8 @@ fn eval_method_call(
                 "contains_key" => return m::contains_key(rc, args),
                 "keys"         => return Ok(m::keys(rc)),
                 "values"       => return Ok(m::values(rc)),
-                "insert"       => return m::insert(rc, args),
-                "at"           => return m::at(rc, args),
+                "set"          => return m::set(rc, args),
+                "get"          => return m::get(rc, args),
                 _ => {}
             }
         }
@@ -985,85 +986,3 @@ fn eval_cast<'ast>(val: Value, ty: &'ast Type<'ast>) -> EvalResult {
         _ => Ok(val), // Unknown cast — pass through for now.
     }
 }
-
-// ── LINQ evaluation ───────────────────────────────────────────────
-
-fn eval_linq<'ast>(
-    interp: &mut Interpreter<'ast>,
-    linq:   &'ast crate::ast::expressions::LinqExpr<'ast>,
-) -> EvalResult {
-    let source = eval_expr(interp, linq.source)?;
-    let items: Vec<Value> = match source {
-        Value::List(rc) => rc.borrow().clone(),
-        other           => return Err(Signal::Panic(format!(
-            "LINQ source must be a List, got {}", other.type_name()
-        ))),
-    };
-
-    let mut result: Vec<Value> = Vec::new();
-    let mut order_by: Option<Vec<(Value, Value)>> = None; // (key, item) pairs for sort
-
-    'each_item: for item in items {
-        interp.env.push();
-        interp.env.define(linq.binding, item.clone());
-
-        // Process each clause in declaration order.
-        for clause in linq.clauses.iter() {
-            match clause {
-                LinqClause::Where(cond) => {
-                    match eval_expr(interp, cond)?.is_truthy() {
-                        Ok(true)  => {}
-                        Ok(false) => { interp.env.pop(); continue 'each_item; }
-                        Err(s)    => { interp.env.pop(); return Err(s); }
-                    }
-                }
-                LinqClause::Let { name, value } => {
-                    let v = eval_expr(interp, value)?;
-                    interp.env.define(name, v);
-                }
-                LinqClause::OrderBy { expr, descending: _ } => {
-                    let key = eval_expr(interp, expr)?;
-                    let projected = eval_expr(interp, linq.select)?;
-                    let entry = (key, projected);
-                    order_by.get_or_insert_with(Vec::new).push(entry);
-                    interp.env.pop();
-                    continue 'each_item;
-                }
-                LinqClause::GroupBy(_) => {
-                    // TODO: full groupby support. For MVP, treat as a no-op.
-                }
-            }
-        }
-
-        let projected = eval_expr(interp, linq.select)?;
-        interp.env.pop();
-        result.push(projected);
-    }
-
-    // If we collected orderby pairs, sort and use those as the result.
-    if let Some(mut pairs) = order_by {
-        pairs.sort_by(|(ka, _), (kb, _)| {
-            compare_values(ka, kb).unwrap_or(std::cmp::Ordering::Equal)
-        });
-        // Check if any clause was descending — simplified: use last orderby directive.
-        let descending = linq.clauses.iter().any(|c| {
-            matches!(c, LinqClause::OrderBy { descending: true, .. })
-        });
-        if descending { pairs.reverse(); }
-        result = pairs.into_iter().map(|(_, v)| v).collect();
-    }
-
-    Ok(Value::List(Rc::new(RefCell::new(result))))
-}
-
-/// Compare two values for ordering. Returns None if incomparable.
-fn compare_values(a: &Value, b: &Value) -> Option<std::cmp::Ordering> {
-    match (a, b) {
-        (Value::Int(x),    Value::Int(y))    => Some(x.cmp(y)),
-        (Value::Float(x),  Value::Float(y))  => x.partial_cmp(y),
-        (Value::Double(x), Value::Double(y)) => x.partial_cmp(y),
-        (Value::Str(x),    Value::Str(y))    => Some(x.cmp(y)),
-        (Value::Bool(x),   Value::Bool(y))   => Some(x.cmp(y)),
-        _ => None,
-    }
-    }
