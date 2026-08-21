@@ -83,6 +83,14 @@ pub enum SemaType {
     /// current length not being part of its type either) — it's a
     /// checked, literal-int-only constructor argument instead.
     InlineList(TypeId),
+    /// `Linqerizer<T>` — HIGH-tier-only lazy query builder
+    /// (`docs/DATASTRUCTURES.md` §6). Obtained via `List<T>.query()`
+    /// (`HIGH_ONLY`-gated, same real, tested infrastructure
+    /// `MethodInWrongTier`/`TIER-008` already had sitting unused). Never
+    /// arena/pool-tagged — the only way to construct one is already
+    /// restricted to HIGH tier, so there's no MID-tier tagging case to
+    /// handle, unlike every other builtin collection here.
+    Linqerizer(TypeId),
     Tuple(Vec<TypeId>),
     Array { len: u64, elem: TypeId },
     Slice(TypeId),
@@ -198,6 +206,7 @@ impl SemaType {
             | SemaType::Queue(t)
             | SemaType::Stack(t)
             | SemaType::InlineList(t)
+            | SemaType::Linqerizer(t)
             | SemaType::Slice(t)
             | SemaType::Fallible(t)
             | SemaType::Task(t)
@@ -270,6 +279,7 @@ impl SemaType {
             SemaType::Queue(t) => format!("Queue<{}>", table.get(*t).display(table, symbols)),
             SemaType::Stack(t) => format!("Stack<{}>", table.get(*t).display(table, symbols)),
             SemaType::InlineList(t) => format!("InlineList<{}>", table.get(*t).display(table, symbols)),
+            SemaType::Linqerizer(t) => format!("Linqerizer<{}>", table.get(*t).display(table, symbols)),
             SemaType::Slice(t) => format!("[]{}", table.get(*t).display(table, symbols)),
 
             SemaType::Dictionary(k, v) => format!(

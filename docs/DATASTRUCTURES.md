@@ -1,8 +1,9 @@
 # Data Structures — Design & Discussion Notes
 
 **Status:** Decisions below are locked in (discussed and confirmed
-directly). `Pool<T>`'s `.growable()`/`.fifo()`/iteration (§1) are now
-implemented — everything else is still just the design record. This is also the deferred item already flagged in a prior
+directly). `Pool<T>`'s `.growable()`/`.fifo()`/iteration (§1),
+`InlineList<T>` (§5), and `Linqerizer<T>` (§6) are now implemented —
+everything else is still just the design record. This is also the deferred item already flagged in a prior
 session's handover: `Hive<T>`, `Unique<T>`/`Shared<T>`/`SyncShared<T>`,
 FFI wrappers (`FfiSpan`/`ExternBuffer`/`MemGuard`), `Span<T>`, and
 tier-aware `List<T>` backend switching were all noted as "deserves a
@@ -18,6 +19,7 @@ that document.
 | Hive-shaped capability | **Extended `Pool<T>`, no separate `Hive<T>` type — implemented.** `.growable()` (block-chained: a new `count`-sized block appended on exhaustion, existing blocks never reallocated/copied) and `for x in pool { }` (skipfield-style, holes skipped — no `.iter()` method needed, matching every other collection). Plus `.fifo()` (oldest-freed-first reuse, opt-in) alongside the growability work since it touched the same free-list code. Matches the project's existing precedent of unifying rather than duplicating (`pool<T>(count)`/`Pool<T>` themselves were explicitly unified for the same reason). |
 | `List<T>` arena-tier `.remove()` | **Swap-remove.** O(1), no reclamation needed (fits arena's append-only nature). Reorders the list, which invalidates a *plain index* into the swapped element — pair with `Handle<T>`-style generational references (same pattern `Pool<T>` already uses) from the start rather than raw indices now and a migration later. |
 | Fixed-capacity inline vector | **`InlineList<T>` — implemented, its own structure, not a face of `Pool<T>`.** `Pool<T>` is inherently heap-backed (`PoolData.blocks` is a `Vec<Vec<Option<Value>>>`; `Handle<T>` exists specifically to indirect into that heap allocation). An inline vector's entire premise is the opposite — storage lives on the stack or embedded directly in a parent struct, zero heap allocation, zero indirection. Capacity ended up as a checked constructor argument (`InlineList.new(64)`) rather than a type-level parameter — see §5. |
+| LINQ replacement naming | **`Linqerizer<T>` — implemented.** Beat `Query<T>`/`Pipeline<T>` on the same "the language already has a sense of humor about itself" precedent as `summon` for imports — a real, already-shipped keyword, not a hypothetical. Method vocabulary stayed LINQ-flavored (`.where()`/`.select()`, not `.filter()`/`.map()`) on the same theory. See §6. |
 | "Static Core, Dynamic Shell" | **Not real, established terminology anywhere** — searched two different phrasings (`"static core" "dynamic shell" ECS`, `"static core dynamic shell" compiler`), nothing in any engine, language, or writeup uses this term. Almost certainly flavor-text framing (from the earlier external conversation) for a real, describable concept — the compiler transparently batching clean OOP-looking code into flat ECS storage — dressed up with a name that sounds established but isn't. Recommendation: drop the phrase; describe the mechanism plainly if/when it gets written up, rather than anchoring to a borrowed name nobody else will recognize. |
 
 ---
@@ -265,7 +267,100 @@ representations today.
 
 ---
 
-## 6. Remaining open questions
+## 6. `Linqerizer<T>` — the LINQ replacement, implemented
+
+Replaces the old `from x in expr where ... select ...` query-comprehension
+grammar (removed entirely — see `docs/PARSER_RULES.md` §6 for why removal
+beat keeping both). `Linqerizer<T>` is what real LINQ actually is under
+the hood: `from`/`where`/`select` in C# is sugar that the compiler itself
+desugars into `.Where(...)`.Select(...)` calls on `IEnumerable<T>` — the
+method-chain form is the primitive, query syntax is optional decoration
+on top of it. Ubel just never built the decoration layer, and ships the
+primitive.
+
+### Getting one
+
+```ubel
+let pipeline = someList.query()
+```
+
+`List<T>.query()` is the only real tier gate — `HIGH_ONLY`-gated
+(`list_methods::HIGH_ONLY`), reusing the exact `MethodInWrongTier`/
+`TIER-008` machinery every other `HIGH_ONLY` registry already had sitting
+empty, not new tier-checking code written for this specifically. Nothing
+downstream on `Linqerizer<T>` itself is individually tier-gated — by the
+time you're holding one, you're already past the one checkpoint that
+matters, same principle `List`'s own methods have relative to `List.new()`.
+
+### Shape
+
+- **Chainable** (each returns a *new* `Linqerizer`, never mutates the one
+  it was called on — same reason every other LINQ-shaped thing works this
+  way, C#/Rust iterators/JS included): `.where(predicate)`,
+  `.select(selector)`, `.order_by(key_selector)`, `.order_by_desc(key_selector)`.
+- **Terminal** (materializes — runs every pending op against the
+  snapshot, in order): `.to_list()` → `List<T>`, `.first()` → `T` or
+  `null` (same "nothing there" convention `pop`/`first`/`last`/`get`
+  already use), `.count()` → `int`, `.group_by(key_selector)` →
+  `Dictionary<K, List<T>>`.
+
+`.select()` and `.group_by()` both have a return type that depends on the
+*argument's* own inferred type — the selector's return type, not
+anything fixed about the receiver — which the generic
+`(MethodReturn, ReceiverWrap, TypeId)` return-shape machinery every other
+method here uses has no way to express. Both are intercepted in
+`type_infer.rs` *before* that generic path runs, extracting the already-
+inferred type of the lambda argument directly. Same relationship
+`Pool.new()`'s own constructor special case already has to the generic
+`builtin_constructor_type` path — bespoke handling for the one shape that
+genuinely needs it, not a new general mechanism.
+
+### Laziness
+
+`source` (a snapshot, taken once at `.query()` time) and `ops` (a list of
+pending operations) are stored separately. Chaining only ever appends to
+`ops` — nothing runs. A terminal call is what actually walks `source`
+applying every op in order. That's the real, deferred-until-materialized
+property the old `eval_linq` never had (it was a single eager pass, done
+the moment the whole query expression was evaluated).
+
+### `group_by` is real this time
+
+The old `eval_linq`'s `groupby` clause was a literal `// TODO` — parsed,
+type-checked, never actually implemented. `Linqerizer<T>.group_by(key)`
+actually groups: walks the materialized results, buckets by key into a
+real `Dictionary<K, List<T>>`, first-seen order preserved both across
+groups and within each group.
+
+### A parser fix this needed, worth remembering
+
+`.where(...)` doesn't parse for free — `where` is a real reserved token
+(match-arm guards: `pattern where expr => ...`), and `. Identifier`
+parsing only accepted plain identifiers before this. Fixed narrowly, in
+exactly the two places that needed it (the prefix dotted-path builder and
+the postfix `.` handler in `parse_expr.rs`), not by widening `eat_ident()`
+itself — that function is used far more broadly (variable names,
+parameters, ...) where letting `where` through everywhere would have been
+a bigger, less-audited change than this specific spot needed. Match-guard
+parsing checks the raw `TokenType::Where` token directly and is completely
+unaffected. Same category of problem as `get`/`set` earlier — a reserved
+word blocking a name a method genuinely wanted — but this one only
+surfaced once real fixtures with `.where(fn(x) ...)` as the *last* call in
+a chain were actually written and run, not during design.
+
+### Interpreter honesty note
+
+Same as `InlineList` and everything else here — `Linqerizer<T>`'s
+`source`/`ops` are plain Rust-heap structures today (`Rc<Vec<Value>>` /
+`Vec<LinqOp>`), because the tree-walking interpreter has no separate
+memory-region concept yet. The laziness is real (ops genuinely don't run
+until a terminal call), but "HIGH-tier lazy value" isn't yet backed by a
+distinct runtime representation from any other GC value — same honesty
+already applied elsewhere in this document.
+
+---
+
+## 7. Remaining open questions
 
 Everything raised in this conversation is resolved except:
 

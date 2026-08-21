@@ -1,0 +1,39 @@
+// tests/fixtures/ok_linqerizer_order_by.ubl
+// Linqerizer<T>.order_by()/.order_by_desc() — key-selector sort,
+// ascending and descending. Two separate methods rather than one with
+// a bool flag, matching .NET's own actual `Enumerable.OrderBy`/
+// `OrderByDescending` method-syntax pair.
+// Expected: zero errors, all assertions pass.
+
+fn main() void {
+    let nums = List.new()
+    nums.push(5)
+    nums.push(1)
+    nums.push(4)
+    nums.push(2)
+    nums.push(3)
+
+    let ascending = nums.query().order_by(fn(x) x).to_list()
+    assert(ascending.get(0) == 1, "order_by: ascending position 0")
+    assert(ascending.get(1) == 2, "order_by: ascending position 1")
+    assert(ascending.get(2) == 3, "order_by: ascending position 2")
+    assert(ascending.get(3) == 4, "order_by: ascending position 3")
+    assert(ascending.get(4) == 5, "order_by: ascending position 4")
+
+    let descending = nums.query().order_by_desc(fn(x) x).to_list()
+    assert(descending.get(0) == 5, "order_by_desc: descending position 0")
+    assert(descending.get(4) == 1, "order_by_desc: descending position 4")
+
+    // order_by chains fine with where/select before it.
+    let top_two_doubled = nums.query()
+        .where(fn(x) x > 1)
+        .order_by_desc(fn(x) x)
+        .select(fn(x) x * 2)
+        .to_list()
+    assert(top_two_doubled.get(0) == 10, "chained pipeline: filter, sort desc, then project")
+    assert(top_two_doubled.get(1) == 8,  "chained pipeline: second element")
+    assert(top_two_doubled.len() == 4,   "chained pipeline: where(x>1) drops just the 1")
+
+    // Original source list order is never touched by any of this.
+    assert(nums.get(0) == 5, "order_by never mutates the source list's own order")
+}

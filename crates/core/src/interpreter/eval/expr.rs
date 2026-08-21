@@ -776,6 +776,7 @@ fn eval_method_call(
                 "set"      => return m::set(rc, args),
                 "find"     => return m::find(interp, rc, args),
                 "find_all" => return m::find_all(interp, rc, args),
+                "query"    => return Ok(m::query(rc)),
                 _ => {}
             }
         }
@@ -836,6 +837,26 @@ fn eval_method_call(
                 "is_empty" => return Ok(m::is_empty(rc)),
                 "reverse"  => return Ok(m::reverse(rc)),
                 "capacity" => return Ok(m::capacity(rc)),
+                _ => {}
+            }
+        }
+
+        // ── Built-in Linqerizer methods ────────────────────────────
+        // Chainable (`where`/`select`/`order_by`/`order_by_desc`) never
+        // touch `interp` — appending an op doesn't run anything.
+        // Terminal (`to_list`/`first`/`count`/`group_by`) all do —
+        // that's the one place any actual interpretation happens.
+        Value::Linqerizer(pipeline) => {
+            use crate::builtins::instance::linqerizer_methods as m;
+            match method_name {
+                "where"         => return m::where_(pipeline, args),
+                "select"        => return m::select(pipeline, args),
+                "order_by"      => return m::order_by(pipeline, args),
+                "order_by_desc" => return m::order_by_desc(pipeline, args),
+                "to_list"       => return m::to_list(interp, pipeline),
+                "first"         => return m::first(interp, pipeline),
+                "count"         => return m::count(interp, pipeline),
+                "group_by"      => return m::group_by(interp, pipeline, args),
                 _ => {}
             }
         }

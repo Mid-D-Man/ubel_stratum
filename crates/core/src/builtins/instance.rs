@@ -22,6 +22,7 @@ pub mod queue_methods;
 pub mod stack_methods;
 pub mod pool_methods;
 pub mod inline_list_methods;
+pub mod linqerizer_methods;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReceiverKind {
@@ -33,6 +34,7 @@ pub enum ReceiverKind {
     Stack,
     Pool,
     InlineList,
+    Linqerizer,
 }
 
 /// Returns the valid method names for a given receiver kind — consulted
@@ -48,6 +50,7 @@ pub fn method_names(kind: ReceiverKind) -> &'static [&'static str] {
         ReceiverKind::Stack => stack_methods::METHOD_NAMES,
         ReceiverKind::Pool  => pool_methods::METHOD_NAMES,
         ReceiverKind::InlineList => inline_list_methods::METHOD_NAMES,
+        ReceiverKind::Linqerizer => linqerizer_methods::METHOD_NAMES,
     }
 }
 
@@ -99,6 +102,7 @@ pub fn resolve_receiver(table: &TypeTable, ty: TypeId) -> Option<(ReceiverWrap, 
         SemaType::Stack(_)       => ReceiverKind::Stack,
         SemaType::Pool(_)        => ReceiverKind::Pool,
         SemaType::InlineList(_)  => ReceiverKind::InlineList,
+        SemaType::Linqerizer(_)  => ReceiverKind::Linqerizer,
         _ => return None,
     };
     Some((wrap, kind, bare))
@@ -145,6 +149,13 @@ pub enum MethodReturn {
     /// itself), even though no new storage is created the way `NewSelf`
     /// etc. actually allocate.
     AcquireHandle,
+    /// `List<T>.query()` — a brand-new `Linqerizer<T>`, `T` pulled from
+    /// the receiver's own element type. Allocates.
+    NewLinqerizerOfElem,
+    /// `Linqerizer<T>.to_list()` — a brand-new `List<T>`, `T` pulled
+    /// from the receiver `Linqerizer<T>`'s own element type (not a
+    /// fixed type the way `NewListOfChar`/`NewListOfStr` are). Allocates.
+    NewListOfLinqElem,
 }
 
 impl MethodReturn {
@@ -173,6 +184,7 @@ pub fn signature(kind: ReceiverKind, name: &str) -> Option<(MethodReturn, usize)
         ReceiverKind::Stack => stack_methods::signature(name),
         ReceiverKind::Pool  => pool_methods::signature(name),
         ReceiverKind::InlineList => inline_list_methods::signature(name),
+        ReceiverKind::Linqerizer => linqerizer_methods::signature(name),
     }
 }
 
@@ -193,6 +205,7 @@ pub fn is_high_only(kind: ReceiverKind, name: &str) -> bool {
         ReceiverKind::Stack => stack_methods::HIGH_ONLY,
         ReceiverKind::Pool  => pool_methods::HIGH_ONLY,
         ReceiverKind::InlineList => inline_list_methods::HIGH_ONLY,
+        ReceiverKind::Linqerizer => linqerizer_methods::HIGH_ONLY,
     };
     list.contains(&name)
 }

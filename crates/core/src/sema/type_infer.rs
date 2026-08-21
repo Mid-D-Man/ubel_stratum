@@ -541,7 +541,8 @@ impl<'a> InferCtx<'a> {
                     SemaType::List(e)
                     | SemaType::Queue(e)
                     | SemaType::Stack(e)
-                    | SemaType::Pool(e)        => *e,
+                    | SemaType::Pool(e)
+                    | SemaType::Linqerizer(e)  => *e,
                     SemaType::Dictionary(_, v) => *v,
                     _ => self.fresh_var(),
                 };
@@ -590,6 +591,28 @@ impl<'a> InferCtx<'a> {
                 let handle = self.ctx.types.insert(SemaType::Handle(elem));
                 let optional = self.ctx.types.insert(SemaType::Optional(handle));
                 self.apply_receiver_wrap(wrap, optional)
+            }
+            // `List<T>.query()` — `Linqerizer<T>`. `T` comes from the
+            // receiver `List<T>`, same pull-the-elem-out shape as
+            // `NewListOfKey`/`NewListOfValue` pull from `Dictionary`.
+            MethodReturn::NewLinqerizerOfElem => {
+                let elem = match self.ctx.types.get(bare_ty) {
+                    SemaType::List(e) => *e,
+                    _ => self.fresh_var(),
+                };
+                let linq = self.ctx.types.insert(SemaType::Linqerizer(elem));
+                self.apply_receiver_wrap(wrap, linq)
+            }
+            // `Linqerizer<T>.to_list()` — `List<T>`. `T` comes from the
+            // receiver `Linqerizer<T>` itself, not a fixed type — this
+            // is the mirror image of `NewLinqerizerOfElem` above.
+            MethodReturn::NewListOfLinqElem => {
+                let elem = match self.ctx.types.get(bare_ty) {
+                    SemaType::Linqerizer(e) => *e,
+                    _ => self.fresh_var(),
+                };
+                let list = self.ctx.types.insert(SemaType::List(elem));
+                self.apply_receiver_wrap(wrap, list)
             }
         }
     }
@@ -2141,6 +2164,54 @@ impl<'a> InferCtx<'a> {
                                     span:   expr.span,
                                 });
                             }
+
+                            // `Linqerizer<T>.select(selector)` and
+                            // `.group_by(key_selector)` both have a return
+                            // type that depends on the *argument's* own
+                            // inferred type (the selector's return type),
+                            // which `method_return_type`'s
+                            // `(MethodReturn, ReceiverWrap, TypeId)` shape
+                            // has no way to see — every other method here
+                            // has a return shape that's a fixed function of
+                            // the *receiver* alone. Intercept before the
+                            // generic path runs, same relationship
+                            // `Pool.new()`/`InlineList.new()`'s own
+                            // constructor special cases already have to the
+                            // generic `builtin_constructor_type` path.
+                            if kind == instance::ReceiverKind::Linqerizer
+                                && (field == "select" || field == "group_by")
+                            {
+                                let arg_span = args.first().map(|a| match &a.kind {
+                                    ArgKind::Positional(e)       => e.span,
+                                    ArgKind::Named { value, .. } => value.span,
+                                });
+                                let selector_ret = arg_span
+                                    .and_then(|span| self.ctx.expr_type(span))
+                                    .map(|ty| self.apply(ty))
+                                    .and_then(|ty| match self.ctx.types.get(ty) {
+                                        SemaType::Function { return_type, .. } => Some(*return_type),
+                                        _ => None,
+                                    })
+                                    .unwrap_or_else(|| self.fresh_var());
+
+                                if field == "select" {
+                                    // Linqerizer<T> -> Linqerizer<U>, U = selector's return type.
+                                    let linq = self.ctx.types.insert(SemaType::Linqerizer(selector_ret));
+                                    return self.apply_receiver_wrap(wrap, linq);
+                                } else {
+                                    // group_by: Linqerizer<T> -> Dictionary<U, List<T>>,
+                                    // U = key_selector's return type, T = this
+                                    // Linqerizer's own (unchanged) element type.
+                                    let elem = match self.ctx.types.get(bare_ty) {
+                                        SemaType::Linqerizer(e) => *e,
+                                        _ => self.fresh_var(),
+                                    };
+                                    let value_list = self.ctx.types.insert(SemaType::List(elem));
+                                    let dict = self.ctx.types.insert(SemaType::Dictionary(selector_ret, value_list));
+                                    return self.apply_receiver_wrap(wrap, dict);
+                                }
+                            }
+
                             return self.method_return_type(ret, wrap, bare_ty);
                         }
 
@@ -2830,6 +2901,7 @@ impl<'a> InferCtx<'a> {
                 (SemaType::Queue(ia),      SemaType::Queue(ib))      => Some((*ia, *ib)),
                 (SemaType::Stack(ia),      SemaType::Stack(ib))      => Some((*ia, *ib)),
                 (SemaType::InlineList(ia), SemaType::InlineList(ib)) => Some((*ia, *ib)),
+                (SemaType::Linqerizer(ia), SemaType::Linqerizer(ib)) => Some((*ia, *ib)),
                 (SemaType::Pool(ia),       SemaType::Pool(ib))       => Some((*ia, *ib)),
                 (SemaType::Handle(ia),     SemaType::Handle(ib))     => Some((*ia, *ib)),
                 (SemaType::Optional(ia), SemaType::Optional(ib)) => Some((*ia, *ib)),

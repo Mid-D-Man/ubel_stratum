@@ -1,0 +1,59 @@
+// tests/fixtures/ok_linqerizer_basic.ubl
+// Linqerizer<T> — the query-builder replacement for the removed LINQ
+// grammar (docs/DATASTRUCTURES.md §6). `.query()` is the only gate
+// (HIGH-only, `list_methods::HIGH_ONLY`); every chained/terminal method
+// on the Linqerizer itself is ungated.
+//
+// Covers: basic where/select/to_list/first/count, and the immutable-
+// chaining guarantee — branching two different chains off the same base
+// query must not let one branch's `.where()` leak into the other's
+// results (see the `Value::Linqerizer` doc comment for why each
+// chainable call returns a *new* Linqerizer rather than mutating).
+// Expected: zero errors, all assertions pass.
+
+fn main() void {
+    let nums = List.new()
+    nums.push(1)
+    nums.push(2)
+    nums.push(3)
+    nums.push(4)
+    nums.push(5)
+    nums.push(6)
+
+    let base = nums.query()
+
+    // where + select + to_list, chained straight through
+    let doubled_evens = base.where(fn(x) x % 2 == 0).select(fn(x) x * 2).to_list()
+    assert(doubled_evens.len() == 3, "where+select: 3 even numbers out of 6")
+    assert(doubled_evens.get(0) == 4,  "where+select: 2 doubled")
+    assert(doubled_evens.get(1) == 8,  "where+select: 4 doubled")
+    assert(doubled_evens.get(2) == 12, "where+select: 6 doubled")
+
+    // first() on an empty-after-filter chain returns null, not a panic
+    let none = base.where(fn(x) x > 100).first()
+    assert(none == null, "first: null when nothing matches, same convention as List.find")
+
+    // first() on a real match
+    let first_odd = base.where(fn(x) x % 2 != 0).first()
+    assert(first_odd == 1, "first: first element after filtering")
+
+    // count()
+    let odd_count = base.where(fn(x) x % 2 != 0).count()
+    assert(odd_count == 3, "count: number of elements surviving the pipeline")
+
+    // Immutable chaining: two branches off the same `base` must not
+    // interfere with each other.
+    let evens_only  = base.where(fn(x) x % 2 == 0)
+    let odds_only   = base.where(fn(x) x % 2 != 0)
+    assert(evens_only.count() == 3, "immutable chaining: evens branch unaffected by odds branch")
+    assert(odds_only.count()  == 3, "immutable chaining: odds branch unaffected by evens branch")
+
+    // Source list itself is untouched by any of this.
+    assert(nums.len() == 6, "query() snapshots — never mutates the source list")
+
+    // query() only makes sense on a real list; the source list can keep
+    // being used normally afterward.
+    nums.push(7)
+    assert(nums.len() == 7, "source list still perfectly usable after .query()")
+    assert(base.count() == 6, "an existing Linqerizer's snapshot is frozen at .query() time")
+}

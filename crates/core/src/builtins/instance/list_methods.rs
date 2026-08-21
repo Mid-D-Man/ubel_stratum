@@ -15,12 +15,15 @@ use crate::interpreter::value::{EvalResult, Signal, Value};
 
 pub const METHOD_NAMES: &[&str] = &[
     "len", "push", "pop", "contains", "first", "last", "is_empty", "reverse",
-    "get", "set", "find", "find_all",
+    "get", "set", "find", "find_all", "query",
 ];
 
-/// No `List` method is HIGH-only today. Real, consulted registry — not
-/// a stub — see `instance::is_high_only`.
-pub const HIGH_ONLY: &[&str] = &[];
+/// `query` is HIGH-only — the one real tier gate `Linqerizer<T>` has.
+/// Every downstream `Linqerizer` method (`where`/`select`/`order_by`/
+/// terminals) is deliberately NOT in `linqerizer_methods::HIGH_ONLY` —
+/// this is the only checkpoint that matters, same principle as the old
+/// LINQ grammar only gating the query *start*, not each clause.
+pub const HIGH_ONLY: &[&str] = &["query"];
 
 /// `(return shape, arity)` for sema — see `instance::MethodReturn`.
 pub fn signature(name: &str) -> Option<(crate::builtins::instance::MethodReturn, usize)> {
@@ -38,6 +41,7 @@ pub fn signature(name: &str) -> Option<(crate::builtins::instance::MethodReturn,
         "set"      => (R::Bool, 2),
         "find"     => (R::Elem, 1),
         "find_all" => (R::NewSelf, 1),
+        "query"    => (R::NewLinqerizerOfElem, 0),
         _ => return None,
     })
 }
@@ -116,6 +120,19 @@ pub fn set(list: &Rc<RefCell<Vec<Value>>>, args: &[Value]) -> EvalResult {
     } else {
         Ok(Value::Bool(false))
     }
+}
+
+/// Start a `Linqerizer<T>` pipeline. `HIGH_ONLY`-gated (see this
+/// module's `HIGH_ONLY` const) — the snapshot is taken right here, once,
+/// at call time; nothing about it is lazy. Laziness is about the *ops*
+/// chained afterward not running until a terminal call, not about
+/// deferring this snapshot — see `Value::Linqerizer`'s own doc comment.
+pub fn query(list: &Rc<RefCell<Vec<Value>>>) -> Value {
+    let source = Rc::new(list.borrow().clone());
+    Value::Linqerizer(Rc::new(crate::interpreter::value::LinqPipeline {
+        source,
+        ops: Vec::new(),
+    }))
 }
 
 /// First element for which `predicate(element)` is truthy, or `Null` if

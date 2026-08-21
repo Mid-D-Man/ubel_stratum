@@ -224,11 +224,17 @@ fn parse_ident_expr<'ast, 'tok>(
     while p.cursor.eat(&TokenType::Dot) {
         // Peek: if Ident (or a built-in collection keyword, which is also
         // valid as an ordinary name here) followed by `(` it's a method
-        // call — break path, let postfix handle it.
+        // call — break path, let postfix handle it. `where` is included
+        // for the same reason `parse_field_name` (below, used by the
+        // postfix `.` handler) accepts it — it's a real reserved token
+        // (match-arm guards need it), but needs to double as a method
+        // name too (`Linqerizer<T>.where(...)`); match-guard parsing
+        // checks the raw token directly and is unaffected by this.
         let seg_name = match p.cursor.peek() {
             TokenType::Ident(s) => Some(s.clone()),
             TokenType::KwList | TokenType::KwDictionary | TokenType::KwSet
-            | TokenType::KwQueue | TokenType::KwStack | TokenType::KwInlineList => Some(p.cursor.peek().to_string()),
+            | TokenType::KwQueue | TokenType::KwStack | TokenType::KwInlineList
+            | TokenType::Where => Some(p.cursor.peek().to_string()),
             _ => None,
         };
         if let Some(seg) = seg_name {
@@ -575,13 +581,35 @@ fn parse_interp<'ast, 'tok>(p: &mut Parser<'ast, 'tok>, parts: Vec<LexPart>, lo:
 // ── Postfix helpers ───────────────────────────────────────────────────────────
 
 fn parse_dot<'ast, 'tok>(p: &mut Parser<'ast, 'tok>, target: &'ast Expr<'ast>, _op: LSpan, lo: LSpan) -> Option<&'ast Expr<'ast>> {
-    let (field, fspan) = p.expect_ident()?;
+    let (field, fspan) = parse_field_name(p)?;
     if p.cursor.is_at(&TokenType::LeftParen) {
         let callee = p.alloc(Expr { kind: ExprKind::Field { target, field }, span: lo.merge(&fspan) });
         parse_call(p, callee, p.span(), lo)
     } else {
         Some(p.alloc(Expr { kind: ExprKind::Field { target, field }, span: lo.merge(&fspan) }))
     }
+}
+
+/// Like `p.expect_ident()`, but also accepts `where` specifically in
+/// field/method-name position (`.where(...)`) — `where` is a real
+/// reserved token (match-arm guards need it: `parse_match_arm`'s own
+/// `p.cursor.eat(&TokenType::Where)` checks the raw token directly and
+/// is completely unaffected by this), but `Linqerizer<T>.where(...)`
+/// needs the same word usable as a method name too. Deliberately not
+/// folded into `eat_ident()` itself — that's used far more broadly
+/// (variable names, parameters, ...) where widening what counts as an
+/// identifier is a bigger, less-audited change than this narrow spot
+/// actually needs. Mirrors the equivalent exception already added to
+/// the prefix dotted-path builder above.
+fn parse_field_name<'ast, 'tok>(p: &mut Parser<'ast, 'tok>) -> Option<(&'ast str, LSpan)> {
+    if let Some(id) = p.eat_ident() { return Some(id); }
+    if matches!(p.cursor.peek(), TokenType::Where) {
+        let span = p.cursor.current_span();
+        p.cursor.advance();
+        return Some((p.intern("where"), span));
+    }
+    p.expected(&["identifier after '.'"]);
+    None
 }
 
 fn parse_call<'ast, 'tok>(p: &mut Parser<'ast, 'tok>, callee: &'ast Expr<'ast>, open_sp: LSpan, lo: LSpan) -> Option<&'ast Expr<'ast>> {

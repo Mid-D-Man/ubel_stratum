@@ -1,0 +1,16 @@
+// tests/fixtures/err_linqerizer_query_wrong_tier.ubl
+// `List<T>.query()` is HIGH_ONLY (list_methods::HIGH_ONLY) — the one
+// real tier gate `Linqerizer<T>` has. This is the exact same
+// `MethodInWrongTier`/`TIER-008` machinery every `HIGH_ONLY` registry
+// already had sitting unused (docs/DIAGNOSTICS_RULES.md), not new
+// tier-checking code written for Linqerizer specifically.
+//
+// Expected: sema FAIL (MethodInWrongTier, TIER-008).
+
+@tier(mid)
+fn summarize() void {
+    let nums = List.new()
+    nums.push(1)
+    nums.push(2)
+    let pipeline = nums.query()
+}

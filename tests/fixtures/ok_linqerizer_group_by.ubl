@@ -1,0 +1,48 @@
+// tests/fixtures/ok_linqerizer_group_by.ubl
+// Linqerizer<T>.group_by(key_selector) -> Dictionary<Key, List<Value>>.
+// The real, decided replacement for the old `eval_linq`'s `groupby`
+// clause, which was a literal `// TODO` no-op that never actually
+// grouped anything. This one actually groups, with real struct data,
+// verified through Dictionary's own get()/contains_key()/len().
+// Expected: zero errors, all assertions pass.
+
+struct Item {
+    name:     string
+    category: string
+}
+
+fn main() void {
+    let items = List.new()
+    items.push(Item { name = "apple",  category = "fruit" })
+    items.push(Item { name = "banana", category = "fruit" })
+    items.push(Item { name = "carrot", category = "vegetable" })
+    items.push(Item { name = "potato", category = "vegetable" })
+    items.push(Item { name = "grape",  category = "fruit" })
+
+    let by_category = items.query().group_by(fn(i) i.category)
+
+    assert(by_category.contains_key("fruit"), "group_by: fruit key present")
+    assert(by_category.contains_key("vegetable"), "group_by: vegetable key present")
+    assert(!by_category.contains_key("mineral"), "group_by: only real keys are present")
+
+    let fruits = by_category.get("fruit")
+    assert(fruits.len() == 3, "group_by: 3 items grouped under fruit")
+    assert(fruits.get(0).name == "apple",  "group_by: first-seen order preserved (apple)")
+    assert(fruits.get(1).name == "banana", "group_by: first-seen order preserved (banana)")
+    assert(fruits.get(2).name == "grape",  "group_by: first-seen order preserved (grape)")
+
+    let vegetables = by_category.get("vegetable")
+    assert(vegetables.len() == 2, "group_by: 2 items grouped under vegetable")
+    assert(vegetables.get(0).name == "carrot", "group_by: vegetable first item")
+    assert(vegetables.get(1).name == "potato", "group_by: vegetable second item")
+
+    // group_by works fine chained after a filter too. Names > 5 chars:
+    // banana(6, fruit), carrot(6, vegetable), potato(6, vegetable) —
+    // apple(5) and grape(5) don't clear the bar.
+    let long_names_by_category = items.query()
+        .where(fn(i) i.name.len() > 5)
+        .group_by(fn(i) i.category)
+    let long_fruits = long_names_by_category.get("fruit")
+    assert(long_fruits.len() == 1, "group_by after where: only banana clears 5 chars among fruits")
+    assert(long_fruits.get(0).name == "banana", "group_by after where: banana is the survivor")
+}

@@ -76,6 +76,41 @@ pub enum Value {
     /// applied to how Pool/Arena/GC tiers all share Rust-heap-backed
     /// representations today.
     InlineList(Rc<RefCell<InlineListData>>),
+    /// `Linqerizer<T>` (`docs/DATASTRUCTURES.md` §6) — a lazy query
+    /// pipeline. `source` is a snapshot taken once, at `.query()` time;
+    /// `ops` accumulates as the chain grows (`.where()`/`.select()`/
+    /// `.order_by()`/`.order_by_desc()` each return a *new* `Linqerizer`
+    /// with one more op appended, never mutating the one they were
+    /// called on — matching how every other LINQ-shaped thing works,
+    /// C#/Rust iterators/JS included; `let a = q.where(f); let b =
+    /// q.select(g);` would be surprising if `b` silently inherited `a`'s
+    /// filter). Nothing in `ops` actually runs until a terminal method
+    /// (`.to_list()`/`.first()`/`.count()`/`.group_by()`) walks `source`
+    /// applying every pending op in order — that deferred-until-terminal
+    /// property is the actual point, and the thing the old `eval_linq`
+    /// (fully eager, one-pass) never had.
+    Linqerizer(Rc<LinqPipeline>),
+}
+
+/// Backing storage for `Value::Linqerizer`. Immutable once built (see
+/// the `Value::Linqerizer` doc comment on why chaining allocates a new
+/// one rather than mutating) — plain `Rc`, no `RefCell`, nothing here
+/// is ever mutated in place.
+#[derive(Debug, Clone)]
+pub struct LinqPipeline {
+    /// Snapshot of the source, taken once at `.query()` time. `Rc` so
+    /// every step in a chain shares it instead of re-cloning the whole
+    /// `Vec` on every `.where()`/`.select()` call — only `ops` grows.
+    pub source: Rc<Vec<Value>>,
+    pub ops:    Vec<LinqOp>,
+}
+
+#[derive(Debug, Clone)]
+pub enum LinqOp {
+    Where(FunctionId),
+    Select(FunctionId),
+    /// `bool` = descending.
+    OrderBy(FunctionId, bool),
 }
 
 /// Backing storage for `Value::InlineList`.
@@ -240,6 +275,7 @@ impl Value {
             Value::Pool(_)       => "Pool",
             Value::Handle { .. } => "Handle",
             Value::InlineList(_) => "InlineList",
+            Value::Linqerizer(_) => "Linqerizer",
         }
     }
 
@@ -286,6 +322,7 @@ impl Value {
             (Value::Handle { index: ia, generation: ga },
              Value::Handle { index: ib, generation: gb }) => ia == ib && ga == gb,
             (Value::InlineList(a), Value::InlineList(b)) => Rc::ptr_eq(a, b),
+            (Value::Linqerizer(a), Value::Linqerizer(b)) => Rc::ptr_eq(a, b),
             _ => false,
         }
     }
@@ -396,6 +433,14 @@ impl fmt::Display for Value {
                     write!(f, "{}", v)?;
                 }
                 write!(f, "] (len={}, capacity={})", data.items.len(), data.capacity)
+            }
+            Value::Linqerizer(pipeline) => {
+                // Lazy and not yet materialized — showing the pending
+                // pipeline shape rather than pretending to show results
+                // that haven't been computed (no `Interpreter` access
+                // here to actually run the ops even if we wanted to).
+                write!(f, "Linqerizer(source_len={}, pending_ops={})",
+                    pipeline.source.len(), pipeline.ops.len())
             }
             Value::Struct { type_name, fields } => {
                 let fields = fields.borrow();
