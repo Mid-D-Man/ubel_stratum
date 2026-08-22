@@ -429,7 +429,28 @@ is *enforcement*, and none exists yet:
 No loan tracking, no liveness, no `outlives` checking (the parser has
 parsed `[lifetime L, lifetime M where M outlives L]` on functions and `edge
 struct` for a while — see `PARSER_RULES.md` §5.1's neighbor content — but
-nothing in sema consumes it yet), no move checking. `mixed_signature` in
+nothing in sema consumes it yet), no move checking.
+
+✅ **Implemented — Phase A, the CFG builder** (`sema/cfg.rs`). Builds a
+statement-granularity control-flow graph for one function body: real
+branches for `if`/`match` used as statements, real header/body/back-edge/
+exit shape for `while`/`for`/`loop`, `break`/`continue` correctly routed
+via a loop-context stack, a conservative try/catch approximation, and
+`with`/`using` treated as scope-transparent (no new branching). Explicit,
+documented scope limits: `if`/`match` used as *expressions* (including a
+`then`-keyword single-expr branch) are one opaque unit for now, not
+decomposed; no panics on malformed input (`break`/`continue` outside a
+loop degrades to `Terminator::Unreachable` rather than crashing — nothing
+upstream validates that yet, a real gap, tracked separately). 5 unit tests
+in `sema/cfg.rs` cover straight-line, if/else-both-return, if-no-else
+convergence, while-loop shape, and a nested-loop smoke test. **Not yet
+wired into `sema::analyse`** — there's no check to run against it yet.
+That's Phase C (fact collection: `loan_issued_at`/`loan_killed_at`/
+`loan_invalidated_at`, walking the AST against this graph) and Phase D
+(the actual liveness/loan fixed point, seeded by the `outlives` facts
+above), still both ahead.
+
+`mixed_signature` in
 `tests/fixtures/ok_reference_dual_spelling.ubl` takes two shared and two
 mutable references to the *same* variable in one call — a real aliasing
 violation a finished checker should reject — and passes today, on purpose,
