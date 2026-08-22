@@ -1,0 +1,10 @@
+// tests/fixtures/err_deref_non_reference.ubl
+// `*`/`deref` requires an actual reference type. Dereferencing a plain
+// value is a real type error now that ExprKind::Deref exists to
+// exercise it — TypeError::DerefOnNonReference, TYPE-114.
+// Expected: sema FAIL (DerefOnNonReference, TYPE-114).
+
+fn main() void {
+    let n = 42
+    let bad = *n
+}

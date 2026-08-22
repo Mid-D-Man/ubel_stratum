@@ -289,7 +289,15 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
             TokenType::LeftBrace | TokenType::If          | TokenType::Match        |
             TokenType::From      | TokenType::Unsafe      | TokenType::Async        |
             TokenType::Fn       | TokenType::InterpolatedString(_) |
-            TokenType::VerbatimString(_) | TokenType::CharLit(_)
+            TokenType::VerbatimString(_) | TokenType::CharLit(_)  |
+            // Borrow/Deref prefix operators — `&`/`ref`/`&mut`/`ref mut`
+            // and `*`/`deref` (docs/PARSER_RULES.md §5.6). Missing this
+            // meant `return *x`/`return &x` misparsed as a bare `return`
+            // (void) followed by a dangling expression statement — caught
+            // by the first real fixture run, same failure shape as the
+            // `where` collision that hit Linqerizer's `.query()` earlier.
+            TokenType::Amp       | TokenType::Ref         | TokenType::Star        |
+            TokenType::Deref
         )
     }
 }

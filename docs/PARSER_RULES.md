@@ -559,6 +559,47 @@ all, only the separator token accepted in `parse_match_arm`.
 
 ---
 
+### 5.6 `&`/`ref`, `&mut`/`ref mut`, `*`/`deref` — Dual-Spelled Reference Operators
+
+Same precedent as `and`/`&&`, `or`/`||`, `not`/`!`: two distinct tokens,
+unified at every site that matters into one AST node. Not two features —
+`&x` and `ref x` produce the literally identical `ExprKind::Borrow`.
+
+```
+BorrowExpr ::= ("&" | "ref") "mut"? UnaryExpr
+DerefExpr  ::= ("*" | "deref") UnaryExpr
+```
+
+Both live in `parse_prefix`'s prefix table at the same binding power as
+`-`/`!`/`not`/`~` (28). `Amp` and `Star` keep their existing infix
+meanings (bitwise-AND, multiply) — prefix and infix dispatch are
+structurally disjoint positions in a Pratt parser, so adding a prefix
+arm for a token that's already infix is the same zero-risk move as
+unary `-` coexisting with binary `-`. No new ambiguity, no memoisation
+needed.
+
+The type-position grammar (`TypeKind::Reference`, `parse_type.rs`) got
+the same treatment: `TokenType::Amp | TokenType::Ref` is now one match
+arm sharing all the downstream construction code, so `&T`, `&mut T`,
+`&L T` and `ref T`, `ref mut T`, `ref L T` all produce the identical
+`TypeKind::Reference { mutable, lifetime, inner }` — this half already
+existed before `ref` was added; only the alternate spelling is new.
+
+**Real gotcha this surfaced, worth internalising for the next new
+prefix operator:** adding a token to `parse_prefix`'s match is not
+sufficient by itself. `Parser::can_start_expr` (`parser.rs`) is a
+*separate* lookahead heuristic that statement-level constructs —
+`return`, `fail`'s `or_else` fallback — use to decide whether a trailing
+expression follows at all. It has its own token list, independent of
+`parse_prefix`'s. Missing it here meant `return *x` silently parsed as
+a bare `return` (void) followed by a dangling `*x` expression
+statement — caught immediately by the first real fixture run, not by
+inspection. Same failure shape, same lesson, as `where` colliding with
+Linqerizer's `.query()`: check every place a new token needs to be
+recognised, not just the obvious one.
+
+---
+
 ## 6. LINQ Query Parsing — Removed
 
 There used to be a dedicated LINQ sub-parser here (`from x in expr where
@@ -774,3 +815,4 @@ Before merging any change to `crates/rd_parser`:
 - [ ] Memoisation only for the three approved rules (GenericArgs, TypeExpr, ClosureParams)
 - [ ] No sema logic in any parse function
 - [ ] New token types: update `infix_binding_power` / `prefix` match in `parse_expr.rs`
+- [ ] New prefix-position token: also update `Parser::can_start_expr` (`parser.rs`) — it's a separate lookahead list from `parse_prefix`'s, and `return`/`fail`'s fallback both depend on it (see §5.6's gotcha)

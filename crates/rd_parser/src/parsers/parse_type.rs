@@ -50,8 +50,10 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
     fn parse_type_base(&mut self, lo: Span) -> Option<TypeKind<'ast>> {
         match self.cursor.peek().clone() {
 
-            // ── Reference: `&`, `&mut`, `&L T` ──────────────────────────────
-            TokenType::Amp => {
+            // ── Reference: `&`/`ref`, `&mut`/`ref mut`, `&L T`/`ref L T` ─────
+            // `&` and `ref` are dual spellings of the same operator — same
+            // precedent as `and`/`&&`, `or`/`||` (docs/PARSER_RULES.md §5.6).
+            TokenType::Amp | TokenType::Ref => {
                 self.cursor.advance();
                 let mutable = self.cursor.eat(&TokenType::Mut);
 
@@ -519,6 +521,7 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
         matches!(tt,
             TokenType::Ident(_)
             | TokenType::Amp
+            | TokenType::Ref
             | TokenType::LeftBracket
             | TokenType::LeftParen
             | TokenType::Fn

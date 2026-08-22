@@ -50,6 +50,8 @@ pub static KEYWORDS: phf::Map<&'static str, TokenType> = phf_map! {
     "self"       => TokenType::SelfKw,
     "getter"     => TokenType::Getter,
     "setter"     => TokenType::Setter,
+    "ref"        => TokenType::Ref,
+    "deref"      => TokenType::Deref,
 
     // ── Declaration / statement keywords ─────────────────────────
     "extend"     => TokenType::Extend,

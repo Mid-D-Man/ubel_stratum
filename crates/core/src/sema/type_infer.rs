@@ -757,9 +757,21 @@ impl<'a> InferCtx<'a> {
                     .unwrap_or_else(|| self.void_ty());
                 self.ctx.types.intern(SemaType::Task(inner_id))
             }
-            TypeKind::Reference { inner, .. } => {
+            TypeKind::Reference { mutable, lifetime, inner } => {
+                // Was `SemaType::GcRef(inner_id)` — a stub that silently
+                // discarded `mutable` and `lifetime` and made every
+                // user-written `&T`/`&mut T` type annotation compile as
+                // a plain HIGH-tier GC reference, in any tier. Nothing
+                // exercised this path before now (no expression-level
+                // borrow operator existed to construct a value of the
+                // type), so it went uncaught. Fixed to the real
+                // `SemaType::Reference` — see type_table.rs and TYPE-114.
                 let inner_id = self.ast_type_to_sema(inner);
-                self.ctx.types.insert(SemaType::GcRef(inner_id))
+                self.ctx.types.insert(SemaType::Reference {
+                    mutable,
+                    lifetime: lifetime.map(|s| s.to_string()),
+                    inner:    inner_id,
+                })
             }
             TypeKind::Optional(inner) => {
                 let inner_id = self.ast_type_to_sema(inner);
@@ -2361,6 +2373,18 @@ impl<'a> InferCtx<'a> {
                 let inner_ty = self.infer_expr(inner);
                 self.unwrap_fallible(inner_ty)
             }
+            ExprKind::Borrow { mutable, place } => {
+                let place_ty = self.infer_expr(place);
+                self.ctx.types.insert(SemaType::Reference {
+                    mutable:  *mutable,
+                    lifetime: None, // no surface label at an expression site
+                    inner:    place_ty,
+                })
+            }
+            ExprKind::Deref(inner) => {
+                let inner_ty = self.infer_expr(inner);
+                self.unwrap_reference(inner_ty, expr.span)
+            }
             ExprKind::Await(inner) => {
                 let inner_ty = self.infer_expr(inner);
                 self.unwrap_task(inner_ty, expr.span)
@@ -2678,6 +2702,28 @@ impl<'a> InferCtx<'a> {
         }
     }
 
+    fn unwrap_reference(&mut self, ty: TypeId, span: Span) -> TypeId {
+        let resolved = self.apply(ty);
+        match self.ctx.types.get(resolved) {
+            SemaType::Reference { inner, .. } => *inner,
+            SemaType::Var(_) => {
+                let inner = self.fresh_var();
+                let reference = self.ctx.types.intern(SemaType::Reference {
+                    mutable: false, lifetime: None, inner,
+                });
+                self.unify(resolved, reference, span);
+                inner
+            }
+            _ => {
+                self.errors.add_type_error(TypeError::DerefOnNonReference {
+                    found: self.display_type(ty),
+                    span,
+                });
+                TypeId::ERROR
+            }
+        }
+    }
+
     fn unwrap_fallible(&mut self, ty: TypeId) -> TypeId {
         let resolved = self.apply(ty);
         match self.ctx.types.get(resolved) {
@@ -2909,6 +2955,19 @@ impl<'a> InferCtx<'a> {
                 (SemaType::Task(ia),     SemaType::Task(ib))     => Some((*ia, *ib)),
                 (SemaType::Slice(ia),    SemaType::Slice(ib))    => Some((*ia, *ib)),
                 (SemaType::GcRef(ia),    SemaType::GcRef(ib))    => Some((*ia, *ib)),
+                // A `&mut T` and a `&T` are NOT structurally compatible —
+                // mutability is a real capability difference. Lifetime
+                // labels are deliberately not compared here: the actual
+                // outlives/subset fixed point is the borrow checker's
+                // job (unbuilt — MEMORY_MODEL.md §9), not ordinary
+                // structural unification's. Same checklist item as
+                // Set/Queue/Stack/Pool/Handle/InlineList before it —
+                // added proactively this time instead of reactively.
+                (SemaType::Reference { mutable: ma, inner: ia, .. },
+                 SemaType::Reference { mutable: mb, inner: ib, .. }) => {
+                    if ma != mb { return false; }
+                    Some((*ia, *ib))
+                }
                 // GAP 2 — two ArenaRefs are only structurally compatible
                 // when they carry the *same* ArenaId (MEMORY_MODEL.md §3:
                 // arena membership must always be compared by specific

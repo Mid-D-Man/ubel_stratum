@@ -77,6 +77,20 @@ pub enum ExprKind<'ast> {
     // ── Await: `await expr` ───────────────────────────────────────
     Await(&'ast Expr<'ast>),
 
+    // ── Borrow: `&place` / `&mut place` / `ref place` / `ref mut place` ──
+    // `&`/`ref` and `&mut`/`ref mut` are dual spellings of the same
+    // operator (same precedent as `and`/`&&`, `or`/`||`) — both forms
+    // produce this one node. LOW-tier borrow checker consumes this
+    // directly; see docs/PARSER_RULES.md §5.6.
+    Borrow {
+        mutable: bool,
+        place: &'ast Expr<'ast>,
+    },
+
+    // ── Dereference: `*place` / `deref place` ─────────────────────
+    // Dual-spelled the same way as Borrow above.
+    Deref(&'ast Expr<'ast>),
+
     // ── Collection literals ───────────────────────────────────────
     Tuple(&'ast [&'ast Expr<'ast>]),
     Array(&'ast [&'ast Expr<'ast>]),

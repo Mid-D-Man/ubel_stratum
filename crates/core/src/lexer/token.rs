@@ -17,6 +17,7 @@ pub enum TokenType {
     And, Or, Not,
     True, False, Null, SelfKw,
     Getter, Setter,
+    Ref, Deref,
 
     // ── Contextual / declaration keywords ────────────────────────
     Extend,
@@ -149,6 +150,8 @@ impl fmt::Display for TokenType {
             TokenType::SelfKw    => write!(f, "self"),
             TokenType::Getter    => write!(f, "getter"),
             TokenType::Setter    => write!(f, "setter"),
+            TokenType::Ref       => write!(f, "ref"),
+            TokenType::Deref     => write!(f, "deref"),
             TokenType::Extend    => write!(f, "extend"),
             TokenType::TypeKw    => write!(f, "type"),
             TokenType::Extract   => write!(f, "extract"),

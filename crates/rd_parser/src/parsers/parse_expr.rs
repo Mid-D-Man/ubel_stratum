@@ -167,6 +167,23 @@ fn parse_prefix<'ast, 'tok>(p: &mut Parser<'ast, 'tok>) -> Option<&'ast Expr<'as
         TokenType::Bang  => { p.cursor.advance(); let o = parse_bp(p, 28)?; let span = lo.merge(&o.span); Some(p.alloc(Expr { kind: ExprKind::UnaryOp { op: UnaryOp::Not,    operand: o }, span })) }
         TokenType::Not   => { p.cursor.advance(); let o = parse_bp(p, 28)?; let span = lo.merge(&o.span); Some(p.alloc(Expr { kind: ExprKind::UnaryOp { op: UnaryOp::Not,    operand: o }, span })) }
         TokenType::Tilde => { p.cursor.advance(); let o = parse_bp(p, 28)?; let span = lo.merge(&o.span); Some(p.alloc(Expr { kind: ExprKind::UnaryOp { op: UnaryOp::BitNot, operand: o }, span })) }
+        // Borrow: `&place`/`ref place`, `&mut place`/`ref mut place`.
+        // `&`/`ref` are dual spellings, same as the type-position arm in
+        // parse_type.rs (docs/PARSER_RULES.md §5.6). Prefix position only
+        // — Amp's infix arm (bitwise-and) is untouched, same disambiguation
+        // trick already used for Minus/Bang/Tilde above.
+        TokenType::Amp | TokenType::Ref => {
+            p.cursor.advance();
+            let mutable = p.cursor.eat(&TokenType::Mut);
+            let o = parse_bp(p, 28)?; let span = lo.merge(&o.span);
+            Some(p.alloc(Expr { kind: ExprKind::Borrow { mutable, place: o }, span }))
+        }
+        // Dereference: `*place`/`deref place`. Same dual-spelling pattern.
+        TokenType::Star | TokenType::Deref => {
+            p.cursor.advance();
+            let o = parse_bp(p, 28)?; let span = lo.merge(&o.span);
+            Some(p.alloc(Expr { kind: ExprKind::Deref(o), span }))
+        }
         TokenType::Await => {
             if p.tier != TierAnnotation::High {
                 p.emit(crate::error::illegal_here("await", "await is only valid in @tier(high)", lo, Some("use callback pattern for MID/LOW")));

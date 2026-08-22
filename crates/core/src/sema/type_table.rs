@@ -162,6 +162,22 @@ pub enum SemaType {
         inner:   TypeId,
     },
 
+    /// An explicit, user-written reference: `&T`/`ref T` (shared) or
+    /// `&mut T`/`ref mut T` (mutable), with an optional named lifetime
+    /// (`&L T`/`ref L T`) — surface syntax from `TypeKind::Reference`,
+    /// or the result of a `Borrow` expression (`&x`/`ref x`). Orthogonal
+    /// to `OwnedRef`/`ArenaRef`/`GcRef`: this is "an alias to a place,"
+    /// not "how the pointee's own memory is managed" — `inner` is
+    /// whatever `TypeId` the borrowed place already had, tier wrapper
+    /// and all. `lifetime` is carried but not yet checked — the actual
+    /// outlives/subset fixed point is the borrow checker's job, still
+    /// unbuilt (see docs/MEMORY_MODEL.md §9).
+    Reference {
+        mutable:  bool,
+        lifetime: Option<String>,
+        inner:    TypeId,
+    },
+
     // ── Function types ───────────────────────────────────────────
     Function {
         params:      Vec<TypeId>,
@@ -214,7 +230,8 @@ impl SemaType {
             | SemaType::GcRef(t)
             | SemaType::Pool(t)
             | SemaType::Handle(t)
-            | SemaType::OwnedRef { inner: t, .. } => {
+            | SemaType::OwnedRef { inner: t, .. }
+            | SemaType::Reference { inner: t, .. } => {
                 table.get(*t).scope_ref_kind(table)
             }
             SemaType::Dictionary(k, v) => {
@@ -314,19 +331,35 @@ impl SemaType {
 
             // `apply_receiver_wrap` never actually constructs this (Gc is
             // the implicit default: "no wrapper" already means GC-tier —
-            // see that function's doc comment). The one live construction
-            // site is `ast_type_to_sema`'s `TypeKind::Reference` arm, i.e.
-            // a user wrote `&T` in a type position — so render it that way.
+            // see that function's doc comment). Previously this was also
+            // the accidental landing spot for user-written `&T` (a stub
+            // bug in `ast_type_to_sema` — see git history / TYPE-114's
+            // introduction) — that's fixed now, `TypeKind::Reference`
+            // produces a real `SemaType::Reference` (below) instead, so
+            // this arm is genuinely GC-tier-only again.
             SemaType::GcRef(t) => format!("&{}", table.get(*t).display(table, symbols)),
 
-            // No surface syntax exists yet — LOW-tier borrow checking is
-            // Phase 4 and not started (see MEMORY_MODEL.md §9). Nothing
-            // in a currently-valid program can construct this; provisional
-            // rendering only, to avoid the old catch-all if it's ever hit.
+            // No surface syntax exists yet — LOW-tier borrow *checking*
+            // (the actual move/loan enforcement pass) is still unbuilt
+            // (see MEMORY_MODEL.md §9). Nothing in a currently-valid
+            // program can construct this yet; provisional rendering only.
             SemaType::OwnedRef { mutable: true,  inner } =>
                 format!("&own mut {}", table.get(*inner).display(table, symbols)),
             SemaType::OwnedRef { mutable: false, inner } =>
                 format!("&own {}", table.get(*inner).display(table, symbols)),
+
+            // The real, live rendering for user-written `&T`/`ref T` and
+            // `&mut T`/`ref mut T` — always shown in symbol form
+            // regardless of which spelling the author used, same
+            // convention as `and`/`&&` diagnostics staying consistent.
+            SemaType::Reference { mutable: true, lifetime, inner } => match lifetime {
+                Some(l) => format!("&{} mut {}", l, table.get(*inner).display(table, symbols)),
+                None    => format!("&mut {}", table.get(*inner).display(table, symbols)),
+            },
+            SemaType::Reference { mutable: false, lifetime, inner } => match lifetime {
+                Some(l) => format!("&{} {}", l, table.get(*inner).display(table, symbols)),
+                None    => format!("&{}", table.get(*inner).display(table, symbols)),
+            },
 
             SemaType::Named { def, args } => {
                 let name = &symbols.lookup(*def).name;

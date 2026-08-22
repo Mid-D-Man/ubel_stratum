@@ -56,6 +56,12 @@ pub enum TypeError {
         span:  Span,
     },
 
+    /// `*`/`deref` used on a non-reference type.
+    DerefOnNonReference {
+        found: String,
+        span:  Span,
+    },
+
     /// A type could not be inferred — too ambiguous.
     CannotInferType {
         span:       Span,
@@ -130,6 +136,7 @@ impl TypeError {
             TypeError::NoSuchMethod               { span, .. } => *span,
             TypeError::TryOnNonFallible           { span, .. } => *span,
             TypeError::AwaitOnNonTask             { span, .. } => *span,
+            TypeError::DerefOnNonReference        { span, .. } => *span,
             TypeError::CannotInferType            { span, .. } => *span,
             TypeError::GenericArgCountMismatch    { span, .. } => *span,
             TypeError::UnknownVariant             { span, .. } => *span,
@@ -159,6 +166,9 @@ impl TypeError {
 
             TypeError::AwaitOnNonTask { found, .. } =>
                 format!("`await` requires `Task<T>`, found `{}`", found),
+
+            TypeError::DerefOnNonReference { found, .. } =>
+                format!("`*`/`deref` requires a reference type (`&T`/`ref T`), found `{}`", found),
 
             TypeError::CannotInferType { .. } =>
                 "cannot infer type — add an explicit type annotation".to_string(),
@@ -241,6 +251,7 @@ impl crate::error_management::render::Diagnosable for TypeError {
             TypeError::NonExhaustiveMatch { .. }         => "TYPE-111",
             TypeError::MixedDiscriminantAndPayload { .. } => "TYPE-112",
             TypeError::InlineListCapacityNotLiteral { .. } => "TYPE-113",
+            TypeError::DerefOnNonReference { .. }          => "TYPE-114",
         }
     }
     fn span(&self) -> Span { self.span() }

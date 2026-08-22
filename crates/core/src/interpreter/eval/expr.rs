@@ -195,6 +195,20 @@ pub fn eval_expr<'ast>(interp: &mut Interpreter<'ast>, expr: &Expr<'ast>) -> Eva
         // ── Await: async is a no-op in the tree-walker ────────────
         ExprKind::Await(inner) => eval_expr(interp, inner),
 
+        // ── Borrow: &place / ref place, &mut place / ref mut place ─
+        // No runtime representation yet — same as GcRef/ArenaRef/
+        // OwnedRef, tier/reference-ness is erased after sema (see
+        // MEMORY_MODEL.md). Struct/List/Dict values are already
+        // Rc<RefCell<_>>-backed, so a "borrow" of one of those already
+        // aliases correctly for free. Plain passthrough is a real,
+        // documented gap for scalar-typed borrows specifically — see
+        // write_lvalue's ExprKind::Deref arm below for the write side.
+        ExprKind::Borrow { place, .. } => eval_expr(interp, place),
+
+        // ── Dereference: *place / deref place ──────────────────────
+        // Read side only — see the write-through-deref note above.
+        ExprKind::Deref(inner) => eval_expr(interp, inner),
+
         // ── Type cast: expr as Type ───────────────────────────────
         ExprKind::As { expr: inner, ty } => {
             let val = eval_expr(interp, inner)?;
@@ -609,6 +623,19 @@ fn write_lvalue<'ast>(
                 _ => Err(Signal::Panic("invalid index assignment target".into())),
             }
         }
+        // Assignment THROUGH a dereferenced reference (`*p = v` /
+        // `deref p = v`) needs a real persisted place — a runtime
+        // reference-cell representation (`Value::Ref(Rc<RefCell<Value>>)`
+        // or similar) that plain-value Borrow/Deref passthrough doesn't
+        // have yet. Rather than silently writing to the wrong place
+        // (e.g. collapsing to the pointer variable itself), this is a
+        // clear, loud "not yet" until that representation exists —
+        // naturally pairs with the CFG/loan-tracking work ahead, not
+        // separate follow-up.
+        ExprKind::Deref(_) => Err(Signal::Panic(
+            "assignment through a dereferenced reference isn't implemented yet \
+             — needs the borrow checker's runtime reference-cell representation".into()
+        )),
         _ => Err(Signal::Panic("invalid assignment target".into())),
     }
 }

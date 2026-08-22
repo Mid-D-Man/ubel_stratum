@@ -365,10 +365,11 @@ didn't exist before this section had any type checking at all.
 
 ---
 
-## 9. LOW Tier — Explicit Non-Support Until Phase 4
+## 9. LOW Tier — Reference Syntax Landed, Checker Still Phase 4
 
-`OwnedRef` and the borrow checker are marked "Phase 4" in the codebase's own
-comments, and nothing has been built for either yet.
+`OwnedRef` and the actual borrow *checker* are marked "Phase 4" in the
+codebase's own comments — that part's still true. The reference *type*
+and its surface syntax are not; see below.
 
 ✅ **Implemented.** A `@tier(low)` function that constructs a builtin
 collection (`List.new()`, `Dictionary.new()`, `Queue.new()`, `Stack.new()`)
@@ -395,6 +396,60 @@ arm, no catch-all) since §8's `ArenaRefEscapesBoundary` messages and this
 section's own `TIER-009` message both depend on `display()` being honest.
 Full case study, including why `Named` needed a new `symbols: &SymbolTable`
 parameter threaded through, lives in `DIAGNOSTICS_RULES.md`.
+
+✅ **Implemented — the reference type and its surface syntax.** `&T`/`ref T`
+(shared) and `&mut T`/`ref mut T` (mutable), with an optional named
+lifetime (`&L T`/`ref L T`), now produce a real `SemaType::Reference {
+mutable, lifetime, inner }` — both as a type annotation and as the result
+of a new expression-level `Borrow`/`Deref` operator pair (`&x`/`ref x`,
+`*x`/`deref x`; see `PARSER_RULES.md` §5.6 for the dual-spelling mechanism).
+
+This replaces a real, previously-silent stub: `TypeKind::Reference` used to
+map straight to `SemaType::GcRef`, discarding `mutable` and `lifetime`
+entirely — every user-written `&T` compiled as a plain HIGH-tier GC
+reference, in any tier. Nothing had exercised the path before (no
+expression-level operator existed to construct a value of the type), so it
+went uncaught until this delivery added one. Fixed alongside; the new
+`Reference` variant is wired into `structurally_compatible` (gated on
+`mutable` — lifetime isn't compared yet, see below) and has its own
+`unwrap_reference` helper in `type_infer.rs` (mirrors `unwrap_task`) backing
+a new diagnostic, `TypeError::DerefOnNonReference` (`TYPE-114`).
+
+`Reference` is deliberately orthogonal to `GcRef`/`ArenaRef`/`OwnedRef`: it
+answers "is this binding an alias to a place," not "how is the pointee's
+own memory managed." `inner` is just whatever `TypeId` the borrowed place
+already had — tier wrapper and all — so this needed no reasoning about tier
+interaction to add.
+
+References are valid in **every** tier, not LOW-only — a HIGH/MID function
+handing out a read-only view is fine on its own terms. What's still LOW-only
+is *enforcement*, and none exists yet:
+
+🚧 **Not implemented — everything that makes a reference actually safe.**
+No loan tracking, no liveness, no `outlives` checking (the parser has
+parsed `[lifetime L, lifetime M where M outlives L]` on functions and `edge
+struct` for a while — see `PARSER_RULES.md` §5.1's neighbor content — but
+nothing in sema consumes it yet), no move checking. `mixed_signature` in
+`tests/fixtures/ok_reference_dual_spelling.ubl` takes two shared and two
+mutable references to the *same* variable in one call — a real aliasing
+violation a finished checker should reject — and passes today, on purpose,
+because there's nothing yet to reject it. Expected to become an `err_`
+fixture once the checker lands, not a regression when it does.
+
+Assignment *through* a dereferenced reference (`*p = v`/`deref p = v`) is
+also not implemented — it needs a real runtime place representation (a
+`Value::Ref(Rc<RefCell<Value>>)`-shaped thing or equivalent) that plain
+pass-through evaluation doesn't have. `write_lvalue` in
+`interpreter/eval/expr.rs` gives a clear panic for it rather than silently
+writing to the wrong place. Reading through a reference works today, and
+for `Value::Struct`/`List`/`Dict` — already `Rc<RefCell<_>>`-backed —
+aliasing already behaves correctly for free; it's specifically
+mutation-through-a-reference for scalar-typed values that's the honest gap.
+
+The actual borrow-checking algorithm — CFG construction, loan/liveness
+fixed-point propagation seeded by the already-parsed `outlives` facts,
+move tracking — is still ahead. This delivery is the syntax and structural-
+type layer it needs to stand on, nothing more.
 
 ---
 

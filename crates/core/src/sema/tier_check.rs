@@ -340,7 +340,13 @@ impl<'a> TierChecker<'a> {
                 self.check_expr(target);
                 self.check_expr(index);
             }
-            ExprKind::Try(inner) => self.check_expr(inner),
+            ExprKind::Try(inner) | ExprKind::Deref(inner) => self.check_expr(inner),
+            // No tier restriction on the operator itself — references
+            // are valid in every tier (a HIGH/MID function can safely
+            // hand out a read-only view too). What LOW tier actually
+            // gates is *enforcement* (move/loan checking), which is a
+            // separate, still-unbuilt pass — not this one.
+            ExprKind::Borrow { place, .. } => self.check_expr(place),
             ExprKind::As { expr: inner, .. } => self.check_expr(inner),
             ExprKind::Tuple(elems) | ExprKind::Array(elems) => {
                 for e in elems.iter() { self.check_expr(e); }

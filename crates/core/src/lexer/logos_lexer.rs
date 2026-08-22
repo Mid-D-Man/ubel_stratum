@@ -66,6 +66,8 @@ enum LogosToken {
     #[token("self")]     SelfKw,
     #[token("getter")]   Getter,
     #[token("setter")]   Setter,
+    #[token("ref")]      Ref,
+    #[token("deref")]    Deref,
 
     // ── Declaration / statement keywords ─────────────────────────
     #[token("extend")]   Extend,
@@ -416,6 +418,8 @@ impl<'a> LogosLexer<'a> {
             LogosToken::SelfKw    => TokenType::SelfKw,
             LogosToken::Getter    => TokenType::Getter,
             LogosToken::Setter    => TokenType::Setter,
+            LogosToken::Ref       => TokenType::Ref,
+            LogosToken::Deref     => TokenType::Deref,
             LogosToken::Extend    => TokenType::Extend,
             LogosToken::TypeKw    => TokenType::TypeKw,
             LogosToken::Extract   => TokenType::Extract,

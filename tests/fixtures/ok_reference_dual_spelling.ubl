@@ -1,0 +1,41 @@
+// tests/fixtures/ok_reference_dual_spelling.ubl
+// The actual point of this delivery: `&`/`ref` and `&mut`/`ref mut`
+// are dual spellings of ONE operator, not two different features —
+// same as `and`/`&&`. This deliberately MIXES spellings within a
+// single signature and a single call to prove that, not just that
+// each spelling independently parses in isolation.
+//
+// `mixed_signature` takes four references (two shared, two mutable —
+// symbol and keyword spelling of each) all pointing at the same
+// variable. That's a real aliasing violation a finished borrow
+// checker should reject — accepted here only because loan/move
+// enforcement doesn't exist yet (see ok_reference_basic.ubl's note).
+// This fixture will likely need to become an `err_` fixture once
+// that checker lands; that's expected, not a regression.
+// Expected: zero errors, all assertions pass.
+
+@tier(low)
+fn mixed_signature(a: &int, b: ref int, c: &mut int, d: ref mut int) int {
+    return *a + deref b + *c + deref d
+}
+
+struct Holder {
+    value: int
+
+    pub fn get_ref(self) ref int {
+        return &self.value
+    }
+
+    pub fn get_ref_symbol(self) &int {
+        return ref self.value
+    }
+}
+
+fn main() void {
+    let n = 10
+    assert(mixed_signature(&n, ref n, &mut n, ref mut n) == 40, "four params, all four spellings, one call")
+
+    let h = Holder { value = 99 }
+    assert(*h.get_ref() == 99, "ref-typed return, dereferenced with symbol")
+    assert(deref h.get_ref_symbol() == 99, "&-typed return, dereferenced with keyword")
+}

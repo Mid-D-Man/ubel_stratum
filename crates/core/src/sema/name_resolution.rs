@@ -667,7 +667,8 @@ fn resolve_expr<'ast>(&mut self, expr: &Expr<'ast>) {
             self.resolve_expr(target);
             self.resolve_expr(index);
         }
-        ExprKind::Try(e) | ExprKind::Await(e) => self.resolve_expr(e),
+        ExprKind::Try(e) | ExprKind::Await(e) | ExprKind::Deref(e) => self.resolve_expr(e),
+        ExprKind::Borrow { place, .. } => self.resolve_expr(place),
         ExprKind::As { expr: e, .. } => self.resolve_expr(e),
         ExprKind::Tuple(es) | ExprKind::Array(es) => {
             for e in es.iter() { self.resolve_expr(e); }

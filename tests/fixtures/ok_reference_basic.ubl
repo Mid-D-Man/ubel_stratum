@@ -1,0 +1,51 @@
+// tests/fixtures/ok_reference_basic.ubl
+// `&`/`ref` and `&mut`/`ref mut` are dual spellings of one Borrow
+// operator, `*`/`deref` are dual spellings of Deref — same precedent
+// as `and`/`&&`, `or`/`||` (docs/PARSER_RULES.md §5.6). This exercises
+// parsing, structural typing, and read-through as locals, as call
+// arguments, and as parameter types, in both spellings.
+//
+// Read-only on purpose: assignment THROUGH a dereferenced reference
+// (`*p = v`) isn't implemented yet — it needs a real runtime
+// reference-cell representation, tracked alongside the CFG/loan work
+// still ahead (see crates/core/src/interpreter/eval/expr.rs).
+//
+// No actual borrow/move CHECKING happens yet either (loan tracking,
+// liveness, `outlives` enforcement are all still unbuilt) — this
+// fixture only proves the syntax and structural types are right.
+// Expected: zero errors, all assertions pass.
+
+@tier(low)
+fn read_through_symbol(x: &int) int {
+    return *x
+}
+
+@tier(low)
+fn read_through_keyword(x: ref int) int {
+    return deref x
+}
+
+@tier(low)
+fn read_through_mut(x: &mut int) int {
+    return *x
+}
+
+fn main() void {
+    let n = 21
+
+    let p = &n
+    assert(*p == 21, "& then * round-trips")
+
+    let q = ref n
+    assert(deref q == 21, "ref then deref round-trips")
+
+    let r = &mut n
+    assert(*r == 21, "&mut still reads the current value")
+
+    let s = ref mut n
+    assert(deref s == 21, "ref mut still reads the current value")
+
+    assert(read_through_symbol(&n) == 21, "& as a call argument, &-typed param")
+    assert(read_through_keyword(ref n) == 21, "ref as a call argument, ref-typed param")
+    assert(read_through_mut(&mut n) == 21, "&mut as a call argument, &mut-typed param")
+}
