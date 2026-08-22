@@ -13,24 +13,50 @@
 
 ## ⚠️ Current Status: Early Development
 
-Ubel Stratum has completed its lexer, parser, and is actively building semantic analysis.
-The language specification and AST are solidified. Source files use the `.ubl` extension.
-The compiler binary is called `ublc`.
+**The end goal is native machine code via an LLVM backend.** Right now, Ubel Stratum
+runs as a tree-walking interpreter — a deliberate stepping stone, not the final
+architecture. Building the interpreter first proves out the language and its
+semantics completely before taking on LLVM integration, which is a much heavier
+lift than anything built so far (this project already dropped LALRPOP for exactly
+this reason — see Phase 1 below). Source files use the `.ubl` extension.
 
 **Development Roadmap:**
-1. ✅ **Phase 1**: Core design, memory model, lexer (Logos), parser (LALRPOP), arena AST
-2. 🔄 **Phase 2**: Semantic analysis — name resolution, type inference, tier enforcer
-3. 📋 **Phase 3**: Tree-walking interpreter in Rust
-4. 📋 **Phase 4**: LLVM backend → native binary
+1. ✅ **Phase 1**: Core design, memory model, lexer (Logos), arena AST, parser
+2. ✅ **Phase 2**: Semantic analysis — name resolution, type inference, tier enforcer
+3. ✅ **Phase 3**: Tree-walking interpreter — **current execution model**
+4. 📋 **Phase 4**: LLVM backend → native binary — **the real end goal, not yet started**
 5. 📋 **Phase 5**: Standard library, tooling, package manager
+
+Phase 1's parser is worth a specific note: LALRPOP was the original plan, but its
+build-time codegen turned out too heavy for free GitHub Actions runners and for
+local dev on older hardware. It's kept in the tree (`crates/parser`) as an inactive
+reference implementation — not a default workspace member, not used by anything.
+The real, live parser is a hand-written recursive-descent + Pratt parser
+(`crates/rd_parser`) — see [`PARSER_RULES.md`](docs/PARSER_RULES.md) for the full
+architecture writeup. The same hardware-constraint reasoning shows up throughout
+this project: the LOW-tier borrow checker currently under construction is being
+hand-written too, specifically to avoid pulling in a Datalog engine or an SMT
+solver.
+
+Phase 2 is substantial at this point, not just "started": full generics
+(structs/enums), enum discriminants and payloads, the three-tier memory model with
+real escape-boundary checking (arena/pool references can't leak out of their
+scope), `Pool<T>`/`Handle<T>` with generational handles, `Linqerizer<T>` (a lazy,
+HIGH-tier-only query pipeline — see below), and — very recently — the syntax and
+structural-type layer for LOW-tier references (`&`/`ref`, `&mut`/`ref mut`,
+`*`/`deref`) plus the first piece of the LOW-tier borrow checker itself (a
+control-flow graph builder). The borrow checker's actual loan/liveness enforcement
+isn't built yet; see [`MEMORY_MODEL.md`](docs/MEMORY_MODEL.md) §9 for exactly
+where that stands.
 
 ---
 
 ## 🚀 What is Ubel Stratum?
 
-Ubel Stratum is a systems programming language that compiles to **native machine code**
-via LLVM. Its defining feature is a **tier system** — every function declares which
-memory strategy it uses, and the compiler enforces the rules statically:
+Ubel Stratum is a systems programming language **designed** to compile to native
+machine code via LLVM (Phase 4, still ahead). Its defining feature is a **tier
+system** — every function declares which memory strategy it uses, and the
+compiler enforces the rules statically:
 
 | Tier | Annotation | Memory | Async | Use case |
 |------|-----------|--------|-------|----------|
@@ -57,12 +83,12 @@ clash at runtime.
 
 ---
 
-## 🏗️ How the Final Product Works
+## 🏗️ How the Final Product Will Work
 
-**Ubel Stratum compiles to a native binary.** It is not a VM language.
-It is closer to Rust or C++ in execution model than to Java or Python.
+**This section describes the Phase 4 target architecture — not what runs today.**
+For what's actually working right now, see [Building](#️-building) below.
 
-When you ship an Ubel program, the binary contains:
+When Ubel eventually ships a native binary, it will contain:
 
 - **Your code** compiled to machine instructions via LLVM
 - **A small GC runtime** linked in for HIGH-tier allocations (similar to Go's runtime,
@@ -70,29 +96,33 @@ When you ship an Ubel program, the binary contains:
 - **An arena allocator** for MID-tier (a bump-pointer; ~50 lines of code at the asm level)
 - **Nothing extra** for LOW-tier — it compiles to the same raw code Rust or C would
 
-The result feels like Rust from the outside (fast startup, small binary, no JVM) but
-with a built-in, opt-in GC for the parts of your code that need it.
+The result should feel like Rust from the outside (fast startup, small binary, no
+JVM) but with a built-in, opt-in GC for the parts of your code that need it.
 
-### Execution flow for a real app
+### Target execution flow
 
 ```
 source.ubl
     │
     ▼
-ublc (compiler)
+Compiler pipeline
     │
     ├── Lexer (Logos)
-    ├── Parser (LALRPOP) → Arena AST
-    ├── Name resolution       ← Phase 2 (in progress)
-    ├── Type checker          ← Phase 2
-    ├── Tier enforcer         ← Phase 2
-    ├── Lowering to IR        ← Phase 4
+    ├── Parser (RD + Pratt) → Arena AST         ← Phase 1, done
+    ├── Name resolution                          ← Phase 2, done
+    ├── Type checker                              ← Phase 2, done
+    ├── Tier enforcer                              ← Phase 2, done (LOW-tier
+    │                                                  borrow checking still WIP)
+    │
+    ├─┬─ Tree-walking interpreter ─── runs the AST directly    ← Phase 3, done,
+    │ │                                                            current reality
+    │ │
+    │ └─ Lowering to LLVM IR ──────── future                   ← Phase 4, not started
+    ▼
+LLVM IR (future)
     │
     ▼
-LLVM IR
-    │
-    ▼
-Native Binary
+Native Binary (future)
     ├── HIGH-tier functions → calls into tiny GC runtime
     ├── MID-tier functions  → bump-allocates in local arenas
     └── LOW-tier functions  → raw machine code, zero overhead
@@ -102,7 +132,9 @@ Native Binary
 
 ## 🔗 Inter-Tier Communication
 
-This is the hardest part of the language to get right. Here is the precise model.
+This is the hardest part of the language to get right. Here is the precise model —
+these rules are enforced today, by the tier checker, regardless of whether code
+runs through the interpreter or (eventually) compiles to native code.
 
 ### The Core Constraint
 
@@ -114,7 +146,8 @@ The mechanism: any value that lives in an arena `A` has a type parameterised by 
 arena's lifetime `'a` (written `&'a T`). The compiler refuses to compile any program
 where `&'a T` appears in a type that outlives arena `A`.
 
-Three sanctioned patterns for crossing the MID→HIGH boundary:
+Three sanctioned patterns for crossing the MID→HIGH boundary — illustrative of the
+*pattern*, not a claim that these exact function names ship in a stdlib yet:
 
 ---
 
@@ -227,11 +260,26 @@ fn bad_async(input: string) string {
     let result = await some_future()   // Error: await is only valid in @tier(high)
     return result
 }
+```
 
-// ❌ LOW tier calling HIGH tier directly
+### The full cross-tier call matrix
+
+Not just "LOW can't call HIGH" — the enforced rule is a real matrix:
+
+| Caller | Callee | Allowed? |
+|--------|--------|----------|
+| HIGH | MID | ✅ (callback/view patterns encouraged, not enforced) |
+| HIGH | LOW | ✅ |
+| MID | HIGH | ❌ — would risk an arena lifetime escaping |
+| MID | LOW | ✅ |
+| LOW | HIGH | ❌ |
+| LOW | MID | ❌ |
+
+```ubl
 @tier(low)
-fn bad_low_call() {
-    let x = some_high_fn()   // Error: @tier(low) cannot call @tier(high) directly
+fn write_packet(buf: &mut [u8]) usize {
+    let x = some_high_fn()   // ❌ Error: @tier(low) cannot call @tier(high)
+    let y = some_mid_fn()    // ❌ Error: @tier(low) cannot call @tier(mid) either
 }
 ```
 
@@ -257,7 +305,7 @@ fn parse_payload(body: string) ParsedData {
 // Opt into LOW for systems code
 @tier(low)
 fn write_packet(buf: &mut [u8]) usize {
-    // Raw ownership; borrow checker active
+    // Raw ownership; borrow checker enforcement still WIP — see MEMORY_MODEL.md §9
 }
 ```
 
@@ -269,7 +317,7 @@ numbers.push(1)
 numbers.push(2)
 
 let mut scores = Dictionary<string, int>.new()
-scores.insert("Alice", 100)
+scores.set("Alice", 100)             // not `.insert()` — renamed for get/set symmetry
 
 let items = [1, 2, 3, 4, 5]          // array literal
 let names = ["Alice", "Bob"]          // inferred as List<string>
@@ -363,10 +411,13 @@ extend int {
 if 42.is_even() { println("Even!") }
 ```
 
-### Human-readable lifetimes
+### References and lifetimes (LOW tier)
 
-Only needed in LOW tier for complex cross-function borrows.
-Simple cases are inferred.
+`&`/`ref` and `&mut`/`ref mut` are dual spellings of the same borrow operator —
+`*`/`deref` likewise for dereference — same precedent as `and`/`&&`, `or`/`||`.
+Pick whichever reads better for the moment; both compile to the identical AST node.
+Named lifetimes are only needed for complex cross-function borrows; simple cases
+are inferred.
 
 ```ubl
 // Inferred — no annotation needed
@@ -374,11 +425,22 @@ fn first(list: &List<int>) &int {
     return &list[0]
 }
 
+// Same thing, keyword spelling
+fn first(list: ref List<int>) ref int {
+    return ref list[0]
+}
+
 // Complex case — explicit lifetime
 fn longest[lifetime L](x: &L str, y: &L str) &L str {
     if x.len() > y.len() { return x } else { return y }
 }
 ```
+
+The syntax and structural typing for all of this is live today. What's still
+ahead: the actual borrow *checker* — loan tracking, liveness, `outlives`
+enforcement, move checking. A control-flow-graph builder (the first piece it needs)
+exists now; nothing consumes it yet. See `docs/MEMORY_MODEL.md` §9 for the exact,
+current line between "parses and type-checks" and "is actually verified safe."
 
 ### RAII with `using`
 
@@ -389,17 +451,28 @@ using let file = File.open("data.txt") {
 }   // file.close() called automatically
 ```
 
-### LINQ (HIGH tier only)
+### Query pipelines — `Linqerizer<T>` (HIGH tier only)
+
+A lazy, chainable query pipeline over any collection — `.query()` snapshots the
+source once; nothing runs until a terminal call (`.to_list()`, `.first()`,
+`.count()`) walks the pipeline. Each chained call returns a new pipeline rather
+than mutating in place.
 
 ```ubl
 @tier(high)
-fn active_adults(users: List<User>) List<string> {
-    return from u in users
-           where u.age >= 18 and u.status == "active"
-           orderby u.name
-           select u.name
+fn active_adult_names(users: List<User>) List<string> {
+    return users.query()
+        .where(fn(u) u.age >= 18 and u.status == "active")
+        .order_by(fn(u) u.name)
+        .select(fn(u) u.name)
+        .to_list()
 }
 ```
+
+`.group_by(...)` produces a real `Dictionary<Key, List<Value>>`. This replaced an
+earlier query-comprehension grammar (`from x in ... where ... select ...`) that
+was removed outright rather than kept alongside — see `docs/PARSER_RULES.md` §6
+for why.
 
 ---
 
@@ -407,177 +480,81 @@ fn active_adults(users: List<User>) List<string> {
 
 ### Prerequisites
 
-- Rust toolchain (stable)
-- LALRPOP (invoked via `build.rs`)
+- Rust **1.75** specifically — this project targets free GitHub Actions runners
+  and older local hardware, so the toolchain is pinned rather than "stable."
+  A handful of dependencies need pinning to versions that still support 1.75:
+
+  ```bash
+  cargo update -p owo-colors  --precise 4.0.0
+  cargo update -p backtrace   --precise 0.3.69
+  cargo update -p proptest    --precise 1.4.0
+  cargo update -p tempfile    --precise 3.14.0
+  cargo update -p clap        --precise 4.4.18
+  cargo update -p rayon       --precise 1.10.0
+  cargo update -p rayon-core  --precise 1.12.1
+  cargo update -p half        --precise 2.4.1
+  ```
+- LALRPOP is **not** required — it's an inactive reference crate, not a default
+  workspace member. Ignore it unless you're specifically working on `crates/parser`.
 
 ### Build
 
 ```bash
-cargo build
-cargo test
-cargo bench
+cargo build --workspace --all-targets
+cargo test  --workspace --lib --bins
+cargo bench   # crates/core, crates/rd_parser, and crates/parser each have benches/
 ```
 
-### CLI Usage
+### Running the compiler pipeline
+
+There's no standalone CLI binary yet (Phase 5). The way to exercise lex → parse →
+sema → interpret today is the pipeline example in `crates/rd_parser`:
 
 ```bash
-# Tokenize a .ubl file
-ublc lex path/to/file.ubl --verbose
+# Run the full pipeline against every fixture
+cargo run -p ubel_stratum_rd --example pipeline -- tests/fixtures
 
-# Parse a .ubl file (shows top-level item count)
-ublc parse path/to/file.ubl
-
-# Run semantic analysis
-ublc check path/to/file.ubl
+# Against a single file
+cargo run -p ubel_stratum_rd --example pipeline -- path/to/file.ubl
 ```
+
+This is exactly what CI runs — see the **Pipeline Dashboard** GitHub Actions
+workflow for the same output rendered as a Job Summary on every push.
 
 ---
 
 ## 🧪 Testing
 
-Tests are organized at three levels, each catching different classes of bugs.
+Three layers, each catching different classes of bugs.
 
 ### Level 1 — Unit tests (inside source files)
 
-Data structure tests live as `#[cfg(test)]` blocks inside their own module.
-`symbol_table.rs` tests scope shadowing, duplicate detection, and resolution.
-`type_table.rs` tests interning correctness. Run with:
+`#[cfg(test)]` modules colocated with the code they test — `symbol_table.rs` tests
+scope shadowing and duplicate detection, `type_table.rs` tests interning
+correctness, `sema/cfg.rs` tests the LOW-tier control-flow-graph builder's
+block/edge shapes directly against hand-built AST fragments. Run with:
 
 ```bash
-cargo test
+cargo test --workspace --lib --bins
 ```
 
-### Level 2 — Integration tests (fixtures)
+### Level 2 — Fixture sweep (`tests/fixtures/*.ubl`)
 
-Integration tests live under `tests/sema/` and drive the full lex → parse → resolve
-pipeline against real `.ubl` fixture files:
+Real `.ubl` source files driven through the complete lex → parse → sema →
+interpret pipeline. `ok_*.ubl` fixtures are expected to pass every stage;
+`err_*.ubl` fixtures are expected to fail at a specific, named stage (check the
+fixture's own header comment for which one). Run the same way described above in
+[Building](#running-the-compiler-pipeline).
 
-```
-tests/
-└── sema/
-    ├── name_resolution_tests.rs
-    └── fixtures/
-        ├── ok_simple.ubl
-        ├── ok_forward_ref.ubl
-        ├── ok_nested_scopes.ubl
-        ├── ok_struct_methods.ubl
-        ├── ok_imports.ubl
-        ├── err_undefined_name.ubl
-        ├── err_duplicate_def.ubl
-        └── err_self_outside_method.ubl
-```
+### Level 3 — CI Pipeline Dashboard
 
-Each test compiles a fixture and asserts on the error count and error kinds:
-
-```bash
-cargo test --test name_resolution_tests
-```
-
-### Level 3 — Snapshot tests (insta)
-
-Add to `Cargo.toml`:
-
-```toml
-[dev-dependencies]
-insta = "1"
-```
-
-Snapshot tests capture the full `SemaContext` debug output on the first run and
-automatically detect regressions on every subsequent run. Review changed snapshots:
-
-```bash
-cargo insta review
-```
+Every push runs the full fixture sweep and renders the results as a GitHub
+Actions Job Summary — stage-by-stage pass/fail counts, and a table of every
+failing fixture with the stage it failed at, so an `err_*` fixture's expected
+failure is never confused with a real regression at a glance.
 
 ---
 
-## 🗺️ Architecture Overview
+## License
 
-```
-src/
-├── lexer/
-│   ├── logos_lexer.rs       # Token stream via Logos
-│   ├── string_parser.rs     # Interpolated / verbatim strings
-│   ├── comment_parser.rs    # Nested block comments
-│   └── token.rs             # TokenType, Span
-│
-├── parser/
-│   ├── grammar.lalrpop      # Full LALRPOP grammar
-│   ├── helpers/             # Arena-aware node builders
-│   │   ├── decl.rs
-│   │   ├── expr.rs
-│   │   ├── stmt.rs
-│   │   ├── pat.rs
-│   │   └── ty.rs
-│   └── token_iter.rs        # Bridges Vec<Token> to LALRPOP
-│
-├── ast/
-│   ├── arena.rs             # AstArena (bumpalo wrapper)
-│   ├── common.rs            # Span, Ident, TierAnnotation, operators
-│   ├── literals.rs          # Literal, InterpolationPart
-│   ├── types.rs             # Type, TypeKind
-│   ├── patterns.rs          # Pattern, destructure patterns
-│   ├── expressions.rs       # Expr, ExprKind
-│   ├── statements.rs        # Stmt, Block, AllocatorKind
-│   ├── declarations.rs      # FunctionDecl, StructDecl, EnumDecl, …
-│   └── root.rs              # Program, Item, Import
-│
-├── sema/                    # ← Phase 2 (in progress)
-│   ├── mod.rs               # Orchestrates all three passes
-│   ├── symbol_table.rs      # DefId, Def, DefKind, SymbolTable, ScopeStack
-│   ├── sema_context.rs      # SemaContext — all side tables together
-│   ├── type_table.rs        # TypeId, SemaType, TypeTable (with interning)
-│   ├── name_resolution.rs   # Pass 1: resolve identifiers → DefId
-│   ├── type_infer.rs        # Pass 2: constraint gen + unification (TODO)
-│   └── tier_check.rs        # Pass 3: tier rule enforcement (TODO)
-│
-├── error_management/
-│   ├── error_types/
-│   │   ├── lexical_error.rs
-│   │   ├── parse_error.rs
-│   │   ├── name_error.rs    # ← new: Pass 1 errors
-│   │   └── type_error.rs    # ← new: Pass 2 + 3 errors
-│   ├── error_manager.rs     # Central accumulator for all phases
-│   ├── diagnostics.rs
-│   └── logger.rs
-│
-└── main.rs                  # ublc CLI (lex / parse / check / run)
-
-tests/
-└── sema/
-    ├── name_resolution_tests.rs
-    └── fixtures/            # Real .ubl source used as test input
-```
-
-All AST nodes are arena-allocated via `bumpalo` and carry a `'ast` lifetime.
-Every node type is `Copy`, which means the entire tree can be traversed without
-cloning and multiple passes share the same backing memory.
-
-Semantic analysis produces a `SemaContext` — a set of side tables keyed by `Span`.
-The AST is never mutated. Downstream consumers (interpreter, LLVM backend) receive
-both `Program<'ast>` and `SemaContext` together.
-
----
-
-## 📄 License
-
-Licensed under either of:
-
-- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
-- MIT license ([LICENSE-MIT](LICENSE-MIT))
-
-at your option.
-
----
-
-## 🌟 Why "Ubel Stratum"?
-
-**Stratum** is Latin for "layer" — a direct reference to the tier system at the
-heart of the language. Every program is a stack of strata, each with its own
-memory contract.
-
-**Ubel** has no deep etymology behind it. It sounded right. 
-
----
-
-**Ubel Stratum: The right memory model for every function.** 🚀
+MIT OR Apache-2.0
