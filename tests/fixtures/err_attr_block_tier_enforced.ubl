@@ -1,0 +1,16 @@
+// tests/fixtures/err_attr_block_tier_enforced.ubl
+// Proves the block's `@tier(low)` really propagates to the function
+// inside it — not just that it parses. `List.new()` is forbidden in LOW
+// tier (`CollectionConstructionInLowTier`); if the block's tier didn't
+// actually reach the function, this would incorrectly pass sema.
+// Expected: sema FAIL (CollectionConstructionInLowTier).
+
+@tier(low) {
+    fn bad() void {
+        let x = List.new()
+    }
+}
+
+fn main() void {
+    bad()
+}

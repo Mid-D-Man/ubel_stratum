@@ -1,0 +1,20 @@
+// tests/fixtures/ok_attr_block_basic.ubl
+// `@attr(...) { item item }` applies the same attrs/tier to every item
+// inside, wholesale — generalizes the single-item form, same precedent
+// as `and`/`&&`, `or`/`||`. See docs/PARSER_RULES.md §5.7.
+// Expected: zero errors, all assertions pass.
+
+@tier(low) {
+    fn low_add(a: int, b: int) int {
+        return a + b
+    }
+
+    fn low_mul(a: int, b: int) int {
+        return a * b
+    }
+}
+
+fn main() void {
+    assert(low_add(2, 3) == 5, "first function in the block picked up the block's tier")
+    assert(low_mul(4, 5) == 20, "second function in the block picked it up too")
+}

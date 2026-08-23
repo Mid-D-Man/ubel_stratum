@@ -1,0 +1,23 @@
+// tests/fixtures/ok_attr_block_nested.ubl
+// Blocks nest — recursion in `parse_item_or_block` handles this for
+// free, no special-cased nesting logic needed.
+// Expected: zero errors, all assertions pass.
+
+@tier(low) {
+    fn outer_low(x: int) int { return x * 2 }
+
+    @tier(mid) {
+        fn inner_mid() int {
+            with arena(64KB) {
+                let scratch = List.new()
+                scratch.push(7)
+                return scratch.len()
+            }
+        }
+    }
+}
+
+fn main() void {
+    assert(outer_low(5) == 10, "outer block's tier applies to its direct items")
+    assert(inner_mid() == 1, "nested block overrides to mid for its own items")
+}

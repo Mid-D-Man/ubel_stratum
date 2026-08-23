@@ -1,0 +1,20 @@
+// tests/fixtures/err_attr_block_unrelated_attr_keeps_tier.ubl
+// A lone `@doc(...)` (unrelated to tier) on one item inside a block must
+// NOT silently opt it out of the block's tier — only an item's own
+// explicit `@tier(...)` does that (`apply_block_attrs`'s `has_own_tier`
+// check looks specifically for a `tier` attribute, not "attrs.is_empty()").
+// Proven the same way as the override fixture: this function still can't
+// construct a `List` if it correctly stayed LOW tier.
+// Expected: sema FAIL (CollectionConstructionInLowTier) — proves the
+// `@doc(...)` did NOT accidentally pull it out of `@tier(low)`.
+
+@tier(low) {
+    @doc("has its own attribute, but not @tier")
+    fn still_low() void {
+        let x = List.new()
+    }
+}
+
+fn main() void {
+    still_low()
+}

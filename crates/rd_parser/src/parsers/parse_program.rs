@@ -55,20 +55,7 @@ pub(crate) fn parse_program<'ast, 'tok>(p: &mut Parser<'ast, 'tok>) -> Program<'
 
         if p.cursor.is_eof() { break; }
 
-        if let Some(item) = p.parse_item() {
-            items.push(item);
-        } else {
-            // The item parser already emitted an error and advanced past garbage.
-            // If we're still stuck, force advance to avoid an infinite loop.
-            if !p.cursor.is_eof() && !matches!(p.cursor.peek(),
-                TokenType::Fn | TokenType::Struct | TokenType::Enum |
-                TokenType::Trait | TokenType::Impl | TokenType::Extend |
-                TokenType::Const | TokenType::TypeKw | TokenType::Pub |
-                TokenType::At | TokenType::Edge | TokenType::Eof
-            ) {
-                p.cursor.advance();
-            }
-        }
+        p.parse_item_or_block(&mut items);
     }
 
     let items = p.arena.alloc_slice_clone(&items);

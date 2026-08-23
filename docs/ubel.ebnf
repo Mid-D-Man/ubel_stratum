@@ -67,6 +67,14 @@ AttributeArg  ::= Ident
                 | Ident "=" Literal
                 | Ident "(" AttributeArgList ")"   (* nested: @cfg(not(debug)), @cfg(any(...)) *)
 
+(* An attribute list may apply to one following item, or to a whole
+   braced group of them — the block form applies every attribute in
+   the list to each item inside, with one exception: an item carrying
+   its own @tier keeps that tier rather than inheriting the block's.
+   See PARSER_RULES.md §5.7 for the exact merge rule. *)
+Item          ::= Attributes? Visibility? ItemBody
+                | Attributes "{" Item* "}"
+
 (* ── Parameters ── *)
 ParamList     ::= Param ("," Param)*
 Param         ::= "mut"? Ident TypeAnnotation? ("=" Expr)?

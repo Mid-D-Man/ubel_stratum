@@ -1,0 +1,27 @@
+// tests/fixtures/ok_attr_block_override.ubl
+// An item with its own explicit `@tier(...)` inside a block overrides
+// the block's — the block doesn't force it. Proven by having the
+// "opted out" function do something only legal outside LOW tier
+// (construct a `List` inside `with arena`); if the override didn't
+// work, this would incorrectly fail sema instead.
+// Expected: zero errors, all assertions pass.
+
+@tier(low) {
+    fn stays_low(x: int) int {
+        return x + 1
+    }
+
+    @tier(mid)
+    fn opts_out_to_mid() int {
+        with arena(64KB) {
+            let scratch = List.new()
+            scratch.push(1)
+            return scratch.len()
+        }
+    }
+}
+
+fn main() void {
+    assert(stays_low(9) == 10, "no override present — stays the block's low tier")
+    assert(opts_out_to_mid() == 1, "explicit inner @tier(mid) overrides the block's low")
+}

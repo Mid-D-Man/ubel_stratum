@@ -40,17 +40,50 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
 
     // ── Top-level item dispatcher ─────────────────────────────────────────────
 
-    /// Parse one top-level item. Attributes are parsed first, then the keyword.
-    pub(crate) fn parse_item(&mut self) -> Option<Item<'ast>> {
-        // Collect any @ attributes preceding the declaration
-        let (attrs, _) = if self.cursor.is_at(&TokenType::At) {
+    /// Parse one top-level item OR a `@attr(...) { item item item }`
+    /// attribute block, pushing whatever it produces into `out`.
+    ///
+    /// A block applies its attrs/tier to every item inside, wholesale — but
+    /// only where an inner item didn't already write its own `@tier(...)`
+    /// (checked specifically, not "any attrs present"), so an unrelated
+    /// `@doc(...)` on one item doesn't silently opt it out of the block's
+    /// tier. The block's generic attrs are always appended regardless. See
+    /// docs/PARSER_RULES.md §5.7.
+    pub(crate) fn parse_item_or_block(&mut self, out: &mut Vec<Item<'ast>>) {
+        let (attrs, tier_opt) = if self.cursor.is_at(&TokenType::At) {
             self.parse_attribute_list()
         } else {
             (&[][..], None)
         };
+        let tier = tier_opt.unwrap_or(TierAnnotation::High);
 
-        let tier = extract_tier_from_attrs(attrs);
-        let vis  = self.parse_visibility();
+        // Block form — recurse so nested blocks work for free, then apply
+        // this block's attrs/tier to whatever each recursive call produced.
+        if !attrs.is_empty() && self.cursor.is_at(&TokenType::LeftBrace) {
+            self.cursor.advance(); // consume `{`
+            loop {
+                while self.eat_sep() {}
+                if self.cursor.is_at(&TokenType::RightBrace) || self.cursor.is_eof() { break; }
+                let before = out.len();
+                self.parse_item_or_block(out);
+                let newly_added: Vec<Item<'ast>> = out.split_off(before);
+                for item in newly_added {
+                    out.push(self.apply_block_attrs(item, attrs, tier));
+                }
+                if before == out.len() {
+                    // The recursive call emitted an error and produced
+                    // nothing (already recovered internally) — avoid
+                    // spinning forever on the same token.
+                    break;
+                }
+            }
+            if let Err(e) = self.cursor.expect(&TokenType::RightBrace) {
+                self.emit(crate::error::from_cursor(e, ParseContext::TopLevel));
+            }
+            return;
+        }
+
+        let vis = self.parse_visibility();
 
         let prev = self.enter(ParseContext::TopLevel);
         let result = match self.cursor.peek().clone() {
@@ -80,7 +113,66 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
             }
         };
         self.leave(prev);
-        result
+
+        match result {
+            Some(item) => out.push(item),
+            None => {
+                // The item parser already emitted an error and advanced past
+                // garbage. If we're still stuck, force advance to avoid an
+                // infinite loop — mirrors parse_program.rs's old recovery.
+                if !self.cursor.is_eof() && !matches!(self.cursor.peek(),
+                    TokenType::Fn | TokenType::Struct | TokenType::Enum |
+                    TokenType::Trait | TokenType::Impl | TokenType::Extend |
+                    TokenType::Const | TokenType::TypeKw | TokenType::Pub |
+                    TokenType::At | TokenType::Edge | TokenType::RightBrace |
+                    TokenType::Eof
+                ) {
+                    self.cursor.advance();
+                }
+            }
+        }
+    }
+
+    /// Applies a block's attrs/tier to one item parsed inside it. Only
+    /// `Function` and `Impl` carry a `tier` field at all — everything else
+    /// just gets the generic attrs appended. `has_own_tier` gates the tier
+    /// override specifically (not "attrs.is_empty()"), so e.g. a lone
+    /// `@doc(...)` on one function doesn't silently pull it out of the
+    /// block's tier.
+    fn apply_block_attrs(
+        &self, item: Item<'ast>, block_attrs: &'ast [Attribute<'ast>], block_tier: TierAnnotation,
+    ) -> Item<'ast> {
+        fn has_own_tier(attrs: &[Attribute]) -> bool {
+            attrs.iter().any(|a| a.name == "tier")
+        }
+
+        let merge_attrs = |own: &'ast [Attribute<'ast>]| -> &'ast [Attribute<'ast>] {
+            if block_attrs.is_empty() { return own; }
+            if own.is_empty() { return block_attrs; }
+            let mut merged: Vec<Attribute<'ast>> = Vec::with_capacity(own.len() + block_attrs.len());
+            merged.extend_from_slice(own);
+            merged.extend_from_slice(block_attrs);
+            self.arena.alloc_slice_clone(&merged)
+        };
+
+        match item {
+            Item::Function(mut f) => {
+                if !has_own_tier(f.attributes) { f.tier = block_tier; }
+                f.attributes = merge_attrs(f.attributes);
+                Item::Function(f)
+            }
+            Item::Struct(mut s) => { s.attributes = merge_attrs(s.attributes); Item::Struct(s) }
+            Item::Enum(mut e)   => { e.attributes = merge_attrs(e.attributes); Item::Enum(e) }
+            Item::Trait(mut t)  => { t.attributes = merge_attrs(t.attributes); Item::Trait(t) }
+            Item::Impl(mut i) => {
+                if i.tier.is_none() && !has_own_tier(i.attributes) { i.tier = Some(block_tier); }
+                i.attributes = merge_attrs(i.attributes);
+                Item::Impl(i)
+            }
+            Item::Extend(mut e)    => { e.attributes = merge_attrs(e.attributes); Item::Extend(e) }
+            Item::Const(mut c)     => { c.attributes = merge_attrs(c.attributes); Item::Const(c) }
+            Item::TypeAlias(mut t) => { t.attributes = merge_attrs(t.attributes); Item::TypeAlias(t) }
+        }
     }
 
     // ── Function declaration ──────────────────────────────────────────────────

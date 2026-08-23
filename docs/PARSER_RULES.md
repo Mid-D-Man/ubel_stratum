@@ -600,6 +600,53 @@ recognised, not just the obvious one.
 
 ---
 
+### 5.7 `@attr(...) { item item item }` — Attribute Blocks
+
+Not a new ambiguity to resolve — the `{` after a parsed attribute list
+disambiguates cleanly with a single peek, no backtracking or
+memoisation needed. Documented here anyway because it's the mirror
+image of 5.6: another place where the language accepts a second,
+higher-level spelling of something that already existed, this time to
+avoid repeating the same attribute on every item in a group.
+
+```
+Item     ::= AttributeList Visibility? (FunctionDecl | StructDecl | ...)
+           | AttributeList "{" Item* "}"
+```
+
+`parse_item_or_block` (`parse_decl.rs`) replaces the old `parse_item`.
+Same attrs are parsed either way; if what follows is `{` instead of a
+declaration keyword, every item inside gets the block's attrs/tier
+applied by `apply_block_attrs` once each inner item has been parsed
+normally (recursively — nested blocks fall out of that recursion for
+free, no special-cased nesting logic anywhere).
+
+**The merge rule is deliberately coarse-grained per attribute kind, not
+per item:**
+- `tier`: applied only if the item didn't write its own `@tier(...)` —
+  checked by name specifically (`has_own_tier`), not "does this item
+  have any attributes at all." A lone `@doc(...)` on one item inside a
+  `@tier(low) { }` block must not silently opt it out of the tier — see
+  `err_attr_block_unrelated_attr_keeps_tier.ubl`.
+- The generic `attributes` list: always appended, regardless of tier
+  overrides.
+
+Only `FunctionDecl.tier` and `ImplBlock.tier` exist to override — every
+other item kind (`struct`/`enum`/`trait`/`extend`/`const`/`type`) only
+has `attributes` to merge, tier is meaningless for them. `ImplBlock`
+already had exactly this "one tier for a whole group of methods"
+concept before this — its `tier: Option<TierAnnotation>` field is the
+direct precedent this generalises from.
+
+Collecting a block's items uses `Vec::split_off`, not in-place mutation
+— `parse_item_or_block` doesn't know in advance how many items a
+recursive call will produce (could be zero on a recovered error, one
+for a plain item, or many for a nested block), so it takes everything
+newly pushed, transforms it, and pushes it back rather than trying to
+index into a still-growing `Vec` mid-loop.
+
+---
+
 ## 6. LINQ Query Parsing — Removed
 
 There used to be a dedicated LINQ sub-parser here (`from x in expr where
@@ -691,6 +738,10 @@ AttrArg        ::= Ident                            (* bare flag: @cfg(debug) *)
                | Ident "=" StringLit               (* key=value: @cfg(target="wasm") *)
                | Ident "(" AttrArg ("," AttrArg)* ")" (* nested: @cfg(not(debug)) *)
 ```
+
+An attribute list can apply to one following item, or to a whole
+`{ }`-delimited group of them — see §5.7 for the block form and its
+merge rules.
 
 ### Built-in Attribute Dispatch
 
