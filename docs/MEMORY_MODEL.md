@@ -436,19 +436,51 @@ statement-granularity control-flow graph for one function body: real
 branches for `if`/`match` used as statements, real header/body/back-edge/
 exit shape for `while`/`for`/`loop`, `break`/`continue` correctly routed
 via a loop-context stack, a conservative try/catch approximation, and
-`with`/`using` treated as scope-transparent (no new branching). Explicit,
-documented scope limits: `if`/`match` used as *expressions* (including a
-`then`-keyword single-expr branch) are one opaque unit for now, not
-decomposed; no panics on malformed input (`break`/`continue` outside a
-loop degrades to `Terminator::Unreachable` rather than crashing — nothing
-upstream validates that yet, a real gap, tracked separately). 5 unit tests
-in `sema/cfg.rs` cover straight-line, if/else-both-return, if-no-else
-convergence, while-loop shape, and a nested-loop smoke test. **Not yet
-wired into `sema::analyse`** — there's no check to run against it yet.
-That's Phase C (fact collection: `loan_issued_at`/`loan_killed_at`/
-`loan_invalidated_at`, walking the AST against this graph) and Phase D
-(the actual liveness/loan fixed point, seeded by the `outlives` facts
-above), still both ahead.
+`with`/`using`/`unsafe` treated as scope-transparent (no new branching —
+`unsafe` was a real gap found while building Phase C below: its body
+wasn't being descended into at all, silently treated as one opaque
+statement, exactly the kind of thing that matters most for LOW-tier
+code specifically. Fixed the same way `with`/`using` already worked).
+Explicit, documented scope limits: `if`/`match` used as *expressions*
+(including a `then`-keyword single-expr branch) are one opaque unit for
+now, not decomposed; no panics on malformed input (`break`/`continue`
+outside a loop degrades to `Terminator::Unreachable` rather than
+crashing — nothing upstream validates that yet, a real gap, tracked
+separately). 6 unit tests in `sema/cfg.rs` (straight-line, if/else-both-
+return, if-no-else convergence, while-loop shape, a nested-loop smoke
+test, and the `unsafe`-transparency fix). **Not yet wired into
+`sema::analyse`** — still no check to run against it; that's Phase D.
+
+✅ **Implemented — Phase C, fact collection** (`sema/facts.rs`). Walks
+the CFG's statements producing the raw inputs Phase D's fixed point
+will consume: every `Borrow` expression becomes a `Loan` (place +
+mutability + issue point — found via a hand-written expression walker,
+since `AstVisitor` doesn't exist yet, PARSER_RULES.md §10 still marks it
+"proposed, future"), every reassignment of a loan's place becomes a
+`loan_killed_at` fact, every other conflicting access becomes a
+`loan_invalidated_at` candidate. `x = x + 1` is correctly classified as
+a *conflict* (it reads the old `x` on its way to overwriting it), not a
+clean kill — a real distinction the fact collector gets right, checked
+directly by a unit test. Explicit, documented scope limits, same spirit
+as `cfg.rs`'s own: **loans only, no move tracking** (`Unique<T>`
+semantics need a settled ownership-type story that doesn't exist yet —
+building move-checking against it now would mean building it twice);
+**places are local-bindings only** — `&x.field`/`&arr[i]` are still
+recorded as real loans (nothing vanishes) but as `Place::Unknown`, with
+no conflict detection, an under-approximation Phase D must treat as
+"insufficient information," never as "safe"; **`loan_invalidated_at` is
+a pure syntactic scan, not CFG-reachability-aware** — over-approximate
+on purpose, since Phase D already needs full liveness for its own
+propagation and is the natural place for reachability precision to
+live. 7 unit tests, all correct on the first real run: single/mutable
+loans, kill-via-reassignment, invalidation-via-read, no-false-positives,
+multiple loans in one call's argument list (proves the walker correctly
+descends into `Call` args — the exact class of gap `can_start_expr` and
+the `where`/`.query()` collision taught this project to watch for), and
+the `x = x + 1` conflict-not-kill distinction. **Also not yet wired
+into `sema::analyse`.** That's still Phase D — the actual liveness/loan
+fixed point, seeded by the `outlives` facts §9 has referenced since the
+lifetime-parameter parser work.
 
 `mixed_signature` in
 `tests/fixtures/ok_reference_dual_spelling.ubl` takes two shared and two

@@ -19,6 +19,7 @@ pub mod tier_check;
 #[cfg(test)]
 mod tests;
 mod cfg;
+mod facts;
 
 pub use symbol_table::{DefId, DefKind, Def, SymbolTable, ResolutionMap, Scope, ScopeStack};
 pub use sema_context::SemaContext;

@@ -33,10 +33,10 @@
 //! live than necessary" from catch's perspective, which is conservative,
 //! not unsound.
 //!
-//! **`with`/`using` are scope-transparent**: their body's statements
-//! inline straight into the surrounding block sequence, no new branching.
-//! RAII/drop-order semantics are a fact-collection concern (Phase C), not
-//! a control-flow-*shape* one.
+//! **`with`/`using`/`unsafe` are scope-transparent**: their body's
+//! statements inline straight into the surrounding block sequence, no new
+//! branching. RAII/drop-order semantics are a fact-collection concern
+//! (Phase C), not a control-flow-*shape* one.
 //!
 //! **No panics on malformed input.** `break`/`continue` outside a loop
 //! isn't caught by any existing sema pass yet (checked before writing
@@ -192,7 +192,8 @@ impl<'ast> Builder<'ast> {
                     }
                     return None;
                 }
-                StmtKind::With { body, .. } | StmtKind::Using { body, .. } => {
+                StmtKind::With { body, .. } | StmtKind::Using { body, .. }
+                | StmtKind::Unsafe(body) => {
                     self.push_stmt(current, stmt);
                     current = self.build_block(body, current)?;
                 }
@@ -576,5 +577,21 @@ mod tests {
         // `Loop` has no condition — the header's own terminator is never
         // `Branch` the way a `while` header's is; it falls straight into
         // the body block, which is where the nested `if` lives.
+    }
+
+    #[test]
+    fn unsafe_block_is_scope_transparent() {
+        let arena = AstArena::new();
+        let unsafe_body = block(&arena, &[stmt(StmtKind::Return(None))]);
+        let body = block(&arena, &[stmt(StmtKind::Unsafe(arena.alloc(unsafe_body)))]);
+        let decl = func(&arena, body);
+        let cfg = build(&arena.alloc(decl));
+
+        // Same shape as straight_line_is_one_block: `unsafe { return }`
+        // should behave exactly like `return` did without the wrapper —
+        // proves the body's statements got inlined, not treated as one
+        // opaque block that silently swallows the `return`.
+        assert_eq!(cfg.blocks.len(), 1, "unsafe body should inline, not create an opaque block");
+        assert!(matches!(cfg.block(cfg.entry).terminator, Terminator::Return));
     }
 }
