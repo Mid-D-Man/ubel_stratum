@@ -2990,8 +2990,6 @@ impl<'a> InferCtx<'a> {
                     if pa != pb { return false; }
                     Some((*ia, *ib))
                 }
-                (SemaType::Pool(ia),   SemaType::Pool(ib))   => Some((*ia, *ib)),
-                (SemaType::Handle(ia), SemaType::Handle(ib)) => Some((*ia, *ib)),
                 // `null` also compares against a PoolRef/ArenaRef-wrapped
                 // Optional — `AcquireHandle`'s result (MEMORY_MODEL.md
                 // §11) needs the escape-boundary wrap applied around the

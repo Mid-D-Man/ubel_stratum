@@ -8,13 +8,18 @@ pub use bumpalo::collections::Vec as BumpVec;
 ///
 /// Usage pattern:
 /// ```
+/// use ubel_stratum::ast::{AstArena, Expr, ExprKind, Literal, Span, Stmt, StmtKind};
+///
 /// let arena = AstArena::new();
-/// let expr  = arena.alloc(ExprKind::IntLit(42));
+/// let span  = Span::new(0, 0, 1, 1);
+/// let expr  = arena.alloc(Expr { kind: ExprKind::Lit(Literal::Int(42)), span });
+/// let stmt  = Stmt { kind: StmtKind::Expr(expr), span };
 /// let stmts = {
 ///     let mut v = arena.vec::<Stmt>();
 ///     v.push(stmt);
 ///     v.into_bump_slice()
 /// };
+/// assert_eq!(stmts.len(), 1);
 /// ```
 pub struct AstArena {
     bump: Bump,
