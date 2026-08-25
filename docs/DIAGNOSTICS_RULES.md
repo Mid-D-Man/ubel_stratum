@@ -233,6 +233,19 @@ a fresh prefix and renumbered from 1, since these seven no longer
 share a namespace with `TYPE-1xx`. See §9 for why that's still
 consistent with "never renumber an existing code" above.
 
+### BORROW-0xx — LOW-tier borrow checking, `errors/borrow/mod.rs`
+
+| Code | Variant |
+|---|---|
+| BORROW-001 | ConflictingAccessWhileBorrowed |
+
+New family, Phase D of the borrow checker (`sema/borrow_check.rs`) — not
+a split-out of an existing enum the way `TIER-0xx` was. Only one variant
+today; see `borrow_check.rs`'s own module doc for the checker's current
+scope (mutable loans only, traceable-carrier loans only, no
+intra-statement checking yet) — each of those boundaries is a real,
+separate, documented follow-up, not silently dropped.
+
 **Adding a new variant:** append at the end of its class's range
 (don't renumber to keep things "tidy" — see above), add the `code()`
 match arm, add a row to the relevant table above, and add an entry to
@@ -307,6 +320,9 @@ larger effort, not started.
 - `TIER-011` `PoolRefEscapesBoundary` — *Error*. "value of type `&pool T` is scoped to a `with pool<T>(count) { }` block and cannot outlive it" — MEMORY_MODEL.md §10, same escape-boundary mechanism as `ArenaRefEscapesBoundary` (`check_assign_arena_escape`/`scope_mismatch_side`, generalized to check both scope kinds off one shared comparison, branching only at the report call so the wording stays accurate). Applies to `Pool<T>` itself and to anything acquired from it (`Handle<T>` results are re-wrapped in the receiver's own `PoolRef`, same as every other allocating instance method). Suggestion: copy the data out before the block ends, or restructure with the callback pattern.
 - `TIER-012` `MidReturnContainsPoolRef` — *Error*. "MID-tier function's return type contains a pool-lifetime reference" — MEMORY_MODEL.md §10, generalized from `MidReturnContainsArenaRef` alongside `scope_ref_kind`. Like its arena counterpart, real consulted infrastructure that can't currently be *triggered* by any writable fixture — there's no surface syntax yet to write `Pool<T>` as an explicit return-type annotation (§10's "Known gap"), so the reachable path for this exact mistake is the escape-boundary check via assignment instead.
 - `TIER-013` `PoolConstructedOutsideBlock` — *Error*. "`Pool.new()` requires an enclosing `with pool<T>(count) { }` block" — MEMORY_MODEL.md §10. Unlike every other builtin constructor, `Pool.new()` has no generic argument of its own to infer element type or capacity from; it reads both from `current_pool()`, which is `None` outside any pool block. Suggestion: call `Pool.new()` inside a `with pool<T>(count) { }` block.
+
+**BORROW-0xx**
+- `BORROW-001` `ConflictingAccessWhileBorrowed` — *Error*. "cannot use `place` while it is mutably borrowed" — MEMORY_MODEL.md §9, `sema/borrow_check.rs` (Phase D). Fires when a `&mut` loan's `bound_place` (the local it's assigned to, e.g. `p` in `let p = &mut n`) is still *live* — will be read again later, per backward liveness over the CFG — at the point some other statement conflictingly reads or re-borrows the loan's place. Liveness-gated deliberately: a conflicting read after the loan's carrier has already had its last use is NOT flagged (see `ok_borrow_dead_after_last_use.ubl`) — that's the actual non-lexical-scope behavior this checker is built around, not a naive "any candidate is an error" rule. Secondary span points at the loan's own `&mut` site ("mutable borrow occurs here"). Suggestion: move the conflicting use before the borrow's last use, or restructure so the borrow doesn't need to outlive it. Scope, today: only mutable loans are checked (two shared loans never conflict with each other, and this checker doesn't yet distinguish "plain read" from "new borrow" among conflicting accesses precisely enough to safely check the shared-then-mutable-elsewhere direction — real, separate follow-up); only loans bound to a traceable local are checked (a borrow consumed inline, e.g. a bare call argument, has no carrier that could still be "live" later); intra-statement conflicts (two loans issued at the very same point, e.g. `f(&n, &mut n)`) are excluded upstream by `facts::collect` itself and never reach this check at all — a distinct, separate, not-yet-built piece of work.
 
 ---
 

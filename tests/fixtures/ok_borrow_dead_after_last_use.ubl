@@ -1,0 +1,25 @@
+// tests/fixtures/ok_borrow_dead_after_last_use.ubl
+// Phase D — the liveness/loan fixed point (crates/core/src/sema/borrow_check.rs).
+//
+// Same shape as err_borrow_conflict_while_live.ubl, EXCEPT `p`'s last use
+// (`*p`) comes strictly BEFORE the later read of `n` — so by the time
+// `let y = n` runs, `p` is already dead. This is the actual non-lexical-
+// scope behavior NLL is named for: a naive "any candidate invalidation is
+// an error" checker would wrongly reject this. This fixture exists
+// specifically to prove liveness gating, not just candidate detection, is
+// what's running.
+//
+// Expected: sema OK (zero errors).
+
+@tier(low)
+fn dead_after_last_use() int {
+    let mut n = 10
+    let p = &mut n
+    let doubled = *p
+    let y = n
+    return doubled + y
+}
+
+fn main() void {
+    let result = dead_after_last_use()
+}

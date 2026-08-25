@@ -365,11 +365,12 @@ didn't exist before this section had any type checking at all.
 
 ---
 
-## 9. LOW Tier — Reference Syntax Landed, Checker Still Phase 4
+## 9. LOW Tier — Reference Syntax, Loan-Based Borrow Checking Landed; Move Tracking Still Ahead
 
-`OwnedRef` and the actual borrow *checker* are marked "Phase 4" in the
-codebase's own comments — that part's still true. The reference *type*
-and its surface syntax are not; see below.
+`OwnedRef` and full move/ownership checking are still marked "Phase 4" in
+the codebase's own comments — that part's still true. The reference
+*type*, its surface syntax, and loan-based borrow *checking* (the
+`&`/`&mut` half of the story) are not; see below.
 
 ✅ **Implemented.** A `@tier(low)` function that constructs a builtin
 collection (`List.new()`, `Dictionary.new()`, `Queue.new()`, `Stack.new()`)
@@ -423,13 +424,14 @@ interaction to add.
 
 References are valid in **every** tier, not LOW-only — a HIGH/MID function
 handing out a read-only view is fine on its own terms. What's still LOW-only
-is *enforcement*, and none exists yet:
+is *enforcement*, and it's now partially real:
 
-🚧 **Not implemented — everything that makes a reference actually safe.**
-No loan tracking, no liveness, no `outlives` checking (the parser has
+🚧 **Not implemented — the move half of the story.** No move/ownership
+checking (`Unique<T>` semantics), no `outlives` checking (the parser has
 parsed `[lifetime L, lifetime M where M outlives L]` on functions and `edge
 struct` for a while — see `PARSER_RULES.md` §5.1's neighbor content — but
-nothing in sema consumes it yet), no move checking.
+nothing in sema consumes it yet). The loan half — what's actually landed
+below — doesn't need either of these to be useful on its own.
 
 ✅ **Implemented — Phase A, the CFG builder** (`sema/cfg.rs`). Builds a
 statement-granularity control-flow graph for one function body: real
@@ -448,12 +450,12 @@ outside a loop degrades to `Terminator::Unreachable` rather than
 crashing — nothing upstream validates that yet, a real gap, tracked
 separately). 6 unit tests in `sema/cfg.rs` (straight-line, if/else-both-
 return, if-no-else convergence, while-loop shape, a nested-loop smoke
-test, and the `unsafe`-transparency fix). **Not yet wired into
-`sema::analyse`** — still no check to run against it; that's Phase D.
+test, and the `unsafe`-transparency fix). Wired into `sema::analyse` by
+Phase D, below — this module only ever built the graph itself.
 
 ✅ **Implemented — Phase C, fact collection** (`sema/facts.rs`). Walks
 the CFG's statements producing the raw inputs Phase D's fixed point
-will consume: every `Borrow` expression becomes a `Loan` (place +
+consumes: every `Borrow` expression becomes a `Loan` (place +
 mutability + issue point — found via a hand-written expression walker,
 since `AstVisitor` doesn't exist yet, PARSER_RULES.md §10 still marks it
 "proposed, future"), every reassignment of a loan's place becomes a
@@ -470,24 +472,69 @@ recorded as real loans (nothing vanishes) but as `Place::Unknown`, with
 no conflict detection, an under-approximation Phase D must treat as
 "insufficient information," never as "safe"; **`loan_invalidated_at` is
 a pure syntactic scan, not CFG-reachability-aware** — over-approximate
-on purpose, since Phase D already needs full liveness for its own
-propagation and is the natural place for reachability precision to
-live. 7 unit tests, all correct on the first real run: single/mutable
-loans, kill-via-reassignment, invalidation-via-read, no-false-positives,
-multiple loans in one call's argument list (proves the walker correctly
-descends into `Call` args — the exact class of gap `can_start_expr` and
-the `where`/`.query()` collision taught this project to watch for), and
-the `x = x + 1` conflict-not-kill distinction. **Also not yet wired
-into `sema::analyse`.** That's still Phase D — the actual liveness/loan
-fixed point, seeded by the `outlives` facts §9 has referenced since the
-lifetime-parameter parser work.
+on purpose, since Phase D needs full liveness for its own propagation
+anyway and is the natural place for reachability precision to live. 12
+unit tests (7 from the original delivery — single/mutable loans,
+kill-via-reassignment, invalidation-via-read, no-false-positives,
+multiple loans in one call's argument list proving the walker correctly
+descends into `Call` args, and the `x = x + 1` conflict-not-kill
+distinction — plus 5 added alongside Phase D for `bound_place`/
+`place_defined_at`, below).
 
-`mixed_signature` in
-`tests/fixtures/ok_reference_dual_spelling.ubl` takes two shared and two
-mutable references to the *same* variable in one call — a real aliasing
-violation a finished checker should reject — and passes today, on purpose,
-because there's nothing yet to reject it. Expected to become an `err_`
-fixture once the checker lands, not a regression when it does.
+✅ **Implemented — Phase D, the liveness/loan fixed point**
+(`sema/borrow_check.rs`). Wires `cfg::build` → `facts::collect` → the
+actual dataflow into `sema::analyse` as its own pass, for every
+`@tier(low)` free function. The real algorithm: a candidate conflict
+from `loan_invalidated_at` is only a genuine error if the loan is still
+*live* — **reaching** (forward propagation from `issued_at`, stopping at
+`loan_killed_at` points and at any point where the loan's own carrier
+local gets rebound to something else) **and** its carrier is **live**
+(standard backward live-variable dataflow: will that reference-typed
+local actually be read again?). This is the literal mechanism behind
+real non-lexical-scope behavior: `let p = &mut n; let last = *p; n = 5;`
+is accepted because `p`'s last use is strictly before `n = 5` — the loan
+is already dead by the time `n` gets touched again. `facts.rs` gained
+two small, additive facts to make this well-defined: `Loan::bound_place`
+(which local, if any, a borrow is directly bound to — `Place::Unknown`
+for a borrow consumed inline, e.g. a bare call argument, which can never
+be "live" past its own issue point) and `Facts::place_defined_at`
+(general def-site tracking, used both as ordinary liveness's "def" side
+and to detect a loan's carrier being rebound). 6 unit tests in
+`borrow_check.rs`, including one proving the two-level point graph
+correctly crosses an `if`/`else` branch-and-converge boundary, not just
+straight-line code — all correct on the first real run. Two new `.ubl`
+fixtures exercise the wiring end-to-end:
+`err_borrow_conflict_while_live.ubl` (a genuine liveness-gated
+violation) and `ok_borrow_dead_after_last_use.ubl` (same shape, but the
+carrier's last use comes *before* the conflicting access — proves
+liveness-gating, not just candidate detection, is what's actually
+running; a naive "any candidate is an error" checker would wrongly
+reject it).
+
+Scope, stated plainly, same spirit as `cfg.rs`/`facts.rs` above: **only
+mutable loans are checked** — `facts::classify_access` doesn't
+distinguish "plain read" from "new borrow" among conflicts, and two
+*shared* loans of the same place never actually conflict with each
+other, so checking every candidate regardless of mutability would
+produce real false positives on valid shared-borrow code (a correctness
+bug, not just imprecision, unlike the under-approximations elsewhere in
+this checker). The real gap this leaves: a shared loan still live when a
+*later* `&mut` of the same place appears elsewhere isn't caught yet —
+documented, real, separate follow-up. **Only loans bound to a traceable
+local are checked** — see `Loan::bound_place` above. **Intra-statement
+conflicts are still out of scope**: `facts::collect` itself excludes a
+loan's own `issued_at` point from its invalidation candidates
+(`if point == loan.issued_at { continue; }`), so Phase D never even sees
+two loans issued at the same point as a candidate — `mixed_signature` in
+`tests/fixtures/ok_reference_dual_spelling.ubl` (two shared and two
+mutable references to the same variable in one call) still passes today,
+unchanged by this delivery, for exactly this reason. A same-point
+multi-loan check is a distinct, separate, not-yet-built piece of work,
+not something this delivery claims to fix. **Free functions only** —
+`Item::Impl`/`Item::Extend` methods aren't walked yet; `cfg::build`/
+`facts::collect` only accept `&FunctionDecl` today, and wiring methods
+in needs broader plumbing than Phase D's building blocks currently give
+it.
 
 Assignment *through* a dereferenced reference (`*p = v`/`deref p = v`) is
 also not implemented — it needs a real runtime place representation (a
@@ -500,9 +547,9 @@ aliasing already behaves correctly for free; it's specifically
 mutation-through-a-reference for scalar-typed values that's the honest gap.
 
 The actual borrow-checking algorithm — CFG construction, loan/liveness
-fixed-point propagation seeded by the already-parsed `outlives` facts,
-move tracking — is still ahead. This delivery is the syntax and structural-
-type layer it needs to stand on, nothing more.
+fixed-point propagation — is landed for the loan half described above.
+Move tracking, seeded by the already-parsed `outlives` facts, is what's
+still ahead.
 
 ---
 

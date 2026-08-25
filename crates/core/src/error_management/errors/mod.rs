@@ -12,9 +12,11 @@ pub mod parse;
 pub mod naming;
 pub mod types;
 pub mod tier;
+pub mod borrow;
 
 pub use lexical::{LexicalError, StringType};
 pub use parse::{ParseContext, ParseError};
 pub use naming::NameError;
 pub use types::TypeError;
 pub use tier::TierError;
+pub use borrow::BorrowError;

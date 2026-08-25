@@ -1,0 +1,21 @@
+// tests/fixtures/err_borrow_conflict_while_live.ubl
+// Phase D — the liveness/loan fixed point (crates/core/src/sema/borrow_check.rs).
+//
+// `p` mutably borrows `n`, and `p` is read again AFTER the conflicting
+// statement (`return *p + y`) — so the loan is still live at the point
+// `let y = n` reads `n` directly. A real conflicting access while a live
+// `&mut` is outstanding.
+//
+// Expected: sema FAIL (ConflictingAccessWhileBorrowed, BORROW-001).
+
+@tier(low)
+fn conflict_while_live() int {
+    let mut n = 10
+    let p = &mut n
+    let y = n
+    return *p + y
+}
+
+fn main() void {
+    let result = conflict_while_live()
+}

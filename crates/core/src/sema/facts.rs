@@ -1,10 +1,11 @@
 // crates/core/src/sema/facts.rs
 //! Phase C of the LOW-tier borrow checker: fact collection over the CFG
 //! `cfg.rs` builds. Produces the raw, AST-driven inputs Phase D's
-//! liveness/loan fixed point will consume. Like `cfg.rs`, this module
-//! does no fixed-point computation itself and isn't wired into
-//! `sema::analyse` yet — there's still no check to run its output
-//! against. That's Phase D.
+//! liveness/loan fixed point consumes (see `borrow_check.rs`). Like
+//! `cfg.rs`, this module does no fixed-point computation itself — it's a
+//! pure, cheap, per-function AST scan; the actual dataflow lives entirely
+//! in `borrow_check.rs`, which wires both this and `cfg.rs` into
+//! `sema::analyse`.
 //!
 //! ## Scope, stated plainly
 //!
@@ -45,6 +46,29 @@
 //! belongs. A candidate invalidation Phase D's liveness later shows is
 //! unreachable from the loan just never gets combined into a real error;
 //! over-approximating here costs a few discarded candidates, nothing more.
+//!
+//! ## Amendment for Phase D (`Loan::bound_place`, `Facts::place_defined_at`)
+//!
+//! Added once Phase D's actual needs became concrete — liveness-gating a
+//! loan requires knowing which *reference-typed local* might still read
+//! it, and this module previously only recorded what a loan borrows
+//! *from*, never what it's bound *to*. Two small, additive facts:
+//!
+//! - `Loan::bound_place` — for a bare `let p = &x` / `p = &x`, the
+//!   traceable local `p`. `Place::Unknown` when the borrow is consumed
+//!   inline (a call argument, a return expression, nested in a larger
+//!   expression) — there's no local Phase D can ask "is this still going
+//!   to be used later" about, so such loans are only ever live at their
+//!   own `issued_at` point (which `loan_invalidated_at` already excludes
+//!   from candidates — see its own scan below). Under-approximation, not
+//!   unsound, same spirit as `Place::Unknown` elsewhere in this module.
+//! - `Facts::place_defined_at` — every point where a *simple local*
+//!   place is freshly bound or reassigned. General-purpose, not
+//!   loan-specific: Phase D uses it both as the "def" side of ordinary
+//!   liveness for `bound_place`s, and to know when a loan's own
+//!   `bound_place` stops referring to that loan (rebound to a new value,
+//!   including a new loan) — a kill `loan_killed_at` alone can't express,
+//!   since that only tracks reassignment of the *borrowed-from* place.
 
 use std::collections::HashMap;
 
@@ -88,6 +112,12 @@ pub struct LoanId(pub u32);
 pub struct Loan<'ast> {
     pub id: LoanId,
     pub place: Place<'ast>,
+    /// The local this loan's resulting reference value is directly bound
+    /// to — `let bound_place = &place` / `bound_place = &place`.
+    /// `Place::Unknown` when the borrow is consumed inline (a call
+    /// argument, a return expression, nested in a larger expression) —
+    /// see the module doc's Phase D amendment note.
+    pub bound_place: Place<'ast>,
     pub mutable: bool,
     pub issued_at: Point,
     pub span: Span,
@@ -102,6 +132,11 @@ pub struct Facts<'ast> {
     /// Points where some access conflicts with a loan's terms. See the
     /// module doc's over-approximation note.
     pub loan_invalidated_at: HashMap<LoanId, Vec<Point>>,
+    /// Every point where a *simple local* place is freshly bound
+    /// (`let place = ...`) or reassigned (`place = ...`). General-
+    /// purpose, not loan-specific — see the module doc's Phase D
+    /// amendment note.
+    pub place_defined_at: HashMap<Place<'ast>, Vec<Point>>,
 }
 
 /// Collects every loan/kill/invalidation-candidate fact for one
@@ -115,7 +150,28 @@ pub fn collect<'ast>(cfg: &Cfg<'ast>) -> Facts<'ast> {
     for block in &cfg.blocks {
         for (stmt_index, stmt) in block.stmts.iter().enumerate() {
             let point = Point { block: block.id, stmt_index };
+
+            if let Some(defined) = stmt_defines_place(stmt) {
+                facts.place_defined_at.entry(defined).or_default().push(point);
+            }
+
+            // If this statement directly binds a *bare* borrow to a
+            // simple local (`let p = &x` / `p = &x` — value is a Borrow
+            // node itself, not one nested inside a call or another
+            // expression), remember which place it binds to. `walk_expr`
+            // visits a node before recursing into it, so when this shape
+            // matches, the very first loan `collect_loans_in_expr` pushes
+            // below is always this outer borrow, never a nested one.
+            let bare_target = stmt_bare_borrow_target(stmt);
+            let loans_before = facts.loans.len();
+
             for_each_top_expr(stmt, &mut |e| collect_loans_in_expr(e, point, &mut facts.loans, &mut next_id));
+
+            if let Some(target) = bare_target {
+                if let Some(loan) = facts.loans.get_mut(loans_before) {
+                    loan.bound_place = target;
+                }
+            }
         }
     }
 
@@ -148,8 +204,8 @@ fn collect_loans_in_expr<'ast>(
             let id = LoanId(*next_id);
             *next_id += 1;
             loans.push(Loan {
-                id, place: expr_as_place(place), mutable: *mutable,
-                issued_at: point, span: e.span,
+                id, place: expr_as_place(place), bound_place: Place::Unknown,
+                mutable: *mutable, issued_at: point, span: e.span,
             });
         }
     });
@@ -188,11 +244,20 @@ fn classify_access<'ast>(stmt: &'ast Stmt<'ast>, place: Place<'ast>) -> Access {
         }
     }
 
+    if stmt_reads_place(stmt, place) { Access::Conflict } else { Access::None }
+}
+
+/// Does `stmt` (anywhere among its own top-level expressions — see
+/// `for_each_top_expr`'s scope) read `place`? Shared by `classify_access`
+/// above and, since Phase D's per-`bound_place` liveness needs the exact
+/// same "does this statement use X" question for an arbitrary local, by
+/// `borrow_check.rs` too.
+pub(crate) fn stmt_reads_place<'ast>(stmt: &'ast Stmt<'ast>, place: Place<'ast>) -> bool {
     let mut found = false;
     for_each_top_expr(stmt, &mut |e| {
         if expr_reads_place(e, place) { found = true; }
     });
-    if found { Access::Conflict } else { Access::None }
+    found
 }
 
 /// Does `expr` (or anything it directly contains, per `walk_expr`'s scope)
@@ -207,6 +272,55 @@ fn expr_reads_place<'ast>(expr: &'ast Expr<'ast>, place: Place<'ast>) -> bool {
         }
     });
     found
+}
+
+/// If `stmt` freshly binds or reassigns a *simple local* place — `let
+/// name = ...` or `name = ...` — returns that place. `None` for
+/// destructuring bindings, field/index assignment targets, and any
+/// statement shape that isn't a direct binding at all; see the module
+/// doc's `Place::Unknown`-precision-only-for-simple-locals note. Used
+/// both to populate `Facts::place_defined_at` and, by `borrow_check.rs`,
+/// as the "def" side of `bound_place` liveness.
+pub(crate) fn stmt_defines_place<'ast>(stmt: &'ast Stmt<'ast>) -> Option<Place<'ast>> {
+    match &stmt.kind {
+        StmtKind::Let { binding: crate::ast::statements::BindingTarget::Ident(name), .. } => {
+            Some(Place::Local(name))
+        }
+        StmtKind::Expr(e) => {
+            if let ExprKind::Assign { target, .. } = &e.kind {
+                match expr_as_place(target) {
+                    p @ Place::Local(_) => Some(p),
+                    Place::Unknown => None,
+                }
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+/// If `stmt` directly binds a *bare* borrow expression to a simple local
+/// (`let p = &x` / `p = &x` — the value is a `Borrow` node itself, not
+/// nested inside a call or another expression), returns that local's
+/// place. This is how `collect` distinguishes "traceable reference,
+/// worth Phase D liveness-tracking" loans from "consumed inline" ones —
+/// see `Loan::bound_place`'s doc.
+fn stmt_bare_borrow_target<'ast>(stmt: &'ast Stmt<'ast>) -> Option<Place<'ast>> {
+    let (target, value) = match &stmt.kind {
+        StmtKind::Let { binding: crate::ast::statements::BindingTarget::Ident(name), value, .. } => {
+            (Place::Local(name), *value)
+        }
+        StmtKind::Expr(e) => {
+            if let ExprKind::Assign { op: crate::ast::common::AssignOp::Assign, target, value } = &e.kind {
+                (expr_as_place(target), *value)
+            } else {
+                return None;
+            }
+        }
+        _ => return None,
+    };
+    if matches!(value.kind, ExprKind::Borrow { .. }) { Some(target) } else { None }
 }
 
 // ── Expression walking ──────────────────────────────────────────────────
@@ -474,5 +588,100 @@ mod tests {
             "x = x + 1 reads the old x — a real conflict against &mut x");
         assert!(facts.loan_killed_at.get(&facts.loans[0].id).is_none(),
             "the conflict path is exclusive of the plain-kill path — see classify_access");
+    }
+
+    // ── Phase D amendment: bound_place / place_defined_at ──────────────
+
+    #[test]
+    fn bare_borrow_bound_to_a_let_records_bound_place() {
+        let arena = AstArena::new();
+        let x = ident(&arena, "x");
+        let stmts = [let_stmt(&arena, "p", borrow(&arena, true, x))];
+        let decl = arena.alloc(func(&arena, &stmts));
+        let facts = facts_for(decl);
+
+        assert_eq!(facts.loans.len(), 1);
+        assert_eq!(facts.loans[0].bound_place, Place::Local("p"),
+            "let p = &x should record p as the loan's traceable carrier");
+    }
+
+    #[test]
+    fn borrow_nested_in_a_call_has_unknown_bound_place() {
+        let arena = AstArena::new();
+        let x = ident(&arena, "x");
+        let callee = ident(&arena, "consume");
+        let args: &[Arg] = arena.alloc_slice_copy(&[
+            Arg { kind: ArgKind::Positional(borrow(&arena, false, x)), span: Z },
+        ]);
+        let call = arena.alloc(Expr { kind: ExprKind::Call { callee, args }, span: Z });
+        let stmts = [let_stmt(&arena, "z", call)];
+        let decl = arena.alloc(func(&arena, &stmts));
+        let facts = facts_for(decl);
+
+        assert_eq!(facts.loans.len(), 1);
+        assert_eq!(facts.loans[0].bound_place, Place::Unknown,
+            "a borrow consumed inline as a call argument has no traceable carrier");
+    }
+
+    #[test]
+    fn bare_borrow_bound_via_plain_assignment_records_bound_place() {
+        let arena = AstArena::new();
+        let x = ident(&arena, "x");
+        let p_decl = ident(&arena, "p"); // pre-declared elsewhere; only the assignment matters here
+        let _ = p_decl;
+        let assign = arena.alloc(Expr {
+            kind: ExprKind::Assign {
+                op: AssignOp::Assign,
+                target: ident(&arena, "p"),
+                value: borrow(&arena, true, x),
+            },
+            span: Z,
+        });
+        let stmts = [Stmt { kind: StmtKind::Expr(assign), span: Z }];
+        let decl = arena.alloc(func(&arena, &stmts));
+        let facts = facts_for(decl);
+
+        assert_eq!(facts.loans.len(), 1);
+        assert_eq!(facts.loans[0].bound_place, Place::Local("p"),
+            "p = &x (plain assignment, not a let) should also record p as the carrier");
+    }
+
+    #[test]
+    fn place_defined_at_records_let_and_assignment_targets() {
+        let arena = AstArena::new();
+        let stmts = [
+            let_stmt(&arena, "n", lit_int(&arena, 1)),
+            reassign_stmt(&arena, "n", lit_int(&arena, 2)),
+        ];
+        let decl = arena.alloc(func(&arena, &stmts));
+        let facts = facts_for(decl);
+
+        let defs = facts.place_defined_at.get(&Place::Local("n"));
+        assert_eq!(defs.map(|v| v.len()), Some(2),
+            "both the initial let and the later reassignment define n");
+    }
+
+    #[test]
+    fn rebinding_a_carrier_is_recorded_independently_of_the_original_loan() {
+        // `let p = &x; let p = &y;` — the second statement rebinds p to a
+        // brand new loan. Phase D needs place_defined_at to see this as a
+        // def of p (ending the FIRST loan's association with p), even
+        // though it's simultaneously the SECOND loan's own issued_at.
+        let arena = AstArena::new();
+        let x = ident(&arena, "x");
+        let y = ident(&arena, "y");
+        let stmts = [
+            let_stmt(&arena, "p", borrow(&arena, false, x)),
+            let_stmt(&arena, "p", borrow(&arena, false, y)),
+        ];
+        let decl = arena.alloc(func(&arena, &stmts));
+        let facts = facts_for(decl);
+
+        assert_eq!(facts.loans.len(), 2);
+        assert_eq!(facts.loans[0].bound_place, Place::Local("p"));
+        assert_eq!(facts.loans[1].bound_place, Place::Local("p"));
+        let defs = facts.place_defined_at.get(&Place::Local("p"));
+        assert_eq!(defs.map(|v| v.len()), Some(2),
+            "p is defined twice — once per let — even though both loans share the same bound_place");
     }
 }

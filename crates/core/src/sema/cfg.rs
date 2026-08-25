@@ -1,9 +1,10 @@
 // crates/core/src/sema/cfg.rs
 //! Control-flow graph for `@tier(low)` function bodies — Phase A of the
 //! borrow checker (see docs/MEMORY_MODEL.md §9). This module ONLY builds
-//! the graph; it isn't wired into `sema::analyse` yet, because there's no
-//! check to run against it. That's Phase C (fact collection) and Phase D
-//! (the liveness/loan fixed point), still ahead.
+//! the graph; the actual checking lives in `facts.rs` (Phase C, fact
+//! collection over this graph) and `borrow_check.rs` (Phase D, the
+//! liveness/loan fixed point — also where this graph and `facts.rs`'s
+//! output get wired into `sema::analyse`).
 //!
 //! ## Scope, stated plainly
 //!
