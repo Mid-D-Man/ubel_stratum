@@ -31,6 +31,7 @@ pub mod expressions;
 pub mod statements;
 pub mod declarations;
 pub mod root;
+pub mod visitor;
 
 // ── Flat re-exports ───────────────────────────────────────────────
 

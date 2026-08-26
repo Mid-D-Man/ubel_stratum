@@ -69,10 +69,25 @@
 //!   `bound_place` stops referring to that loan (rebound to a new value,
 //!   including a new loan) — a kill `loan_killed_at` alone can't express,
 //!   since that only tracks reassignment of the *borrowed-from* place.
+//!
+//! ## Retrofit onto `ast::visitor::AstVisitor`
+//!
+//! This module's own hand-rolled `walk_expr` (deep recursion into one
+//! expression tree) is now a thin adapter over the shared
+//! `ast::visitor::walk_expr` instead of a second copy of the same
+//! `ExprKind` match — see `ScopedExprWalker` below for exactly how its
+//! opacity boundary (control-flow-as-*expression* stays undescended,
+//! same one `cfg.rs` draws) survives the retrofit unchanged.
+//! `for_each_top_expr` deliberately stays hand-written rather than
+//! retrofitted onto the shared `walk_stmt` — see the comment directly
+//! above it for the real, subtle reason (the shared walker's `if`/`match`
+//! handling reaches into branch *bodies* this module was never meant to
+//! see, since `cfg.rs` itself discards a `then expr`-shaped body without
+//! ever recording it as a statement anywhere).
 
 use std::collections::HashMap;
 
-use crate::ast::expressions::{ArgKind, Expr, ExprKind, OptionalAccess};
+use crate::ast::expressions::{Expr, ExprKind};
 use crate::ast::statements::{Stmt, StmtKind};
 use crate::lexer::Span;
 use crate::sema::cfg::{BlockId, Cfg};
@@ -324,6 +339,26 @@ fn stmt_bare_borrow_target<'ast>(stmt: &'ast Stmt<'ast>) -> Option<Place<'ast>> 
 }
 
 // ── Expression walking ──────────────────────────────────────────────────
+//
+// `for_each_top_expr` stays hand-written, not retrofitted onto the
+// shared `ast::visitor::walk_stmt` — deliberately. That shared walker's
+// `if`/`match` handling also visits `then expr`/bare-match-arm-expr
+// branch *bodies* (not just conditions/scrutinees), because passes that
+// want full depth need that. This module's scope boundary is narrower:
+// `cfg.rs` never even records a `then expr`-shaped branch body as a
+// statement anywhere (`build_branch_body`'s `BranchBody::Expr(_) =>
+// (entry, Some(entry))` — the expression itself is discarded, the block
+// stays empty), so this module has no CFG point to attach such a finding
+// to even if it looked. Making `for_each_top_expr` reach past what
+// `cfg.rs` itself tracks would be a real scope *widening*, not a refactor
+// — so it keeps its own explicit, narrower dispatch below.
+//
+// `walk_expr` (deep recursion into a single expression tree) is the part
+// that safely retrofits: its opacity boundary (Lambda/Block/If/Match-as-
+// *expression* are opaque, matching `cfg.rs`'s identical one) can be
+// enforced as a single check in one place, with everything else handed
+// off to the shared walker instead of hand-rolling every `ExprKind` arm
+// a second time.
 
 /// Extracts the direct, non-block-body expression(s) a statement carries
 /// — e.g. an `if`'s condition, not its branch bodies. Branch/loop bodies
@@ -355,49 +390,37 @@ fn for_each_top_expr<'ast>(stmt: &'ast Stmt<'ast>, f: &mut impl FnMut(&'ast Expr
     }
 }
 
-/// Calls `visit` on `expr` and recursively on every sub-expression it
-/// directly contains. Scope matches `cfg.rs`'s own precedent: control-
-/// flow constructs used as *expressions* (`if`, `match`, a `{ }` block,
-/// a lambda body) are opaque — not descended into. See the module doc.
-fn walk_expr<'ast>(expr: &'ast Expr<'ast>, visit: &mut impl FnMut(&'ast Expr<'ast>)) {
-    visit(expr);
-    match &expr.kind {
-        ExprKind::Lit(_) | ExprKind::Ident(_) | ExprKind::SelfExpr => {}
-        ExprKind::BinOp { lhs, rhs, .. } => { walk_expr(lhs, visit); walk_expr(rhs, visit); }
-        ExprKind::UnaryOp { operand, .. } => walk_expr(operand, visit),
-        ExprKind::Assign { target, value, .. } => { walk_expr(target, visit); walk_expr(value, visit); }
-        ExprKind::Pipe { left, right } => { walk_expr(left, visit); walk_expr(right, visit); }
-        ExprKind::Call { callee, args } => {
-            walk_expr(callee, visit);
-            for a in *args { walk_arg(a, visit); }
+/// Thin adapter over the shared `ast::visitor::walk_expr` — same public
+/// shape (`expr` plus a `FnMut` callback) this module's `walk_expr` had
+/// before the retrofit, so `collect_loans_in_expr`/`expr_reads_place`
+/// below needed zero changes. The one thing it has to do itself: enforce
+/// this module's opacity boundary (control-flow-as-*expression* isn't
+/// descended into — see the module doc and the comment above
+/// `for_each_top_expr`), since the shared walker is built to go all the
+/// way down for passes that want that.
+struct ScopedExprWalker<'w, 'ast, F: FnMut(&'ast Expr<'ast>)> {
+    visit: &'w mut F,
+    _marker: std::marker::PhantomData<&'ast ()>,
+}
+
+impl<'w, 'ast, F: FnMut(&'ast Expr<'ast>)> crate::ast::visitor::AstVisitor<'ast>
+    for ScopedExprWalker<'w, 'ast, F>
+{
+    fn visit_expr(&mut self, e: &'ast Expr<'ast>) {
+        (self.visit)(e);
+        // Opacity boundary — matches cfg.rs's identical one exactly.
+        if matches!(e.kind, ExprKind::Lambda(_) | ExprKind::Block(_) | ExprKind::If(_) | ExprKind::Match(_)) {
+            return;
         }
-        ExprKind::Field { target, .. } => walk_expr(target, visit),
-        ExprKind::Index { target, index } => { walk_expr(target, visit); walk_expr(index, visit); }
-        ExprKind::OptionalChain { target, access } => {
-            walk_expr(target, visit);
-            if let OptionalAccess::Method { args, .. } = access {
-                for a in *args { walk_arg(a, visit); }
-            }
-        }
-        ExprKind::Try(inner) | ExprKind::Await(inner) | ExprKind::Deref(inner) => walk_expr(inner, visit),
-        ExprKind::Borrow { place, .. } => walk_expr(place, visit),
-        ExprKind::Tuple(items) | ExprKind::Array(items) => { for e in *items { walk_expr(e, visit); } }
-        ExprKind::Dict(entries) => { for e in *entries { walk_expr(e.key, visit); walk_expr(e.value, visit); } }
-        ExprKind::AnonObject(fields) => { for f in *fields { walk_expr(f.value, visit); } }
-        ExprKind::StructLit { fields, .. } => { for f in *fields { walk_expr(f.value, visit); } }
-        ExprKind::OrElse { expr, .. } => walk_expr(expr, visit),
-        ExprKind::As { expr, .. } => walk_expr(expr, visit),
-        ExprKind::ShortDecl { value, .. } => walk_expr(value, visit),
-        // Opaque — see module doc.
-        ExprKind::Lambda(_) | ExprKind::Block(_) | ExprKind::If(_) | ExprKind::Match(_) => {}
+        crate::ast::visitor::walk_expr(self, e);
     }
 }
 
-fn walk_arg<'ast>(arg: &'ast crate::ast::expressions::Arg<'ast>, visit: &mut impl FnMut(&'ast Expr<'ast>)) {
-    match &arg.kind {
-        ArgKind::Positional(e) => walk_expr(e, visit),
-        ArgKind::Named { value, .. } => walk_expr(value, visit),
-    }
+/// Calls `visit` on `expr` and recursively on every sub-expression it
+/// directly contains, respecting this module's opacity boundary.
+fn walk_expr<'ast>(expr: &'ast Expr<'ast>, visit: &mut impl FnMut(&'ast Expr<'ast>)) {
+    use crate::ast::visitor::AstVisitor;
+    ScopedExprWalker { visit, _marker: std::marker::PhantomData }.visit_expr(expr);
 }
 
 // ── Tests ────────────────────────────────────────────────────────────

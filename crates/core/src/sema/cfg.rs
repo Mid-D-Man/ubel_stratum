@@ -45,6 +45,18 @@
 //! builder degrades to `Terminator::Unreachable`. A real
 //! `BreakOutsideLoop`/`ContinueOutsideLoop` diagnostic is a real, small,
 //! separate follow-up (probably `name_resolution.rs`), not solved here.
+//!
+//! **`build_block`'s per-statement dispatch is a hand-written, exhaustive
+//! match — deliberately not an `ast::visitor::AstVisitor` implementation.**
+//! Building a CFG needs `Option<BlockId>`-threaded return values and
+//! early-exit-on-`return`/`break`/`continue` semantics a unit-returning
+//! observer method doesn't fit without an awkward, risk-adding
+//! workaround — see that trait's own doc for the fuller reasoning. What
+//! actually matters for safety — that a *new* `StmtKind` variant can't
+//! silently fall through unhandled the way `unsafe { }` once did here —
+//! comes from the match having no wildcard arm at all, not from going
+//! through a shared visitor: every variant is named explicitly below,
+//! so adding one without updating this function is a compile error.
 
 use crate::ast::declarations::FunctionDecl;
 use crate::ast::expressions::{IfBranchBody, IfExpr, MatchArm, MatchArmBody};
@@ -201,11 +213,24 @@ impl<'ast> Builder<'ast> {
                 StmtKind::Try { body, catch_body, .. } => {
                     current = self.build_try(stmt, body, *catch_body, current)?;
                 }
-                // Let, Expr, Extract, Defer, and anything else not listed
-                // above: straight-line, stays in the current block. This
+                // Straight-line: stays in the current block as-is. This
                 // includes if/match used as *expressions* rather than
-                // statements — see the module doc's scope note.
-                _ => {
+                // statements — see the module doc's scope note. Written
+                // out explicitly, not a wildcard `_ =>` — an exhaustive
+                // match here is the actual fix for the bug class that
+                // motivated `ast::visitor::AstVisitor`'s retrofit
+                // elsewhere: a new `StmtKind` variant with a nested
+                // `Block` now fails to *compile* until it's explicitly
+                // routed to one of the branches above, the same way
+                // `unsafe { }` silently fell through a wildcard here
+                // before it was caught. `build_block`'s own early-exit-
+                // on-return/break/continue, `Option<BlockId>`-threading
+                // shape doesn't retrofit cleanly onto `AstVisitor`'s
+                // unit-returning observer methods — see that trait's own
+                // doc for why — so this dispatch stays hand-written; this
+                // is what closing the actual gap looks like here instead.
+                StmtKind::Let { .. } | StmtKind::Expr(_)
+                | StmtKind::Extract { .. } | StmtKind::Defer(_) => {
                     self.push_stmt(current, stmt);
                 }
             }
