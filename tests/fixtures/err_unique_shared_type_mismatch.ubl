@@ -1,0 +1,17 @@
+// tests/fixtures/err_unique_shared_type_mismatch.ubl
+// Unique<T> and Shared<T> are a genuinely new, orthogonal SemaType axis
+// (docs/MEMORY_MODEL.md §9) — NOT interchangeable even with an identical
+// inner type. This is the actual enforcement of that design decision:
+// passing a Unique<int>-typed parameter where Shared<int> is expected
+// must be a real type error, the same way passing &T where &mut T is
+// expected already is.
+// Expected: sema FAIL (TypeMismatch), at least one type error.
+
+fn take_shared(x: Shared<int>) void {}
+
+fn wrong(x: Unique<int>) void {
+    take_shared(x)
+}
+
+fn main() void {
+}

@@ -2,8 +2,10 @@
 
 **Status:** Decisions below are locked in (discussed and confirmed
 directly). `Pool<T>`'s `.growable()`/`.fifo()`/iteration (§1),
-`InlineList<T>` (§5), and `Linqerizer<T>` (§6) are now implemented —
-everything else is still just the design record. This is also the deferred item already flagged in a prior
+`InlineList<T>` (§5), `Linqerizer<T>` (§6), and `Unique<T>`/`Shared<T>`/
+`SyncShared<T>`'s type-level wiring (below; see `MEMORY_MODEL.md` §9 for
+the full writeup) are now implemented — everything else is still just
+the design record. This is also the deferred item already flagged in a prior
 session's handover: `Hive<T>`, `Unique<T>`/`Shared<T>`/`SyncShared<T>`,
 FFI wrappers (`FfiSpan`/`ExternBuffer`/`MemGuard`), `Span<T>`, and
 tier-aware `List<T>` backend switching were all noted as "deserves a
@@ -14,7 +16,7 @@ that document.
 
 | Question | Decision |
 |---|---|
-| Rust `Box<T>` equivalent naming | **`Unique<T>`** — not `Heap<T>`. The family is `Unique`/`Shared`/`SyncShared`; `Unique`/`Shared`/`SyncShared` all describe *ownership model*, which is the axis that actually matters (and is what the borrow checker cares about). `Heap<T>` would break that pattern by describing *location* instead — and arena/pool are heap-backed too, so "heap" doesn't even uniquely distinguish this type from Ubel's other tiers the way "unique ownership" does. |
+| Rust `Box<T>` equivalent naming | **`Unique<T>`** — not `Heap<T>`. The family is `Unique`/`Shared`/`SyncShared`; `Unique`/`Shared`/`SyncShared` all describe *ownership model*, which is the axis that actually matters (and is what the borrow checker cares about). `Heap<T>` would break that pattern by describing *location* instead — and arena/pool are heap-backed too, so "heap" doesn't even uniquely distinguish this type from Ubel's other tiers the way "unique ownership" does. **Type-level wiring implemented** — three new `SemaType` variants, orthogonal to the tier wrappers the same way `Reference` already is, not nested inside `OwnedRef`. Real type annotations (`Unique<T>`, struct fields, return types) resolve, unify, and display correctly; `Unique<T>`/`Shared<T>` confirmed *not* structurally interchangeable even with an identical inner type. No construction syntax, no runtime `Value` representation, and no tier restriction yet — none of those have enough surrounding surface to design meaningfully until the move checker (still ahead) needs them. Full writeup: `MEMORY_MODEL.md` §9. |
 | FFI boundary wrapper naming | **`FfiSpan`** |
 | Hive-shaped capability | **Extended `Pool<T>`, no separate `Hive<T>` type — implemented.** `.growable()` (block-chained: a new `count`-sized block appended on exhaustion, existing blocks never reallocated/copied) and `for x in pool { }` (skipfield-style, holes skipped — no `.iter()` method needed, matching every other collection). Plus `.fifo()` (oldest-freed-first reuse, opt-in) alongside the growability work since it touched the same free-list code. Matches the project's existing precedent of unifying rather than duplicating (`pool<T>(count)`/`Pool<T>` themselves were explicitly unified for the same reason). |
 | `List<T>` arena-tier `.remove()` | **Swap-remove.** O(1), no reclamation needed (fits arena's append-only nature). Reorders the list, which invalidates a *plain index* into the swapped element — pair with `Handle<T>`-style generational references (same pattern `Pool<T>` already uses) from the start rather than raw indices now and a migration later. |

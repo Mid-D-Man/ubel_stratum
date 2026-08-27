@@ -11,13 +11,14 @@
 //!
 //! **Loans only — no move tracking.** Move/ownership checking
 //! (`Unique<T>` semantics) is real, separate, deliberately-deferred work.
-//! `Unique<T>`/`Shared<T>`/`SyncShared<T>` are locked in by name but have
-//! no concrete wiring yet (see `MEMORY_MODEL.md` §9), so there's no
-//! settled notion yet of exactly which bindings are move-only — building
-//! move tracking against an unsettled ownership-type story would mean
-//! building it twice. Loans (`&`/`ref`, `&mut`/`ref mut`) have a settled
-//! story — real syntax, real structural types (see §5.6) — so that's
-//! what this collects.
+//! `Unique<T>`/`Shared<T>`/`SyncShared<T>` now have real type-level
+//! wiring — three `SemaType` variants, a settled type each move check
+//! could read (see `MEMORY_MODEL.md` §9) — but no *enforcement* pass
+//! reads them yet, and no construction syntax exists for any of the
+//! three, so there's still no settled notion of which *values at
+//! runtime* are move-only. Loans (`&`/`ref`, `&mut`/`ref mut`) have a
+//! fully settled story — real syntax, real structural types (see §5.6),
+//! real checking (`borrow_check.rs`) — so that's what this collects.
 //!
 //! **Places: local bindings only.** `&x` is tracked precisely
 //! (`Place::Local`). `&x.field`, `&arr[i]` are still recorded as real

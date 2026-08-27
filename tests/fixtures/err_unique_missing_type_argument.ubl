@@ -1,0 +1,20 @@
+// tests/fixtures/err_unique_missing_type_argument.ubl
+// Unique<T>/Shared<T>/SyncShared<T> take exactly one type argument — same
+// arity check every other single-argument generic wrapper gets, reusing
+// the existing GenericArgCountMismatch diagnostic rather than a bespoke
+// error path.
+//
+// Expected: sema FAIL (GenericArgCountMismatch), reported TWICE at the
+// same span — not a bug in this feature. Every existing param-level type
+// arity fixture used a `let` binding annotation instead of a function
+// parameter, so this is the first fixture to surface a real, pre-existing,
+// unrelated sema characteristic: a parameter's type annotation is resolved
+// once during signature collection (`collect_fn_sig`) and again during
+// body-seeding (`seed_param`), independently, so any error on a param's
+// own type reports once per resolution. Tracked separately — not
+// something this delivery's scope covers fixing.
+
+fn bad(x: Unique) void {}
+
+fn main() void {
+}

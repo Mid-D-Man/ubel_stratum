@@ -178,6 +178,46 @@ pub enum SemaType {
         inner:    TypeId,
     },
 
+    // ── Ownership model ─────────────────────────────────────────
+    // `Unique<T>`/`Shared<T>`/`SyncShared<T>` — DATASTRUCTURES.md
+    // "Decisions locked in"; MEMORY_MODEL.md §9. Orthogonal to the tier
+    // wrappers (`GcRef`/`ArenaRef`/`OwnedRef`/`PoolRef` answer "where does
+    // this value's memory live"), the same relationship `Reference` above
+    // already has to them: this axis answers "who owns it and how," not
+    // "where does it live." A `Unique<T>` is not itself a place-alias or a
+    // tier tag — it can appear as a struct field, a return type, or be
+    // wrapped in any of the tier/reference wrappers above it, same as any
+    // other type. Move *enforcement* (the actual borrow-checker pass that
+    // reads this to reject a used-after-moved `Unique<T>`) is still
+    // unbuilt — this lands the type only, per facts.rs's own note that
+    // building move tracking against an unsettled ownership-type story
+    // would mean building it twice.
+    //
+    // No dedicated `TypeKind` variant exists for these (unlike
+    // `List`/`Set`/`Queue`/etc.) — plain `Identifier<Args>` parsing
+    // already produces exactly the shape needed
+    // (`TypeKind::Named { path: ["Unique"], args: [T] }`), so
+    // `ast_type_to_sema` special-cases the three names directly instead
+    // of adding parser surface for something the grammar already parses.
+    //
+    // Single-owner, move-only (`Box<T>`-shaped). No `mutable` field of its
+    // own — mutability of a `Unique`-owned value is a property of its
+    // *binding* (`let` vs `let mut`), not of the wrapper, matching how a
+    // plain (unwrapped) value's mutability already works.
+    Unique(TypeId),
+    /// Reference-counted, shared, clone-based (`Rc<T>`-shaped). Multiple
+    /// owners are legitimate by construction, so this is never subject to
+    /// move-checking the way `Unique<T>` is — cloning, not moving, is the
+    /// operation that matters here.
+    Shared(TypeId),
+    /// Atomically reference-counted, shared, `Send`+`Sync` (`Arc<T>`-
+    /// shaped). Same non-move semantics as `Shared<T>`; kept as a
+    /// distinct variant (not a `Shared<T>` with a flag) purely so
+    /// diagnostics and any future `Send`/`Sync` boundary check can name it
+    /// accurately, same reasoning `PoolRef` was kept distinct from
+    /// `ArenaRef` for.
+    SyncShared(TypeId),
+
     // ── Function types ───────────────────────────────────────────
     Function {
         params:      Vec<TypeId>,
@@ -231,7 +271,10 @@ impl SemaType {
             | SemaType::Pool(t)
             | SemaType::Handle(t)
             | SemaType::OwnedRef { inner: t, .. }
-            | SemaType::Reference { inner: t, .. } => {
+            | SemaType::Reference { inner: t, .. }
+            | SemaType::Unique(t)
+            | SemaType::Shared(t)
+            | SemaType::SyncShared(t) => {
                 table.get(*t).scope_ref_kind(table)
             }
             SemaType::Dictionary(k, v) => {
@@ -360,6 +403,13 @@ impl SemaType {
                 Some(l) => format!("&{} {}", l, table.get(*inner).display(table, symbols)),
                 None    => format!("&{}", table.get(*inner).display(table, symbols)),
             },
+
+            SemaType::Unique(t) =>
+                format!("Unique<{}>", table.get(*t).display(table, symbols)),
+            SemaType::Shared(t) =>
+                format!("Shared<{}>", table.get(*t).display(table, symbols)),
+            SemaType::SyncShared(t) =>
+                format!("SyncShared<{}>", table.get(*t).display(table, symbols)),
 
             SemaType::Named { def, args } => {
                 let name = &symbols.lookup(*def).name;

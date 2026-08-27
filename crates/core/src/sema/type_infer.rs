@@ -327,6 +327,27 @@ impl<'a> InferCtx<'a> {
             SemaType::Task(e) => { let e = self.substitute(e, args); self.ctx.types.insert(SemaType::Task(e)) }
             SemaType::Optional(e) => { let e = self.substitute(e, args); self.ctx.types.insert(SemaType::Optional(e)) }
             SemaType::GcRef(e) => { let e = self.substitute(e, args); self.ctx.types.insert(SemaType::GcRef(e)) }
+            // InlineList/Linqerizer/Reference were missing here entirely
+            // until now — same bug class as the `structurally_compatible`
+            // Set/Queue/Stack/Pool/Handle fix (that function's own
+            // comment): a generic struct/fn whose signature contains one
+            // of these three (e.g. `struct Box<T> { r: &T }`) would have
+            // its `Param(0)` survive substitution unresolved, since these
+            // three fell through to the primitives-only catch-all below
+            // instead of recursing into `inner`. Found while adding
+            // `Unique`/`Shared`/`SyncShared` alongside them and confirming
+            // every wrapper type actually substitutes correctly — leaving
+            // three known instances of the same bug sitting right next to
+            // the fix would've been an odd thing to knowingly walk past.
+            SemaType::InlineList(e) => { let e = self.substitute(e, args); self.ctx.types.insert(SemaType::InlineList(e)) }
+            SemaType::Linqerizer(e) => { let e = self.substitute(e, args); self.ctx.types.insert(SemaType::Linqerizer(e)) }
+            SemaType::Reference { mutable, lifetime, inner } => {
+                let inner = self.substitute(inner, args);
+                self.ctx.types.insert(SemaType::Reference { mutable, lifetime, inner })
+            }
+            SemaType::Unique(e)     => { let e = self.substitute(e, args); self.ctx.types.insert(SemaType::Unique(e)) }
+            SemaType::Shared(e)     => { let e = self.substitute(e, args); self.ctx.types.insert(SemaType::Shared(e)) }
+            SemaType::SyncShared(e) => { let e = self.substitute(e, args); self.ctx.types.insert(SemaType::SyncShared(e)) }
 
             SemaType::Dictionary(k, v) => {
                 let k = self.substitute(k, args);
@@ -715,6 +736,35 @@ impl<'a> InferCtx<'a> {
                 let arg_ids: Vec<TypeId> = args.iter()
                     .map(|a| self.ast_type_to_sema(a))
                     .collect();
+                // Ownership-model wrappers (MEMORY_MODEL.md §9,
+                // DATASTRUCTURES.md "Decisions locked in") — real compiler
+                // builtins, not user-declared structs, so they're checked
+                // before `top_level_def` the same way `List`/`Set`/etc.
+                // never reach it at all (those get their own dedicated
+                // `TypeKind` variant instead; these three don't need one
+                // since bare `Identifier<Args>` parsing already produces
+                // the exact shape needed here). A user who separately
+                // declares `struct Unique<T> { ... }` themselves will find
+                // this shadows it — same class of reserved-name collision
+                // as `get`/`set`/`where` being reserved tokens elsewhere
+                // in the language; not diagnosed as a name collision yet.
+                if path.len() == 1 && matches!(root, "Unique" | "Shared" | "SyncShared") {
+                    if arg_ids.len() != 1 {
+                        self.errors.add_type_error(TypeError::GenericArgCountMismatch {
+                            type_name: root.to_string(),
+                            expected:  1,
+                            found:     arg_ids.len(),
+                            span:      ty.span,
+                        });
+                        return self.unknown();
+                    }
+                    let inner = arg_ids[0];
+                    return self.ctx.types.insert(match root {
+                        "Unique" => SemaType::Unique(inner),
+                        "Shared" => SemaType::Shared(inner),
+                        _        => SemaType::SyncShared(inner), // exhaustive via the outer matches! guard
+                    });
+                }
                 match self.ctx.top_level_def(root) {
                     Some(def_id) => {
                         if let Some(&expected) = self.generic_arity.get(&def_id) {
@@ -2950,6 +3000,18 @@ impl<'a> InferCtx<'a> {
                 (SemaType::Linqerizer(ia), SemaType::Linqerizer(ib)) => Some((*ia, *ib)),
                 (SemaType::Pool(ia),       SemaType::Pool(ib))       => Some((*ia, *ib)),
                 (SemaType::Handle(ia),     SemaType::Handle(ib))     => Some((*ia, *ib)),
+                // Unique/Shared/SyncShared (MEMORY_MODEL.md §9,
+                // DATASTRUCTURES.md) — each only matches its own kind.
+                // No cross-variant arm (e.g. `(Unique, Shared)`) exists on
+                // purpose: that's the actual enforcement of "new
+                // orthogonal axis" from the design decision this landed
+                // under — a `Unique<Node>` and a `Shared<Node>` must stay
+                // structurally incompatible even though `Node == Node`,
+                // the same way `Reference`'s mutable/shared split above
+                // already refuses to unify `&T` with `&mut T`.
+                (SemaType::Unique(ia),     SemaType::Unique(ib))     => Some((*ia, *ib)),
+                (SemaType::Shared(ia),     SemaType::Shared(ib))     => Some((*ia, *ib)),
+                (SemaType::SyncShared(ia), SemaType::SyncShared(ib)) => Some((*ia, *ib)),
                 (SemaType::Optional(ia), SemaType::Optional(ib)) => Some((*ia, *ib)),
                 (SemaType::Fallible(ia), SemaType::Fallible(ib)) => Some((*ia, *ib)),
                 (SemaType::Task(ia),     SemaType::Task(ib))     => Some((*ia, *ib)),

@@ -365,7 +365,7 @@ didn't exist before this section had any type checking at all.
 
 ---
 
-## 9. LOW Tier — Reference Syntax, Loan-Based Borrow Checking Landed; Move Tracking Still Ahead
+## 9. LOW Tier — Reference Syntax, Loan-Based Borrow Checking, and the Ownership-Model Type Axis Landed; Move Tracking Still Ahead
 
 `OwnedRef` and full move/ownership checking are still marked "Phase 4" in
 the codebase's own comments — that part's still true. The reference
@@ -550,6 +550,82 @@ The actual borrow-checking algorithm — CFG construction, loan/liveness
 fixed-point propagation — is landed for the loan half described above.
 Move tracking, seeded by the already-parsed `outlives` facts, is what's
 still ahead.
+
+✅ **Implemented — the ownership-model type axis:** `Unique<T>`,
+`Shared<T>`, `SyncShared<T>` (`DATASTRUCTURES.md` "Decisions locked in").
+Landed as three new `SemaType` variants — `Unique(TypeId)`,
+`Shared(TypeId)`, `SyncShared(TypeId)` — deliberately orthogonal to the
+tier wrappers (`GcRef`/`ArenaRef`/`OwnedRef`/`PoolRef`), the exact
+relationship `Reference` above already has to them: this axis answers
+"who owns it and how," not "where does it live." A `Unique<T>` isn't a
+tier tag or a place-alias — it composes freely as a struct field, a
+return type, or nested inside any of the wrappers above it, same as any
+other type.
+
+No new `TypeKind` parser variant was needed. Bare `Identifier<Args>`
+parsing already produces `TypeKind::Named { path: ["Unique"], args: [T] }`
+for all three names, so `ast_type_to_sema` special-cases them directly —
+checked before the `top_level_def` lookup, since these are real compiler
+builtins with no user declaration to find (a user who separately declares
+`struct Unique<T> { ... }` will find this shadows it — same class of
+reserved-name collision as `get`/`set`/`where` being reserved tokens
+elsewhere in the language; not diagnosed as a collision yet). Wired into
+every exhaustive-match surface that needed it: `display()` (compiler-
+forced, no catch-all), `scope_ref_kind` (delegates through `inner`, so a
+`Unique<ArenaRef<T>>`-shaped escape is still caught), `substitute()`, and
+`structurally_compatible` — the last of these is the actual enforcement
+of "new orthogonal axis": each variant only matches its own kind, so
+`Unique<Node>` and `Shared<Node>` stay incompatible even though `Node ==
+Node`, confirmed via a real `TypeMismatch { expected: "Shared<int>",
+found: "Unique<int>" }` diagnostic, not just by construction.
+
+Fixing `substitute()` for these three surfaced an unrelated, pre-existing
+gap in the same function: `InlineList`, `Linqerizer`, and `Reference`
+were silently missing from it entirely, falling through to the
+primitives-only catch-all instead of recursing into `inner` — meaning a
+generic struct field of one of those three types would never have its
+`Param` placeholder substituted at an instantiation site. Same bug class
+`structurally_compatible`'s own Set/Queue/Stack/Pool/Handle fix already
+documents (GAP note earlier in this file). Fixed alongside rather than
+left sitting next to the fix that would have caught it.
+
+4 unit tests in `sema/tests.rs` (round-trip param/return-type resolution,
+`Shared`/`SyncShared` coverage, the cross-variant-mismatch enforcement
+above, and arg-count validation reusing `TypeError::GenericArgCountMismatch`
+— exactly one type argument, same as every other single-arg generic
+wrapper). Two new `.ubl` fixtures:
+`ok_unique_shared_syncshared_basic.ubl` and
+`err_unique_shared_type_mismatch.ubl`, plus a third,
+`err_unique_missing_type_argument.ubl`, whose own header comment
+documents a real, separate, pre-existing sema characteristic it happened
+to be the first fixture to surface: a function/method parameter's type
+annotation is resolved twice, independently, from the raw AST — once in
+`collect_fn_sig`/`collect_method_sig` (signature collection) and again in
+`seed_param` (body-seeding) — so a param-level type error reports twice.
+Harmless when the type is well-formed (every existing arity-mismatch
+fixture before this one used a `let`-binding annotation instead of a
+parameter, which only resolves once). Not fixed here — real, but out of
+this delivery's scope; tracked in §12.
+
+**What this does not cover, on purpose:** no construction syntax exists
+yet for any of the three (nothing in the language can produce a *value*
+of type `Unique<T>`/`Shared<T>`/`SyncShared<T>` — every test and fixture
+above reaches a real-typed binding only through a parameter's own
+declared type). No runtime `Value` representation exists yet either — no
+expression can produce one, so the interpreter never needs to represent
+one. No tier restriction exists on where `Unique<T>` etc. may appear —
+deliberately left open rather than guessed at, since nothing can
+construct one yet to make a restriction meaningful. `builtins/instance.rs`'s
+`resolve_receiver` does **not** strip a `Unique`/`Shared`/`SyncShared`
+wrapper to find a receiver kind underneath (e.g. whether
+`Unique<List<int>>.push(5)` should even be legal is an open method-
+dispatch question, not decided here) — falls through to its existing
+`None` catch-all, same as any other unrecognized receiver shape. Move
+*enforcement* — the actual borrow-checker pass that would reject a
+used-after-moved `Unique<T>` — is still unbuilt; this section only lands
+the type the eventual move checker will read, per `facts.rs`'s own
+long-standing note that building move tracking against an unsettled
+ownership-type story would mean building it twice.
 
 ---
 
@@ -797,3 +873,5 @@ sema-fail all firing their specific intended variant.
 | 2 | Generational handles as opt-out default, or opt-in? | ✅ Resolved — generational only in v1; no raw-index opt-out was built |
 | 3 | Does a `@tier(mid)` function require an explicit `with arena(...)` for every collection, or should entering a `@tier(mid)` function implicitly open a function-scoped arena? | Open |
 | 4 | Does `with pool<T>(n)` get the same `@tier(mid)`-only restriction `with arena(...)` currently has (`ArenaInWrongTier`), or should fixed-capacity pools be legal from HIGH-tier code too (an "unsafe-block"-style local optimization)? | ✅ Resolved — same `@tier(mid)`-only restriction as arena (`PoolInWrongTier`) |
+| 5 | Is `Unique<T>`/`Shared<T>`/`SyncShared<T>` restricted to any particular tier, and does `resolve_receiver` strip these wrappers to dispatch methods on the inner type (e.g. is `Unique<List<int>>.push(5)` legal)? | Open — deliberately left undecided in §9's type-axis delivery; nothing can construct a value of these types yet, so a tier restriction has no runtime meaning to enforce until construction syntax lands |
+| 6 | Function/method parameter type annotations are resolved twice, independently, from raw AST (`collect_fn_sig`/`collect_method_sig` during signature collection, `seed_param` during body-seeding) — any error on a param's own type reports twice. Thread the already-computed signature type into `seed_param`, or deduplicate identical-span errors in the error manager? | Open — real, pre-existing, surfaced by `tests/fixtures/err_unique_missing_type_argument.ubl` (§9); not scoped to that delivery |

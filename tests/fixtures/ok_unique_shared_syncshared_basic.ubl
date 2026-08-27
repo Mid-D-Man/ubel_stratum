@@ -1,0 +1,44 @@
+// tests/fixtures/ok_unique_shared_syncshared_basic.ubl
+// Unique<T>/Shared<T>/SyncShared<T> — the ownership-model axis
+// (docs/DATASTRUCTURES.md "Decisions locked in", docs/MEMORY_MODEL.md §9),
+// landed as a new orthogonal SemaType axis: real type annotations that
+// parse, resolve, and unify correctly wherever a type is expected —
+// parameters, return types, struct fields — same as any other type.
+//
+// No construction syntax exists yet (nothing in the language can
+// produce a *value* of one of these types), so every check here goes
+// through a parameter's own declared type rather than a constructed
+// value — proves the type machinery (ast_type_to_sema, substitute,
+// structurally_compatible, display) is wired correctly without
+// depending on move-tracking or runtime semantics, neither of which
+// exist yet.
+// Expected: sema OK, zero errors.
+
+struct Node {
+    value: Unique<int>
+}
+
+fn identity_unique(x: Unique<int>) Unique<int> {
+    return x
+}
+
+fn identity_shared(x: Shared<string>) Shared<string> {
+    return x
+}
+
+fn identity_sync_shared(x: SyncShared<bool>) SyncShared<bool> {
+    return x
+}
+
+fn take_unique(x: Unique<int>) void {}
+
+fn passes_own_kind_through(x: Unique<int>) void {
+    take_unique(x)
+}
+
+fn field_read(n: Node) Unique<int> {
+    return n.value
+}
+
+fn main() void {
+}

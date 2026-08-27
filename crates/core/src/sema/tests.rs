@@ -8,14 +8,15 @@
 
 use crate::ast::arena::AstArena;
 use crate::ast::common::{AssignOp, Span, TierAnnotation, Visibility};
-use crate::ast::declarations::{FunctionDecl, StructDecl};
-use crate::ast::expressions::{Arg, Expr, ExprKind};
+use crate::ast::declarations::{FunctionDecl, Param, ParamKind, ReturnType, StructDecl};
+use crate::ast::expressions::{Arg, ArgKind, Expr, ExprKind};
 use crate::ast::literals::Literal;
 use crate::ast::root::{Program, Item};
 use crate::ast::statements::{
     AllocatorKind, Block, SizeExpr, SizeUnit, Stmt, StmtKind, BindingTarget,
 };
-use crate::error_management::errors::TierError;
+use crate::ast::types::{Type, TypeKind};
+use crate::error_management::errors::{TierError, TypeError};
 use crate::sema;
 use crate::sema::type_table::SemaType;
 
@@ -91,6 +92,65 @@ fn builtin_ctor_call<'a>(arena: &'a AstArena, ns: &str, call_span: Span) -> &'a 
     });
     let args: &[Arg] = &[];
     arena.alloc(Expr { kind: ExprKind::Call { callee, args }, span: call_span })
+}
+
+/// A single-type-argument named type node, e.g. `named1(arena, "Unique",
+/// int_ty)` builds `Unique<int>`. Used for the ownership-model axis
+/// (`Unique`/`Shared`/`SyncShared`) tests below — these go through the
+/// generic `TypeKind::Named` path (no dedicated `TypeKind` variant), same
+/// as any other user-named generic type.
+fn named1<'a>(arena: &'a AstArena, name: &'static str, inner: &'a Type<'a>) -> &'a Type<'a> {
+    let path = arena.alloc_slice_copy(&[name]);
+    let args = arena.alloc_slice_copy(&[inner]);
+    arena.alloc(Type { kind: TypeKind::Named { path, args }, span: Z })
+}
+
+/// A zero-type-argument named type node, e.g. `named0(arena, "Unique")`
+/// builds bare `Unique` — used to exercise the arg-count check.
+fn named0<'a>(arena: &'a AstArena, name: &'static str) -> &'a Type<'a> {
+    let path = arena.alloc_slice_copy(&[name]);
+    arena.alloc(Type { kind: TypeKind::Named { path, args: &[] }, span: Z })
+}
+
+fn int_type(arena: &AstArena) -> &Type<'_> {
+    arena.alloc(Type { kind: TypeKind::Int, span: Z })
+}
+
+fn param_named<'a>(arena: &'a AstArena, name: &str, ty: &'a Type<'a>) -> Param<'a> {
+    Param {
+        kind: ParamKind::Named { mutable: false, name: arena.alloc_str(name), ty: Some(ty), default: None },
+        span: Z,
+    }
+}
+
+/// Like `make_fn`/`make_fn_tiered`, but with real params and an optional
+/// return type — needed for the ownership-model tests below, which (with
+/// no construction syntax yet for `Unique<T>`/`Shared<T>`/`SyncShared<T>`)
+/// can only get a value of one of these types via a *parameter's own
+/// declared type*, not a constructed expression.
+fn make_fn_full<'a>(
+    arena: &'a AstArena, name: &str, params: &[Param<'a>],
+    return_type: Option<ReturnType<'a>>, body: Block<'a>,
+) -> FunctionDecl<'a> {
+    FunctionDecl {
+        tier:            TierAnnotation::default(),
+        attributes:      &[],
+        visibility:      Visibility::default(),
+        is_async:        false,
+        name:            arena.alloc_str(name),
+        lifetime_params: &[],
+        generic_params:  &[],
+        params:          arena.alloc_slice_copy(params),
+        return_type,
+        body,
+        span:            Z,
+    }
+}
+
+fn call_expr<'a>(arena: &'a AstArena, callee_name: &str, arg: &'a Expr<'a>) -> &'a Expr<'a> {
+    let callee = arena.alloc(Expr { kind: ExprKind::Ident(arena.alloc_str(callee_name)), span: Z });
+    let args: &[Arg] = arena.alloc_slice_copy(&[Arg { kind: ArgKind::Positional(arg), span: Z }]);
+    arena.alloc(Expr { kind: ExprKind::Call { callee, args }, span: Z })
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -560,4 +620,131 @@ fn test_sema_arena_same_arena_reassign_ok() {
     let stmts = arena.alloc_slice_copy(&[with_stmt]);
     let f     = make_fn_tiered(&arena, "foo", TierAnnotation::Mid, Block { stmts, span: Z });
     assert_ok(&arena, &prog_with(&arena, &[Item::Function(f)]));
+}
+
+// ── Ownership model: Unique<T>/Shared<T>/SyncShared<T> ─────────────
+//
+// MEMORY_MODEL.md §9, DATASTRUCTURES.md "Decisions locked in" — landed as
+// a new SemaType axis orthogonal to the tier wrappers, the same
+// relationship `Reference` already has to them. No construction syntax
+// exists yet for any of the three (nothing in the language can produce a
+// *value* of one of these types), so every test below reaches a
+// real-typed binding only through a function *parameter's* own declared
+// type, never a constructed expression — that's enough to exercise
+// `ast_type_to_sema`, `substitute`, `structurally_compatible`, and
+// `display` for real without depending on move-tracking or runtime
+// semantics, neither of which exist yet.
+
+#[test]
+fn test_sema_unique_param_and_return_type_round_trip_ok() {
+    // fn identity_unique(x: Unique<int>) Unique<int> { return x }
+    //
+    // The parameter's declared type and the return type are two
+    // independently-built `Unique<int>` annotations — same shape as the
+    // `Option<int>` regression `structurally_compatible`'s own `Named`
+    // arm comment already documents — must unify as compatible.
+    let arena = AstArena::new();
+    let param_ty = named1(&arena, "Unique", int_type(&arena));
+    let ret_ty   = named1(&arena, "Unique", int_type(&arena));
+
+    let x_ident  = arena.alloc(Expr { kind: ExprKind::Ident(arena.alloc_str("x")), span: Z });
+    let ret_stmt = Stmt { kind: StmtKind::Return(Some(x_ident)), span: Z };
+
+    let params = [param_named(&arena, "x", param_ty)];
+    let f = make_fn_full(
+        &arena, "identity_unique", &params,
+        Some(ReturnType { ty: ret_ty, is_fallible: false }),
+        Block { stmts: arena.alloc_slice_copy(&[ret_stmt]), span: Z },
+    );
+    assert_ok(&arena, &prog_with(&arena, &[Item::Function(f)]));
+}
+
+#[test]
+fn test_sema_shared_and_sync_shared_param_types_ok() {
+    // fn take_shared(x: Shared<string>) void {}
+    // fn take_sync_shared(x: SyncShared<bool>) void {}
+    //
+    // Round out coverage beyond `Unique` alone — all three wrappers
+    // resolve, with different inner types, in the same program.
+    let arena = AstArena::new();
+    let str_ty  = arena.alloc(Type { kind: TypeKind::Str,  span: Z });
+    let bool_ty = arena.alloc(Type { kind: TypeKind::Bool, span: Z });
+    let shared_param      = named1(&arena, "Shared",     str_ty);
+    let sync_shared_param = named1(&arena, "SyncShared", bool_ty);
+
+    let take_shared = make_fn_full(
+        &arena, "take_shared", &[param_named(&arena, "x", shared_param)],
+        None, Block { stmts: &[], span: Z },
+    );
+    let take_sync_shared = make_fn_full(
+        &arena, "take_sync_shared", &[param_named(&arena, "x", sync_shared_param)],
+        None, Block { stmts: &[], span: Z },
+    );
+    assert_ok(&arena, &prog_with(&arena, &[
+        Item::Function(take_shared), Item::Function(take_sync_shared),
+    ]));
+}
+
+#[test]
+fn test_sema_unique_and_shared_call_arg_type_mismatch() {
+    // fn take_shared(x: Shared<int>) void {}
+    // fn wrong(x: Unique<int>) void { take_shared(x) }
+    //
+    // The actual enforcement of "new orthogonal axis": Unique<int> and
+    // Shared<int> must NOT be interchangeable even though their inner
+    // type is identical — same as `&T` vs `&mut T` already aren't.
+    let arena = AstArena::new();
+    let shared_param_ty = named1(&arena, "Shared", int_type(&arena));
+    let unique_param_ty = named1(&arena, "Unique", int_type(&arena));
+
+    let take_shared = make_fn_full(
+        &arena, "take_shared", &[param_named(&arena, "x", shared_param_ty)],
+        None, Block { stmts: &[], span: Z },
+    );
+
+    let x_arg    = arena.alloc(Expr { kind: ExprKind::Ident(arena.alloc_str("x")), span: Z });
+    let call     = call_expr(&arena, "take_shared", x_arg);
+    let call_stmt = Stmt { kind: StmtKind::Expr(call), span: Z };
+
+    let wrong = make_fn_full(
+        &arena, "wrong", &[param_named(&arena, "x", unique_param_ty)],
+        None, Block { stmts: arena.alloc_slice_copy(&[call_stmt]), span: Z },
+    );
+
+    match sema::analyse(
+        &prog_with(&arena, &[Item::Function(take_shared), Item::Function(wrong)]),
+        &arena, String::new(),
+    ) {
+        Ok(_) => panic!("expected sema to reject Unique<int> passed where Shared<int> is expected"),
+        Err(mut errors) => {
+            let type_errs = errors.take_type_errors();
+            assert!(!type_errs.is_empty(), "expected at least one type error, got none");
+        }
+    }
+}
+
+#[test]
+fn test_sema_unique_missing_type_argument_reports_error() {
+    // fn bad(x: Unique) void {}
+    //
+    // Unique<T>/Shared<T>/SyncShared<T> take exactly one type argument —
+    // same arity check every other single-arg generic wrapper gets,
+    // reusing the existing GenericArgCountMismatch diagnostic rather
+    // than a bespoke error path.
+    let arena = AstArena::new();
+    let bare_unique = named0(&arena, "Unique");
+    let f = make_fn_full(
+        &arena, "bad", &[param_named(&arena, "x", bare_unique)],
+        None, Block { stmts: &[], span: Z },
+    );
+    match sema::analyse(&prog_with(&arena, &[Item::Function(f)]), &arena, String::new()) {
+        Ok(_) => panic!("expected sema to reject Unique with zero type arguments"),
+        Err(mut errors) => {
+            let type_errs = errors.take_type_errors();
+            assert!(
+                type_errs.iter().any(|e| matches!(e, TypeError::GenericArgCountMismatch { .. })),
+                "expected GenericArgCountMismatch, got {:?}", type_errs
+            );
+        }
+    }
 }
