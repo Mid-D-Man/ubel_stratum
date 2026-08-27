@@ -110,6 +110,16 @@ fn main() {
             .collect();
         diags.extend(errs.take_type_errors().iter().map(|e| e.to_diagnostic()));
         diags.extend(errs.take_tier_errors().iter().map(|e| e.to_diagnostic()));
+        // BorrowError (Phase D, BORROW-0xx) was added to sema::analyse as
+        // its own error category without a matching update here — this
+        // stage silently printed nothing beyond "status: SEMA ERROR" for
+        // any borrow-checker failure (e.g. ConflictingAccessWhileBorrowed)
+        // even though BorrowError has always had a complete Diagnosable
+        // impl (code/message/suggestion/secondary_spans) ready to render;
+        // it just was never collected here. Same recurring pattern as
+        // every other "new error family needs wiring into every consumer"
+        // gap this project has hit before.
+        diags.extend(errs.take_borrow_errors().iter().map(|e| e.to_diagnostic()));
         print!("{}", ubel_stratum::error_management::render_all(&diags, &source));
     }
     if !sema_ok {
