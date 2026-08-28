@@ -1,0 +1,37 @@
+// tests/fixtures/ok_unique_shared_syncshared_construction.ubl
+// Unique<T>/Shared<T>/SyncShared<T> — construction syntax
+// (docs/MEMORY_MODEL.md §9). `Namespace.new(value)`, same idiom every
+// other builtin wrapper in this language uses (List.new(), Pool.new(),
+// etc.) — no dedicated grammar, no parser changes needed. The argument's
+// own inferred type directly becomes T (no fresh type variable, unlike
+// List.new()/Dictionary.new(), which take no argument to infer from).
+// Construction is restricted to @tier(low) — the inverse restriction
+// from List/Dictionary/Queue/Stack, which are banned *inside* @tier(low)
+// because LOW has no memory model of its own to fall back on; Unique/
+// Shared/SyncShared now *are* that memory model.
+// Expected: sema OK, zero errors. Full pipeline OK — these actually
+// construct real runtime values (Value::Unique/Shared/SyncShared).
+
+@tier(low)
+fn build_unique() int {
+    let u = Unique.new(42)
+    return 1
+}
+
+@tier(low)
+fn build_shared() int {
+    let s = Shared.new("hello")
+    return 1
+}
+
+@tier(low)
+fn build_sync_shared() int {
+    let ss = SyncShared.new(true)
+    return 1
+}
+
+fn main() void {
+    let a = build_unique()
+    let b = build_shared()
+    let c = build_sync_shared()
+}

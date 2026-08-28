@@ -2038,6 +2038,47 @@ impl<'a> InferCtx<'a> {
                                     }
                                 }
                             }
+                            // MEMORY_MODEL.md §9 — `Unique.new(value)`/
+                            // `Shared.new(value)`/`SyncShared.new(value)`.
+                            // Unlike `List.new()` etc. (`builtin_constructor_
+                            // type`, fresh type var, resolved later by
+                            // unification), these take exactly one REQUIRED
+                            // argument and its own inferred type directly
+                            // *is* T — no fresh var, no later unification
+                            // needed. Tier-gated the opposite way collection
+                            // construction is: banned everywhere except
+                            // `@tier(low)`, since these three now *are* LOW
+                            // tier's memory model (Open Decision #5,
+                            // resolved). Checked here (not folded into
+                            // `builtin_constructor_type`) for the same
+                            // reason `InlineList`/`Pool` are — real logic
+                            // beyond the generic fresh-var pattern.
+                            if matches!(ns, "Unique" | "Shared" | "SyncShared") {
+                                if args.len() != 1 {
+                                    self.errors.add_type_error(TypeError::ArgumentCountMismatch {
+                                        expected: 1,
+                                        found:    args.len(),
+                                        span:     expr.span,
+                                    });
+                                    return self.unknown();
+                                }
+                                if self.current_tier != TierAnnotation::Low {
+                                    self.errors.add_tier_error(TierError::OwnershipWrapperOutsideLowTier {
+                                        wrapper: ns.to_string(),
+                                        actual:  self.current_tier,
+                                        span:    expr.span,
+                                    });
+                                }
+                                let arg_ty = match &args[0].kind {
+                                    ArgKind::Positional(e)       => self.infer_expr(e),
+                                    ArgKind::Named { value, .. } => self.infer_expr(value),
+                                };
+                                return self.ctx.types.insert(match ns {
+                                    "Unique" => SemaType::Unique(arg_ty),
+                                    "Shared" => SemaType::Shared(arg_ty),
+                                    _        => SemaType::SyncShared(arg_ty), // exhaustive via the outer matches! guard
+                                });
+                            }
                             if let Some(ctor_ty) = self.builtin_constructor_type(ns) {
                                 // §9 FIX (MEMORY_MODEL.md) — LOW tier has
                                 // no memory model of its own yet

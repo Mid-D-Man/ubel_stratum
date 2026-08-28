@@ -124,6 +124,25 @@ pub enum TierError {
     PoolConstructedOutsideBlock {
         span: Span,
     },
+
+    // ── Ownership-model wrappers (MEMORY_MODEL.md §9) ────────────────
+    /// `Unique.new(...)`/`Shared.new(...)`/`SyncShared.new(...)` called
+    /// outside `@tier(low)`. The inverse of
+    /// `CollectionConstructionInLowTier`: those three collections are
+    /// HIGH-tier's (GC-default) story and are banned *inside* LOW tier
+    /// because LOW has no memory model of its own to fall back to yet;
+    /// `Unique`/`Shared`/`SyncShared` now *are* that memory model, so by
+    /// the same "each tier's own allocation strategy stays within that
+    /// tier by default" logic, construction is banned everywhere
+    /// *except* LOW tier. A HIGH/MID-tier function may still receive a
+    /// `Unique<T>` value as a parameter (same as it may already receive
+    /// an `ArenaRef`-wrapped value to read) — this only restricts where
+    /// a *new* one may be constructed.
+    OwnershipWrapperOutsideLowTier {
+        wrapper: String,
+        actual:  TierAnnotation,
+        span:    Span,
+    },
 }
 
 impl TierError {
@@ -141,6 +160,7 @@ impl TierError {
             TierError::PoolRefEscapesBoundary     { span, .. } => *span,
             TierError::MidReturnContainsPoolRef   { span, .. } => *span,
             TierError::PoolConstructedOutsideBlock { span, .. } => *span,
+            TierError::OwnershipWrapperOutsideLowTier { span, .. } => *span,
         }
     }
 
@@ -220,6 +240,12 @@ impl TierError {
             TierError::PoolConstructedOutsideBlock { .. } =>
                 "`Pool.new()` requires an enclosing `with pool<T>(count) { }` block to supply \
                  its element type and capacity".to_string(),
+
+            TierError::OwnershipWrapperOutsideLowTier { wrapper, actual, .. } =>
+                format!(
+                    "`{}.new()` is only valid in `@tier(low)`; this function is `@tier({})`",
+                    wrapper, tier_name(*actual)
+                ),
         }
     }
 
@@ -272,6 +298,13 @@ impl TierError {
             TierError::PoolConstructedOutsideBlock { .. } =>
                 Some("wrap this call in a `with pool<T>(count) { }` block".to_string()),
 
+            TierError::OwnershipWrapperOutsideLowTier { wrapper, .. } =>
+                Some(format!(
+                    "annotate this function with `@tier(low)`, or receive the `{}` as a parameter \
+                     from LOW-tier code instead of constructing it here",
+                    wrapper
+                )),
+
             _ => None,
         }
     }
@@ -311,6 +344,7 @@ impl crate::error_management::render::Diagnosable for TierError {
             TierError::PoolRefEscapesBoundary { .. }      => "TIER-011",
             TierError::MidReturnContainsPoolRef { .. }    => "TIER-012",
             TierError::PoolConstructedOutsideBlock { .. } => "TIER-013",
+            TierError::OwnershipWrapperOutsideLowTier { .. } => "TIER-014",
         }
     }
     fn span(&self) -> Span { self.span() }

@@ -90,6 +90,31 @@ pub enum Value {
     /// property is the actual point, and the thing the old `eval_linq`
     /// (fully eager, one-pass) never had.
     Linqerizer(Rc<LinqPipeline>),
+
+    // ── Ownership model (MEMORY_MODEL.md §9) ────────────────────────
+    /// `Unique<T>` — single-owner, move-only (`Box<T>`-shaped). Plain
+    /// `Box`, not `Rc`: Rust's `Box` is itself non-aliasable, so
+    /// "cloning" a `Value::Unique` deep-clones the payload rather than
+    /// sharing it — the semantically honest behavior for a strict
+    /// single-owner type, and correct even before move *enforcement*
+    /// exists (still ahead; this only lands construction).
+    Unique(Box<Value>),
+    /// `Shared<T>` — reference-counted, clone-based (`Rc<T>`-shaped).
+    /// Same `Rc<RefCell<_>>` backing `List`/`Dict`/`Queue`/`Stack`/
+    /// `Struct` already use — genuine aliasing, genuine shared mutation.
+    Shared(Rc<RefCell<Value>>),
+    /// `SyncShared<T>` — nominally `Arc<T>`-shaped (`Send`+`Sync`), but
+    /// backed by the same `Rc<RefCell<_>>` as `Shared` for now, not a
+    /// real `Arc<Mutex<_>>`. `Value` overall isn't `Send` (`List`/`Dict`/
+    /// etc. use `Rc` internally), so an `Arc<Mutex<_>>` wrapper here
+    /// would be structurally real but semantically hollow — nothing
+    /// could actually send one across a thread today regardless of this
+    /// variant's own backing. Kept as its own `Value` variant (not
+    /// unified with `Shared`) so diagnostics and any future real
+    /// thread-safety story have a distinct thing to point at, same
+    /// reasoning `Handle` is kept distinct from a plain tuple. See
+    /// `builtins::constructors::sync_shared_new`.
+    SyncShared(Rc<RefCell<Value>>),
 }
 
 /// Backing storage for `Value::Linqerizer`. Immutable once built (see
@@ -276,6 +301,9 @@ impl Value {
             Value::Handle { .. } => "Handle",
             Value::InlineList(_) => "InlineList",
             Value::Linqerizer(_) => "Linqerizer",
+            Value::Unique(_)     => "Unique",
+            Value::Shared(_)     => "Shared",
+            Value::SyncShared(_) => "SyncShared",
         }
     }
 
@@ -323,6 +351,16 @@ impl Value {
              Value::Handle { index: ib, generation: gb }) => ia == ib && ga == gb,
             (Value::InlineList(a), Value::InlineList(b)) => Rc::ptr_eq(a, b),
             (Value::Linqerizer(a), Value::Linqerizer(b)) => Rc::ptr_eq(a, b),
+            // `Unique` isn't `Rc`-backed (never aliased by construction),
+            // so pointer identity isn't meaningful — compare by value
+            // instead, matching real Rust's own `Box<T>: PartialEq`
+            // (`Box::new(5) == Box::new(5)` is `true`), not the "heap
+            // types: pointer equality" convention above (that convention
+            // exists *because* those types are aliased/shared; `Unique`
+            // is deliberately the one wrapper here that isn't).
+            (Value::Unique(a), Value::Unique(b)) => a.equals(b),
+            (Value::Shared(a), Value::Shared(b)) => Rc::ptr_eq(a, b),
+            (Value::SyncShared(a), Value::SyncShared(b)) => Rc::ptr_eq(a, b),
             _ => false,
         }
     }
@@ -442,6 +480,9 @@ impl fmt::Display for Value {
                 write!(f, "Linqerizer(source_len={}, pending_ops={})",
                     pipeline.source.len(), pipeline.ops.len())
             }
+            Value::Unique(v) => write!(f, "Unique({})", v),
+            Value::Shared(rc) => write!(f, "Shared({})", rc.borrow()),
+            Value::SyncShared(rc) => write!(f, "SyncShared({})", rc.borrow()),
             Value::Struct { type_name, fields } => {
                 let fields = fields.borrow();
                 write!(f, "{} {{", type_name)?;

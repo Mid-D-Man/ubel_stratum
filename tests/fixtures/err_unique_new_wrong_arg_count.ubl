@@ -1,0 +1,17 @@
+// tests/fixtures/err_unique_new_wrong_arg_count.ubl
+// Unique.new()/Shared.new()/SyncShared.new() take exactly one argument —
+// its own inferred type directly becomes T, so unlike List.new() etc.
+// there's no fresh type variable to fall back on when the argument is
+// missing. Reuses TypeError::ArgumentCountMismatch (the same generic
+// wrong-arg-count diagnostic ordinary function calls get), not a bespoke
+// error path.
+// Expected: sema FAIL (ArgumentCountMismatch, TYPE-102).
+
+@tier(low)
+fn bad() int {
+    let u = Unique.new()
+    return 1
+}
+
+fn main() void {
+}

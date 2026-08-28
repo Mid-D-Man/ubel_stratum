@@ -607,25 +607,88 @@ fixture before this one used a `let`-binding annotation instead of a
 parameter, which only resolves once). Not fixed here — real, but out of
 this delivery's scope; tracked in §12.
 
-**What this does not cover, on purpose:** no construction syntax exists
-yet for any of the three (nothing in the language can produce a *value*
-of type `Unique<T>`/`Shared<T>`/`SyncShared<T>` — every test and fixture
-above reaches a real-typed binding only through a parameter's own
-declared type). No runtime `Value` representation exists yet either — no
-expression can produce one, so the interpreter never needs to represent
-one. No tier restriction exists on where `Unique<T>` etc. may appear —
-deliberately left open rather than guessed at, since nothing can
-construct one yet to make a restriction meaningful. `builtins/instance.rs`'s
-`resolve_receiver` does **not** strip a `Unique`/`Shared`/`SyncShared`
-wrapper to find a receiver kind underneath (e.g. whether
-`Unique<List<int>>.push(5)` should even be legal is an open method-
-dispatch question, not decided here) — falls through to its existing
-`None` catch-all, same as any other unrecognized receiver shape. Move
-*enforcement* — the actual borrow-checker pass that would reject a
-used-after-moved `Unique<T>` — is still unbuilt; this section only lands
-the type the eventual move checker will read, per `facts.rs`'s own
-long-standing note that building move tracking against an unsettled
-ownership-type story would mean building it twice.
+**What §9's type-axis delivery didn't cover, since resolved below:**
+construction syntax (✅ now landed, see immediately below) and the tier
+restriction question (✅ resolved — Open Decision #5). `resolve_receiver`
+still does **not** strip a `Unique`/`Shared`/`SyncShared` wrapper to find
+a receiver kind underneath (e.g. whether `Unique<List<int>>.push(5)`
+should even be legal is still an open method-dispatch question) — falls
+through to its existing `None` catch-all, same as any other unrecognized
+receiver shape. Move *enforcement* — the actual borrow-checker pass that
+would reject a used-after-moved `Unique<T>` — is still unbuilt; this
+section only lands the type and, now, its construction — the eventual
+move checker still needs to be built to actually read either.
+
+✅ **Implemented — construction syntax:** `Unique.new(value)`,
+`Shared.new(value)`, `SyncShared.new(value)` — the same `Namespace.new()`
+idiom every other builtin wrapper in this language already uses
+(`List.new()`, `Pool.new()`, etc.), so no parser changes were needed at
+all; bare `Identifier<Args>`/`Namespace.method(args)` parsing already
+produced the right shape. Unlike `List.new()`/`Dictionary.new()` (which
+take no argument and get a fresh type variable resolved later by
+unification), these three take exactly one *required* argument and its
+own inferred type directly *is* `T` — no fresh var, no later unification
+needed. Wrong argument count reuses the existing
+`TypeError::ArgumentCountMismatch` (`TYPE-102`), not a bespoke error.
+
+**Tier restriction (Open Decision #5, resolved):** construction is
+banned everywhere *except* `@tier(low)` — a new
+`TierError::OwnershipWrapperOutsideLowTier` (`TIER-014`). This is the
+deliberate *inverse* of `CollectionConstructionInLowTier`
+(`TIER-009`, §11): `List`/`Dictionary`/`Queue`/`Stack` are HIGH-tier's
+(GC-default) story and are banned *inside* LOW tier because LOW had no
+memory model of its own to fall back on; `Unique`/`Shared`/`SyncShared`
+now *are* that memory model, so by the same "each tier's own allocation
+strategy stays within that tier by default" logic, construction is
+banned everywhere else. A HIGH/MID-tier function may still *receive* a
+`Unique<T>` value as a parameter and read it (same as it may already
+receive an `ArenaRef`-wrapped value) — only *constructing* a new one is
+restricted.
+
+**Runtime representation:** three new `Value` variants.
+`Unique(Box<Value>)` — plain `Box`, not `Rc`: Rust's `Box` is itself
+non-aliasable, so "cloning" a `Value::Unique` deep-clones the payload
+rather than sharing it, the honest behavior for a strict single-owner
+type even before move enforcement exists to make that matter.
+`Shared(Rc<RefCell<Value>>)` — genuine aliasing, same backing
+`List`/`Dict`/`Queue`/`Stack`/`Struct` already use.
+`SyncShared(Rc<RefCell<Value>>)` — **not** actually `Arc<Mutex<_>>` yet;
+`Value` overall isn't `Send` (`List`/`Dict`/etc. use `Rc` internally), so
+an `Arc<Mutex<_>>` wrapper on just this one variant would be
+structurally real but semantically hollow — nothing could actually send
+one across a thread today regardless of this variant's own backing.
+Kept as its own distinct `Value` variant anyway (not unified with
+`Shared`) so diagnostics and any future real thread-safety story have
+something distinct to point at. A genuine `Send`-safe story needs either
+a `Value` representation that's actually `Send`, or waits for native
+codegen, where this tier's semantics can be enforced by the type system
+instead of the tree-walking interpreter.
+
+Fixing `Value::equals()` for `Unique` surfaced the same "new variant
+needs wiring everywhere" pattern one more time: it has a catch-all
+(`_ => false`), so without an explicit arm every `Unique`/`Shared`/
+`SyncShared` comparison — even against itself — would have silently
+returned `false`. Fixed: `Unique` compares *by value* (`a.equals(b)`,
+matching real Rust's own `Box<T>: PartialEq` — `Box::new(5) ==
+Box::new(5)` is `true` — not the "heap types: pointer equality"
+convention the rest of this match uses, since that convention exists
+*because* those types are aliased/shared and `Unique` is deliberately
+the one wrapper here that isn't). `Shared`/`SyncShared` use `Rc::ptr_eq`,
+matching every other `Rc`-backed variant.
+
+4 new unit tests, 3 new `.ubl` fixtures
+(`ok_unique_shared_syncshared_construction.ubl`,
+`err_unique_construction_outside_low_tier.ubl`,
+`err_unique_new_wrong_arg_count.ubl`). One of the four unit tests
+surfaced a real, general hazard of this test file's `Z`-span convention
+(documented on `span_n`'s own doc comment in `sema/tests.rs`): both
+`name_resolution`'s `resolutions` map and `type_infer`'s `expr_types`
+map are keyed purely by `Span`, and every hand-built AST node sharing
+the same zero `Span` constant is invisible right up until a single test
+has more than one *meaningfully distinct* identifier reference — at
+which point the later one silently overwrites the earlier one's slot in
+both maps. Not a product bug; a test-authoring hazard, now documented
+and given a `span_n(n)` escape hatch.
 
 ---
 
@@ -873,5 +936,5 @@ sema-fail all firing their specific intended variant.
 | 2 | Generational handles as opt-out default, or opt-in? | ✅ Resolved — generational only in v1; no raw-index opt-out was built |
 | 3 | Does a `@tier(mid)` function require an explicit `with arena(...)` for every collection, or should entering a `@tier(mid)` function implicitly open a function-scoped arena? | Open |
 | 4 | Does `with pool<T>(n)` get the same `@tier(mid)`-only restriction `with arena(...)` currently has (`ArenaInWrongTier`), or should fixed-capacity pools be legal from HIGH-tier code too (an "unsafe-block"-style local optimization)? | ✅ Resolved — same `@tier(mid)`-only restriction as arena (`PoolInWrongTier`) |
-| 5 | Is `Unique<T>`/`Shared<T>`/`SyncShared<T>` restricted to any particular tier, and does `resolve_receiver` strip these wrappers to dispatch methods on the inner type (e.g. is `Unique<List<int>>.push(5)` legal)? | Open — deliberately left undecided in §9's type-axis delivery; nothing can construct a value of these types yet, so a tier restriction has no runtime meaning to enforce until construction syntax lands |
+| 5 | Is `Unique<T>`/`Shared<T>`/`SyncShared<T>` restricted to any particular tier, and does `resolve_receiver` strip these wrappers to dispatch methods on the inner type (e.g. is `Unique<List<int>>.push(5)` legal)? | ✅ Resolved (tier) — construction banned outside `@tier(low)` (`OwnershipWrapperOutsideLowTier`, TIER-014), inverse of `CollectionConstructionInLowTier`. Open (method dispatch) — `resolve_receiver` still doesn't strip these wrappers |
 | 6 | Function/method parameter type annotations are resolved twice, independently, from raw AST (`collect_fn_sig`/`collect_method_sig` during signature collection, `seed_param` during body-seeding) — any error on a param's own type reports twice. Thread the already-computed signature type into `seed_param`, or deduplicate identical-span errors in the error manager? | Open — real, pre-existing, surfaced by `tests/fixtures/err_unique_missing_type_argument.ubl` (§9); not scoped to that delivery |

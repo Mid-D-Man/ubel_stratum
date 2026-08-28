@@ -24,6 +24,19 @@ use crate::sema::type_table::SemaType;
 
 const Z: Span = Span { start: 0, end: 0, line: 0, column: 0 };
 
+/// `name_resolution`'s `resolutions: HashMap<Span, DefId>` and
+/// `type_infer`'s `expr_types: HashMap<Span, TypeId>` are both keyed
+/// purely by `Span` — real source always gives every token a distinct
+/// span, but hand-built AST nodes using the shared `Z` constant above
+/// don't. That's invisible for tests with only one meaningfully-resolved
+/// identifier, but a test with *several* distinct identifier references
+/// (e.g. a function name and a builtin namespace name in the same body)
+/// will have later ones silently overwrite earlier ones' slot in both
+/// maps, corrupting lookups in a way that has nothing to do with
+/// whatever the test is actually trying to check. Use this for any
+/// `Ident`/call-target node beyond the first in a single test.
+fn span_n(n: usize) -> Span { Span { start: n, end: n + 1, line: 0, column: n } }
+
 fn empty_prog(arena: &AstArena) -> Program<'_> {
     Program { package: None, imports: &[], items: arena.alloc_slice_copy(&[]), span: Z }
 }
@@ -151,6 +164,29 @@ fn call_expr<'a>(arena: &'a AstArena, callee_name: &str, arg: &'a Expr<'a>) -> &
     let callee = arena.alloc(Expr { kind: ExprKind::Ident(arena.alloc_str(callee_name)), span: Z });
     let args: &[Arg] = arena.alloc_slice_copy(&[Arg { kind: ArgKind::Positional(arg), span: Z }]);
     arena.alloc(Expr { kind: ExprKind::Call { callee, args }, span: Z })
+}
+
+/// `Namespace.new(args...)` — the construction idiom every builtin
+/// wrapper in this language uses (`List.new()`, `Pool.new()`, and now
+/// `Unique.new(v)`/`Shared.new(v)`/`SyncShared.new(v)`).
+fn namespace_new_call<'a>(arena: &'a AstArena, namespace: &str, args: &[&'a Expr<'a>]) -> &'a Expr<'a> {
+    let target = arena.alloc(Expr { kind: ExprKind::Ident(arena.alloc_str(namespace)), span: Z });
+    let callee = arena.alloc(Expr { kind: ExprKind::Field { target, field: "new" }, span: Z });
+    let arg_nodes: Vec<Arg> = args.iter().map(|a| Arg { kind: ArgKind::Positional(a), span: Z }).collect();
+    let args_slice: &[Arg] = arena.alloc_slice_copy(&arg_nodes);
+    arena.alloc(Expr { kind: ExprKind::Call { callee, args: args_slice }, span: Z })
+}
+
+fn let_stmt<'a>(arena: &'a AstArena, name: &str, value: &'a Expr<'a>) -> Stmt<'a> {
+    Stmt {
+        kind: StmtKind::Let {
+            mutable: false,
+            binding: BindingTarget::Ident(arena.alloc_str(name)),
+            ty:      None,
+            value,
+        },
+        span: Z,
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -745,6 +781,161 @@ fn test_sema_unique_missing_type_argument_reports_error() {
                 type_errs.iter().any(|e| matches!(e, TypeError::GenericArgCountMismatch { .. })),
                 "expected GenericArgCountMismatch, got {:?}", type_errs
             );
+        }
+    }
+}
+
+// ── Ownership model construction: Unique.new()/Shared.new()/SyncShared.new() ──
+//
+// MEMORY_MODEL.md §9 — `Namespace.new(value)`, same idiom every builtin
+// wrapper uses. Restricted to `@tier(low)` (Open Decision #5, resolved):
+// the inverse of `CollectionConstructionInLowTier` — List/Dictionary/
+// Queue/Stack are banned *inside* LOW tier because LOW has no memory
+// model of its own; Unique/Shared/SyncShared now *are* that model, so
+// construction is banned everywhere *except* LOW tier.
+
+#[test]
+fn test_sema_unique_shared_sync_shared_construction_in_low_tier_ok() {
+    // @tier(low) fn f() int { let u = Unique.new(42); let s = Shared.new("x");
+    //                          let ss = SyncShared.new(true); return 1 }
+    let arena = AstArena::new();
+    let int_lit = arena.alloc(Expr { kind: ExprKind::Lit(Literal::Int(42)), span: Z });
+    let str_lit = arena.alloc(Expr { kind: ExprKind::Lit(Literal::Str(arena.alloc_str("x"))), span: Z });
+    let bool_lit = arena.alloc(Expr { kind: ExprKind::Lit(Literal::Bool(true)), span: Z });
+
+    let u_call  = namespace_new_call(&arena, "Unique", &[int_lit]);
+    let s_call  = namespace_new_call(&arena, "Shared", &[str_lit]);
+    let ss_call = namespace_new_call(&arena, "SyncShared", &[bool_lit]);
+
+    // make_fn_tiered always builds a `void`-returning function — these
+    // are let-bindings only, no `return`, matching every other
+    // make_fn/make_fn_tiered-based test's style in this file.
+    let stmts = arena.alloc_slice_copy(&[
+        let_stmt(&arena, "u", u_call),
+        let_stmt(&arena, "s", s_call),
+        let_stmt(&arena, "ss", ss_call),
+    ]);
+    let f = make_fn_tiered(&arena, "f", TierAnnotation::Low, Block { stmts, span: Z });
+    assert_ok(&arena, &prog_with(&arena, &[Item::Function(f)]));
+}
+
+#[test]
+fn test_sema_unique_construction_outside_low_tier_rejected() {
+    // fn f() int { let u = Unique.new(42); return 1 }  -- default tier, not LOW
+    let arena = AstArena::new();
+    let int_lit = arena.alloc(Expr { kind: ExprKind::Lit(Literal::Int(42)), span: Z });
+    let u_call  = namespace_new_call(&arena, "Unique", &[int_lit]);
+    let one = arena.alloc(Expr { kind: ExprKind::Lit(Literal::Int(1)), span: Z });
+    let stmts = arena.alloc_slice_copy(&[
+        let_stmt(&arena, "u", u_call),
+        Stmt { kind: StmtKind::Return(Some(one)), span: Z },
+    ]);
+    let f = make_fn(&arena, "f", Block { stmts, span: Z });
+    match sema::analyse(&prog_with(&arena, &[Item::Function(f)]), &arena, String::new()) {
+        Ok(_) => panic!("expected sema to reject Unique.new() outside @tier(low)"),
+        Err(mut errors) => {
+            let tier_errs = errors.take_tier_errors();
+            assert!(
+                tier_errs.iter().any(|e| matches!(e, TierError::OwnershipWrapperOutsideLowTier { .. })),
+                "expected OwnershipWrapperOutsideLowTier, got {:?}", tier_errs
+            );
+        }
+    }
+}
+
+#[test]
+fn test_sema_unique_new_wrong_arg_count_reports_error() {
+    // @tier(low) fn f() int { let u = Unique.new(); return 1 }
+    let arena = AstArena::new();
+    let u_call = namespace_new_call(&arena, "Unique", &[]);
+    let one = arena.alloc(Expr { kind: ExprKind::Lit(Literal::Int(1)), span: Z });
+    let stmts = arena.alloc_slice_copy(&[
+        let_stmt(&arena, "u", u_call),
+        Stmt { kind: StmtKind::Return(Some(one)), span: Z },
+    ]);
+    let f = make_fn_tiered(&arena, "f", TierAnnotation::Low, Block { stmts, span: Z });
+    match sema::analyse(&prog_with(&arena, &[Item::Function(f)]), &arena, String::new()) {
+        Ok(_) => panic!("expected sema to reject Unique.new() with zero arguments"),
+        Err(mut errors) => {
+            let type_errs = errors.take_type_errors();
+            assert!(
+                type_errs.iter().any(|e| matches!(e, TypeError::ArgumentCountMismatch { expected: 1, found: 0, .. })),
+                "expected ArgumentCountMismatch{{expected:1,found:0}}, got {:?}", type_errs
+            );
+        }
+    }
+}
+
+#[test]
+fn test_sema_unique_new_inner_type_matches_argument() {
+    // @tier(low) fn f(x: Unique<int>) void {}
+    // @tier(low) fn g() void { f(Unique.new(42)) }
+    //
+    // Proves `Unique.new(value)`'s inferred type isn't just "some Unique"
+    // — its inner type comes directly from the argument (`int` here) and
+    // must actually unify against a real `Unique<int>`-typed parameter.
+    //
+    // Two distinct identifier references here (`Unique`, `f`) — needs
+    // span_n, not the shared Z constant (see span_n's own doc comment).
+    let arena = AstArena::new();
+    let unique_int_ty = named1(&arena, "Unique", int_type(&arena));
+    let f_decl = make_fn_full(
+        &arena, "f", &[param_named(&arena, "x", unique_int_ty)],
+        None, Block { stmts: &[], span: Z },
+    );
+    let f_decl = FunctionDecl { tier: TierAnnotation::Low, ..f_decl };
+
+    let int_lit = arena.alloc(Expr { kind: ExprKind::Lit(Literal::Int(42)), span: Z });
+    let unique_target = arena.alloc(Expr { kind: ExprKind::Ident(arena.alloc_str("Unique")), span: span_n(1) });
+    let unique_callee  = arena.alloc(Expr { kind: ExprKind::Field { target: unique_target, field: "new" }, span: Z });
+    let u_call = arena.alloc(Expr {
+        kind: ExprKind::Call {
+            callee: unique_callee,
+            args:   arena.alloc_slice_copy(&[Arg { kind: ArgKind::Positional(int_lit), span: Z }]),
+        },
+        span: Z,
+    });
+    let f_target = arena.alloc(Expr { kind: ExprKind::Ident(arena.alloc_str("f")), span: span_n(2) });
+    let f_call = arena.alloc(Expr {
+        kind: ExprKind::Call {
+            callee: f_target,
+            args:   arena.alloc_slice_copy(&[Arg { kind: ArgKind::Positional(u_call), span: Z }]),
+        },
+        span: Z,
+    });
+    let call_stmt = Stmt { kind: StmtKind::Expr(f_call), span: Z };
+    let g_decl = make_fn_tiered(&arena, "g", TierAnnotation::Low, Block {
+        stmts: arena.alloc_slice_copy(&[call_stmt]), span: Z,
+    });
+
+    assert_ok(&arena, &prog_with(&arena, &[Item::Function(f_decl), Item::Function(g_decl)]));
+}
+
+
+#[test]
+fn debug_print_unique_inner_type_test() {
+    let arena = AstArena::new();
+    let unique_int_ty = named1(&arena, "Unique", int_type(&arena));
+    let f_decl = make_fn_full(
+        &arena, "f", &[param_named(&arena, "x", unique_int_ty)],
+        None, Block { stmts: &[], span: Z },
+    );
+    let f_decl = FunctionDecl { tier: TierAnnotation::Low, ..f_decl };
+
+    let int_lit = arena.alloc(Expr { kind: ExprKind::Lit(Literal::Int(42)), span: Z });
+    let u_call  = namespace_new_call(&arena, "Unique", &[int_lit]);
+    let call_stmt = Stmt { kind: StmtKind::Expr(call_expr(&arena, "f", u_call)), span: Z };
+    let g_decl = make_fn_tiered(&arena, "g", TierAnnotation::Low, Block {
+        stmts: arena.alloc_slice_copy(&[call_stmt]), span: Z,
+    });
+
+    match sema::analyse(&prog_with(&arena, &[Item::Function(f_decl), Item::Function(g_decl)]), &arena, String::new()) {
+        Ok(_) => println!("OK - no error"),
+        Err(mut errors) => {
+            println!("NAME: {:?}", errors.take_name_errors());
+            println!("TYPE: {:?}", errors.take_type_errors());
+            println!("TIER: {:?}", errors.take_tier_errors());
+            println!("BORROW: {:?}", errors.take_borrow_errors());
         }
     }
 }

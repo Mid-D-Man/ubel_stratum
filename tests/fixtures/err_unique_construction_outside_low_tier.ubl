@@ -1,0 +1,15 @@
+// tests/fixtures/err_unique_construction_outside_low_tier.ubl
+// The inverse of err_collection_new_in_low_tier.ubl: Unique<T>/Shared<T>/
+// SyncShared<T> now *are* LOW tier's memory model (docs/MEMORY_MODEL.md
+// §9, Open Decision #5 resolved), so construction is banned everywhere
+// *except* @tier(low) — this function is the default tier (HIGH).
+// Expected: sema FAIL (OwnershipWrapperOutsideLowTier, TIER-014).
+
+fn build_unique_wrong_tier() int {
+    let u = Unique.new(42)
+    return 1
+}
+
+fn main() void {
+    let result = build_unique_wrong_tier()
+}
