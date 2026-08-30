@@ -1,0 +1,55 @@
+// tests/fixtures/ok_multi_interpolation_and_format_spec.ubl
+// Two things at once, deliberately (docs/TESTING_RULES.md §2 — mix
+// features, don't just test them in isolation):
+//
+// 1. Format specs: `{expr:spec}` — [align][width][.precision][?]. First
+//    slice, see docs/PRINT_FORMAT_RULES.md for what's deferred.
+// 2. Multiple interpolated strings in one file. This used to be a real,
+//    documented, known bug (see ok_collections_full.ubl's own header
+//    comment) — a second `$"..."` anywhere after the first broke the
+//    lexer. Root cause: LogosLexer::handle_logos_token was computing
+//    absolute positions from a rebase-relative span instead of the
+//    correctly-tracked absolute `self.position`. Fixed as part of
+//    landing format specs (found while testing multiple format-spec
+//    holes across multiple println calls in one file — exactly the
+//    kind of interaction bug isolated single-feature fixtures can't
+//    catch, TESTING_RULES.md's whole point).
+//
+// Expected: sema OK, zero errors. Full pipeline OK — every value below
+// is actually interpreted and printed, not just type-checked.
+
+fn main() void {
+    let pi = 3.14159
+
+    // Precision alone (Double) -- the case that first surfaced the
+    // name-resolution gap this delivery also fixed: hole expressions
+    // were never walked by name resolution before, so a perfectly
+    // ordinary bound variable inside a hole resolved to <unknown>.
+    println($"pi to 2 decimal places: {pi:.2}")
+
+    // Width + alignment (Int) -- no precision.
+    println($"right-aligned in 10: [{42:>10}]")
+    println($"left-aligned in 10: [{42:<10}]")
+    println($"centered in 10: [{42:^10}]")
+
+    // Width AND precision together, no separator between them -- the
+    // one case that genuinely needs special handling: `10.2` lexes as
+    // a single DoubleLit token like it would anywhere else in the
+    // language, so the format-spec parser recovers width/precision from
+    // the literal's own source text rather than its parsed value.
+    println($"width+precision combo: [{pi:>10.2}]")
+
+    // Precision on a Str -- truncates rather than rejecting, matching
+    // the type check's own stated scope (Float/Double/Str all valid).
+    let greeting = "hello there"
+    println($"truncated to 5: [{greeting:.5}]")
+
+    // The reserved `?` debug flag -- currently a no-op at the value
+    // level (there's only one formatter), but wired through the full
+    // parser -> sema -> interpreter path so it means something the
+    // moment a real Debug/Display split exists.
+    println($"debug flag (currently == display): {pi:?}")
+
+    // No spec at all -- unchanged old behavior, still has to work.
+    println($"plain, no spec: {pi}")
+}

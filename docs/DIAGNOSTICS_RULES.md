@@ -206,6 +206,9 @@ family in `TierError`.
 | TYPE-110 | VariantArityMismatch |
 | TYPE-111 | NonExhaustiveMatch |
 | TYPE-112 | MixedDiscriminantAndPayload |
+| TYPE-113 | InlineListCapacityNotLiteral |
+| TYPE-114 | DerefOnNonReference |
+| TYPE-115 | InvalidFormatSpec |
 
 ### TIER-0xx — tier & arena enforcement, `errors/tier/mod.rs`
 
@@ -306,6 +309,9 @@ larger effort, not started.
 - `TYPE-110` `VariantArityMismatch` — *Error*. "`E.V` expects N value(s), found M" — ENUM_RULES.md §5. Fires for tuple-payload arity mismatches at both construction (`Result.Ok(1, 2)`) and pattern (`Ok(a, b) => ...`) sites, and for a payload-shape mismatch entirely (a bare `Ok => ...` pattern against a tuple-payload variant, reported as expected-N-found-0). No suggestion — the fix is always "match the declared shape," visible at the enum declaration.
 - `TYPE-111` `NonExhaustiveMatch` — *Error*. "match is not exhaustive — missing variant(s): ..." — ENUM_RULES.md §5. Pragmatic top-level-only coverage check (no nested-pattern usefulness analysis, unlike Rust's full decision-tree algorithm) — real and useful, not a stub. A guarded arm never counts toward coverage, since the guard can fail. Suggestion: add arms for the missing variant(s), or a wildcard `_ => ...` arm.
 - `TYPE-112` `MixedDiscriminantAndPayload` — *Error*. "enum `E` mixes an explicit discriminant variant with a payload-carrying variant" — ENUM_RULES.md §3.2/§5. Checked once per enum in `collect_enum_sig`; matches Rust's own restriction rather than defining a combined runtime representation for a shape nobody asked for. Suggestion: use either explicit discriminants on every fieldless variant, or payload variants — not both in the same enum.
+- `TYPE-113` `InlineListCapacityNotLiteral` — *Error*. "`InlineList.new(...)` requires a literal integer capacity" — DATASTRUCTURES.md §5. `InlineList<T>` is stack-checked and bounded, so its capacity has to be known at compile time — a variable or computed expression can't be used. Backfilled into this registry; existed in code before this entry did. Suggestion: write the capacity as a plain integer literal, e.g. `InlineList.new(64)`.
+- `TYPE-114` `DerefOnNonReference` — *Error*. "`*`/`deref` requires a reference type (`&T`/`ref T`), found `{found}`" — MEMORY_MODEL.md §9. Fires when `*`/`deref` (the dual-spelling deref operators) are applied to a non-`Reference`-typed value. Backfilled into this registry; existed in code before this entry did.
+- `TYPE-115` `InvalidFormatSpec` — *Error*. "`{spec_part}` in a format spec doesn't apply to type `{on_type}`" — docs/PRINT_FORMAT_RULES.md. Currently the only checked case is `.precision` outside Float/Double/Str (width/align/`?` apply to any type, since padding/truncation work on the rendered string regardless of what produced it). Fires from the same `infer_literal` walk that made interpolation holes get real type-checking at all for the first time — see that doc's "what this fixed along the way" section. Suggestion: drop `.precision`, or format a value of one of the three types it applies to.
 
 **TIER-0xx**
 - `TIER-001` `ArenaInWrongTier` — *Error*. "`with arena` is only valid in `@tier(mid)`; this function is `@tier(x)`". Suggestion: annotate with `@tier(mid)` or remove the arena block.

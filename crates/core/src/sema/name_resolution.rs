@@ -29,6 +29,7 @@ use crate::ast::declarations::{
 };
 use crate::ast::statements::{Block, Stmt, StmtKind, UsingBinding};
 use crate::ast::expressions::{Expr, ExprKind};
+use crate::ast::literals::{InterpolationPart, Literal};
 use crate::ast::patterns::{Pattern, PatternKind, DestructurePattern, DestructureElement, EnumPatternPayload};
 use crate::error_management::{ErrorManager, errors::NameError};
 use crate::sema::sema_context::SemaContext;
@@ -626,6 +627,27 @@ fn resolve_expr<'ast>(&mut self, expr: &Expr<'ast>) {
         ExprKind::SelfExpr => {
             if !self.in_method {
                 self.errors.add_name_error(NameError::SelfOutsideMethod { span: expr.span });
+            }
+        }
+
+        // Interpolation holes were a complete no-op here until now --
+        // `ExprKind::Lit(_) => {}` matched everything including
+        // `InterpolatedStr`, so nothing inside a `{expr}` hole was ever
+        // registered in `resolutions` at all. Invisible at runtime (the
+        // interpreter resolves identifiers by name via `interp.lookup`,
+        // entirely independent of this map -- see eval/expr.rs), but
+        // real: it surfaced the moment sema's `infer_literal` started
+        // actually calling `infer_expr` on hole expressions (needed for
+        // format-spec validation) and got `<unknown>` back for a bound,
+        // perfectly ordinary variable. Root cause was here, one layer
+        // before type_infer.rs -- name resolution runs first, and it was
+        // never visiting hole expressions to begin with.
+        ExprKind::Lit(Literal::InterpolatedStr(parts))
+        | ExprKind::Lit(Literal::InterpolatedVerbatimStr(parts)) => {
+            for part in parts.iter() {
+                if let InterpolationPart::Expr { expr, .. } = part {
+                    self.resolve_expr(expr);
+                }
             }
         }
 

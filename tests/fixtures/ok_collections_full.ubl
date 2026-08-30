@@ -11,8 +11,17 @@
 //    yet parse in rd_parser — multi-entry literals hit a parse error. Use
 //    Dictionary.new() + .set() for all dict construction in fixtures.
 //  - Tuple currently only has .len() registered.
-//  - Only ONE interpolated string ($"...") is used in the whole file —
-//    a second one anywhere later currently breaks the lexer (known gap).
+//  - Only ONE interpolated string ($"...") was used in the whole file
+//    historically — a second one anywhere later used to break the lexer.
+//    Fixed: the root cause was LogosLexer::handle_logos_token computing
+//    absolute spans/positions from the rebased-relative `span_range`
+//    instead of the correctly-tracked absolute `self.position`, so a
+//    second interpolated string (or block/doc comment) anywhere after
+//    the first one got its sub-parser started from the wrong byte
+//    offset. Left as-is here (this fixture predates the fix and doesn't
+//    need the extra churn) — see ok_multi_interpolation_and_format_spec.ubl
+//    for a fixture that actually exercises multiple interpolated
+//    strings in one file.
 //
 // Expected: zero errors, all assertions pass.
 

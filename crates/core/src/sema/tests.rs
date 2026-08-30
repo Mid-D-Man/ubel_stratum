@@ -10,7 +10,7 @@ use crate::ast::arena::AstArena;
 use crate::ast::common::{AssignOp, Span, TierAnnotation, Visibility};
 use crate::ast::declarations::{FunctionDecl, Param, ParamKind, ReturnType, StructDecl};
 use crate::ast::expressions::{Arg, ArgKind, Expr, ExprKind};
-use crate::ast::literals::Literal;
+use crate::ast::literals::{FormatSpec, InterpolationPart, Literal};
 use crate::ast::root::{Program, Item};
 use crate::ast::statements::{
     AllocatorKind, Block, SizeExpr, SizeUnit, Stmt, StmtKind, BindingTarget,
@@ -912,30 +912,78 @@ fn test_sema_unique_new_inner_type_matches_argument() {
 }
 
 
+
+// ── Format specs: {expr:spec} inside interpolation holes ───────────
+//
+// docs/PRINT_FORMAT_RULES.md. Hand-building `Literal::InterpolatedStr`
+// directly here rather than going through the parser -- these are
+// sema-level checks (does `infer_literal` walk the hole and validate
+// its spec correctly), not parser tests; parser-level coverage lives in
+// the real .ubl fixtures instead (docs/TESTING_RULES.md §1).
+
 #[test]
-fn debug_print_unique_inner_type_test() {
+fn test_sema_format_spec_precision_on_double_ok() {
+    // let pi = 3.14 ; $"{pi:.2}"
     let arena = AstArena::new();
-    let unique_int_ty = named1(&arena, "Unique", int_type(&arena));
-    let f_decl = make_fn_full(
-        &arena, "f", &[param_named(&arena, "x", unique_int_ty)],
-        None, Block { stmts: &[], span: Z },
-    );
-    let f_decl = FunctionDecl { tier: TierAnnotation::Low, ..f_decl };
+    let pi_lit = arena.alloc(Expr { kind: ExprKind::Lit(Literal::Double(3.14)), span: Z });
+    let pi_ident = arena.alloc(Expr { kind: ExprKind::Ident(arena.alloc_str("pi")), span: span_n(1) });
+    let spec = FormatSpec { align: None, width: None, precision: Some(2), debug: false };
+    let parts = arena.alloc_slice_copy(&[InterpolationPart::Expr { expr: pi_ident, spec: Some(spec) }]);
+    let interp = arena.alloc(Expr { kind: ExprKind::Lit(Literal::InterpolatedStr(parts)), span: Z });
 
-    let int_lit = arena.alloc(Expr { kind: ExprKind::Lit(Literal::Int(42)), span: Z });
-    let u_call  = namespace_new_call(&arena, "Unique", &[int_lit]);
-    let call_stmt = Stmt { kind: StmtKind::Expr(call_expr(&arena, "f", u_call)), span: Z };
-    let g_decl = make_fn_tiered(&arena, "g", TierAnnotation::Low, Block {
-        stmts: arena.alloc_slice_copy(&[call_stmt]), span: Z,
-    });
+    let stmts = arena.alloc_slice_copy(&[
+        let_stmt(&arena, "pi", pi_lit),
+        Stmt { kind: StmtKind::Expr(interp), span: Z },
+    ]);
+    let f = make_fn(&arena, "f", Block { stmts, span: Z });
+    assert_ok(&arena, &prog_with(&arena, &[Item::Function(f)]));
+}
 
-    match sema::analyse(&prog_with(&arena, &[Item::Function(f_decl), Item::Function(g_decl)]), &arena, String::new()) {
-        Ok(_) => println!("OK - no error"),
+#[test]
+fn test_sema_format_spec_precision_on_int_rejected() {
+    // let n = 42 ; $"{n:.2}"  -- precision only applies to Float/Double/Str
+    let arena = AstArena::new();
+    let n_lit = arena.alloc(Expr { kind: ExprKind::Lit(Literal::Int(42)), span: Z });
+    let n_ident = arena.alloc(Expr { kind: ExprKind::Ident(arena.alloc_str("n")), span: span_n(1) });
+    let spec = FormatSpec { align: None, width: None, precision: Some(2), debug: false };
+    let parts = arena.alloc_slice_copy(&[InterpolationPart::Expr { expr: n_ident, spec: Some(spec) }]);
+    let interp = arena.alloc(Expr { kind: ExprKind::Lit(Literal::InterpolatedStr(parts)), span: Z });
+
+    let stmts = arena.alloc_slice_copy(&[
+        let_stmt(&arena, "n", n_lit),
+        Stmt { kind: StmtKind::Expr(interp), span: Z },
+    ]);
+    let f = make_fn(&arena, "f", Block { stmts, span: Z });
+    match sema::analyse(&prog_with(&arena, &[Item::Function(f)]), &arena, String::new()) {
+        Ok(_) => panic!("expected sema to reject `.precision` on Int"),
         Err(mut errors) => {
-            println!("NAME: {:?}", errors.take_name_errors());
-            println!("TYPE: {:?}", errors.take_type_errors());
-            println!("TIER: {:?}", errors.take_tier_errors());
-            println!("BORROW: {:?}", errors.take_borrow_errors());
+            let type_errs = errors.take_type_errors();
+            assert!(
+                type_errs.iter().any(|e| matches!(e, TypeError::InvalidFormatSpec { spec_part, .. } if spec_part == "precision")),
+                "expected InvalidFormatSpec, got {:?}", type_errs
+            );
+        }
+    }
+}
+
+#[test]
+fn test_sema_interpolation_hole_undefined_name_rejected() {
+    // $"{does_not_exist}" -- proves interpolation holes are now actually
+    // walked by name resolution (they weren't at all before this
+    // delivery -- see PRINT_FORMAT_RULES.md §5).
+    let arena = AstArena::new();
+    let bad_ident = arena.alloc(Expr { kind: ExprKind::Ident(arena.alloc_str("does_not_exist")), span: Z });
+    let parts = arena.alloc_slice_copy(&[InterpolationPart::Expr { expr: bad_ident, spec: None }]);
+    let interp = arena.alloc(Expr { kind: ExprKind::Lit(Literal::InterpolatedStr(parts)), span: Z });
+    let f = make_fn(&arena, "f", Block {
+        stmts: arena.alloc_slice_copy(&[Stmt { kind: StmtKind::Expr(interp), span: Z }]),
+        span: Z,
+    });
+    match sema::analyse(&prog_with(&arena, &[Item::Function(f)]), &arena, String::new()) {
+        Ok(_) => panic!("expected sema to reject an undefined name inside an interpolation hole"),
+        Err(mut errors) => {
+            let name_errs = errors.take_name_errors();
+            assert!(!name_errs.is_empty(), "expected at least one name error, got none");
         }
     }
 }

@@ -1,0 +1,15 @@
+// tests/fixtures/err_interpolation_hole_undefined_name.ubl
+// A second, real, pre-existing gap this delivery fixed alongside format
+// specs: interpolation holes were PARSED (a broken hole was always a
+// real parse error) but never actually name-resolved or type-checked --
+// `resolve_expr`'s `ExprKind::Lit(_) => {}` arm matched
+// `InterpolatedStr` too, so nothing inside a `{expr}` hole was ever
+// walked by name resolution at all. Invisible at runtime (the
+// interpreter resolves identifiers by name, independent of sema's
+// resolution map -- see interpreter/eval/expr.rs), but a real, silent
+// gap in static checking: this exact program used to sema-pass cleanly.
+// Expected: sema FAIL (UndefinedName).
+
+fn main() void {
+    println($"this references nothing real: {does_not_exist}")
+}

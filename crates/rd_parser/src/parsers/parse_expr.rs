@@ -29,7 +29,7 @@ use ubel_stratum::{
             MatchArm, MatchExpr,
             ObjectField, OptionalAccess, OrElseFallback,
         },
-        literals::{InterpolationPart, Literal},
+        literals::{Align, FormatSpec, InterpolationPart, Literal},
     },
     error_management::errors::ParseContext,
     lexer::{InterpolationPart as LexPart, Span as LSpan, TokenType},
@@ -552,6 +552,106 @@ fn parse_lambda<'ast, 'tok>(p: &mut Parser<'ast, 'tok>, lo: LSpan) -> Option<&'a
 // chainable, lazy query methods, rather than dedicated expression-level
 // grammar. See docs/PARSER_RULES.md §6 for the reasoning.
 
+// ── Format spec ───────────────────────────────────────────────────────────
+//
+// `[align] [width] ['.' precision] ['?']` — a deliberately separate, tiny
+// grammar from the rest of the expression parser (see docs/PRINT_FORMAT_
+// RULES.md). Runs on the same token stream `parse_expr` above already
+// consumed part of, continuing from wherever the leftover `:` was.
+
+fn parse_format_spec<'ast, 'tok>(p: &mut Parser<'ast, 'tok>) -> Option<FormatSpec> {
+    let mut align: Option<Align> = None;
+    match p.cursor.peek() {
+        TokenType::Less    => { align = Some(Align::Left);   p.cursor.advance(); }
+        TokenType::Greater => { align = Some(Align::Right);  p.cursor.advance(); }
+        TokenType::Caret   => { align = Some(Align::Center); p.cursor.advance(); }
+        _ => {}
+    }
+
+    // `{value:10.2}` (width 10, precision 2, no space between them) is
+    // genuinely ambiguous at the TOKEN level, not just visually: the
+    // general tokenizer has no notion of "format spec" context, so
+    // `10.2` with a digit immediately before the dot lexes as one
+    // Float/DoubleLit token, same as it would anywhere else in the
+    // language (`{value:.2}` alone is fine — a leading dot with no
+    // digit before it never forms a numeric literal, confirmed via the
+    // token stream in earlier testing). Recover width/precision from the
+    // literal's own source text rather than its parsed f32/f64 value,
+    // since a float's fractional part doesn't reliably round-trip back
+    // to "how many digits were written" (`10.20` and `10.2` are the same
+    // f64 but different precisions).
+    if let TokenType::FloatLit(_) | TokenType::DoubleLit(_) = p.cursor.peek() {
+        let lexeme = p.cursor.peek_token().lexeme.trim_end_matches(['f', 'F']);
+        if let Some((w, prec)) = lexeme.split_once('.') {
+            if let (Ok(w), Ok(prec)) = (w.parse::<u32>(), prec.parse::<u32>()) {
+                p.cursor.advance();
+                let debug = if p.cursor.is_at(&TokenType::Question) { p.cursor.advance(); true } else { false };
+                if !p.cursor.is_eof() {
+                    p.emit(crate::error::illegal_here(
+                        "format spec", "unexpected trailing content",
+                        p.cursor.current_span(),
+                        Some("expected `[align][width][.precision][?]`, e.g. `{value:>10.2}`"),
+                    ));
+                    return None;
+                }
+                return Some(FormatSpec { align, width: Some(w), precision: Some(prec), debug });
+            }
+        }
+    }
+
+    let width = if let TokenType::IntLit(n) = p.cursor.peek() {
+        let n = *n;
+        if n < 0 {
+            p.emit(crate::error::illegal_here(
+                "format spec", "width cannot be negative", p.cursor.current_span(), None,
+            ));
+            return None;
+        }
+        p.cursor.advance();
+        Some(n as u32)
+    } else {
+        None
+    };
+
+    let precision = if p.cursor.is_at(&TokenType::Dot) {
+        p.cursor.advance();
+        match p.cursor.peek() {
+            TokenType::IntLit(n) if *n >= 0 => {
+                let n = *n;
+                p.cursor.advance();
+                Some(n as u32)
+            }
+            _ => {
+                p.emit(crate::error::illegal_here(
+                    "format spec", "expected a non-negative integer after `.`",
+                    p.cursor.current_span(), Some("e.g. `{value:.2}`"),
+                ));
+                return None;
+            }
+        }
+    } else {
+        None
+    };
+
+    let debug = if p.cursor.is_at(&TokenType::Question) {
+        p.cursor.advance();
+        true
+    } else {
+        false
+    };
+
+    if !p.cursor.is_eof() {
+        p.emit(crate::error::illegal_here(
+            "format spec", "unexpected trailing content",
+            p.cursor.current_span(),
+            Some("expected `[align][width][.precision][?]`, e.g. `{value:>10.2}`"),
+        ));
+        return None;
+    }
+
+    Some(FormatSpec { align, width, precision, debug })
+}
+
 // ── Interpolated string ───────────────────────────────────────────────────────
 
 fn parse_interp<'ast, 'tok>(p: &mut Parser<'ast, 'tok>, parts: Vec<LexPart>, lo: LSpan) -> Option<&'ast Expr<'ast>> {
@@ -568,7 +668,50 @@ fn parse_interp<'ast, 'tok>(p: &mut Parser<'ast, 'tok>, parts: Vec<LexPart>, lo:
                 // and error manager are local to just this one hole.
                 let mut sub = Parser::new(p.arena, tokens, String::new());
                 match parse_expr(&mut sub) {
-                    Some(expr) => ast_parts.push(InterpolationPart::Expr(expr)),
+                    Some(expr) => {
+                        // A format spec (`{value:>10.2}`) is found by
+                        // checking for a LEFTOVER `:` after `parse_expr`
+                        // above has already consumed everything it
+                        // recognizes as part of the expression — not by
+                        // scanning for `:` in the lexer. (Ubel Stratum has
+                        // no ternary operator to collide with here — `?`
+                        // is the fallible-unwrap postfix, same as Rust's
+                        // `?`, not a conditional; there's no `cond ? a :
+                        // b` in this language.) The general reason this
+                        // still has to happen at the parser level: only
+                        // the parser actually knows where an expression
+                        // ends — the lexer has no notion of expression
+                        // structure at all.
+                        let spec = if sub.cursor.is_at(&TokenType::Colon) {
+                            sub.cursor.advance();
+                            match parse_format_spec(&mut sub) {
+                                Some(s) => Some(s),
+                                None => {
+                                    for err in sub.errors.take_parse_errors() { p.emit(err); }
+                                    return None;
+                                }
+                            }
+                        } else if !sub.cursor.is_eof() {
+                            // Previously silently discarded — trailing
+                            // tokens after a hole's expression (anything
+                            // that isn't a format-spec `:`) just vanished
+                            // with no error. Real, pre-existing gap, found
+                            // while wiring format specs through this exact
+                            // spot; fixed alongside since leaving it here
+                            // once diagnosed would be an odd thing to walk
+                            // past.
+                            p.emit(crate::error::illegal_here(
+                                "interpolation hole",
+                                "unexpected trailing tokens after the expression",
+                                sub.cursor.current_span(),
+                                Some("did you mean to add a `:` format spec?"),
+                            ));
+                            return None;
+                        } else {
+                            None
+                        };
+                        ast_parts.push(InterpolationPart::Expr { expr, spec });
+                    }
                     None => {
                         let sub_errors = sub.errors.take_parse_errors();
                         if sub_errors.is_empty() {

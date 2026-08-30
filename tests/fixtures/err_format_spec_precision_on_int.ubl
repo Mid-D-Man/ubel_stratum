@@ -1,0 +1,13 @@
+// tests/fixtures/err_format_spec_precision_on_int.ubl
+// `.precision` only means something for Float/Double (decimal places) or
+// Str (max length) -- an Int has neither. This is also the fixture that
+// proves interpolation holes are actually type-checked at all now:
+// before this delivery, `infer_literal` never called `infer_expr` on a
+// hole's expression, so this exact program would have sailed through
+// sema with zero errors.
+// Expected: sema FAIL (InvalidFormatSpec, TYPE-115).
+
+fn main() void {
+    let n = 42
+    println($"bad: {n:.2}")
+}

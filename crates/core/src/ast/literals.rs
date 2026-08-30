@@ -12,15 +12,45 @@
 
 use crate::ast::expressions::Expr;
 
+/// A parsed `{expr:spec}` format specifier — the part after the `:` in an
+/// interpolation hole. First slice, deliberately not full parity with
+/// Rust's `format!` mini-language (see `docs/PRINT_FORMAT_RULES.md`):
+/// width, precision, and alignment are covered; fill character (beyond
+/// the implicit space), sign forcing (`+`), the alternate form (`#`),
+/// zero-padding, and numeric bases (`x`/`o`/`b`) are deferred.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FormatSpec {
+    pub align:     Option<Align>,
+    pub width:     Option<u32>,
+    pub precision: Option<u32>,
+    /// Trailing `?` — reserved for a future `Debug`-vs-`Display` split.
+    /// Currently a no-op at the value level (there is only one formatter),
+    /// but the syntax is wired through end-to-end now so it means
+    /// something the moment that split exists, rather than needing a
+    /// second syntax-plus-parser change later.
+    pub debug:     bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Align {
+    Left,
+    Right,
+    Center,
+}
+
 /// One segment of an interpolated string `$"...{...}..."`.
 #[derive(Debug, Clone, Copy)]
 pub enum InterpolationPart<'ast> {
     /// A plain text run: `"Hello, "` in `$"Hello, {name}"`.
     Text(&'ast str),
-    /// A fully parsed expression hole: `name` in `{name}`. Parsed by
-    /// rd_parser at the same time as everything else -- no re-parsing
-    /// happens later, in sema or the interpreter.
-    Expr(&'ast Expr<'ast>),
+    /// A fully parsed expression hole: `name` in `{name}`, with an
+    /// optional format spec: `{name:>10}`. Parsed by rd_parser at the
+    /// same time as everything else -- no re-parsing happens later, in
+    /// sema or the interpreter.
+    Expr {
+        expr: &'ast Expr<'ast>,
+        spec: Option<FormatSpec>,
+    },
 }
 
 

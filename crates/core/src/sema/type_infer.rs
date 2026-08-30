@@ -76,7 +76,7 @@ use crate::ast::expressions::{
     Arg, ArgKind, Expr, ExprKind, IfBranchBody, LambdaBody,
     MatchArmBody, OrElseFallback,
 };
-use crate::ast::literals::Literal;
+use crate::ast::literals::{FormatSpec, InterpolationPart, Literal};
 use crate::ast::patterns::{EnumPatternPayload, Pattern, PatternKind};
 use crate::ast::root::{Item, Program};
 use crate::ast::statements::{AllocatorKind, BindingTarget, Block, Stmt, StmtKind};
@@ -2741,10 +2741,47 @@ impl<'a> InferCtx<'a> {
             Literal::Bool(_)  => self.ctx.types.intern(SemaType::Bool),
             Literal::Char(_)  => self.ctx.types.intern(SemaType::Char),
             Literal::Null     => self.ctx.types.intern(SemaType::Null),
-            Literal::Str(_)
-            | Literal::VerbatimStr(_)
-            | Literal::InterpolatedStr(_)
-            | Literal::InterpolatedVerbatimStr(_) => self.ctx.types.intern(SemaType::Str),
+            Literal::Str(_) | Literal::VerbatimStr(_) => self.ctx.types.intern(SemaType::Str),
+            // Real, pre-existing gap found while wiring format specs
+            // through this exact literal: interpolation holes were
+            // PARSED (parse_interp emits real parse errors for a broken
+            // hole) but never actually TYPE-CHECKED — `$"{undefined_
+            // name}"` sailed through sema undetected, only failing (or
+            // not) at interpret time. Walking each hole's expression
+            // here fixes that as a side effect of needing each hole's
+            // type anyway, to validate its format spec against it.
+            Literal::InterpolatedStr(parts)
+            | Literal::InterpolatedVerbatimStr(parts) => {
+                for part in parts.iter() {
+                    if let InterpolationPart::Expr { expr, spec } = part {
+                        let hole_ty = self.infer_expr(expr);
+                        if let Some(spec) = spec {
+                            self.check_format_spec(spec, hole_ty, expr.span);
+                        }
+                    }
+                }
+                self.ctx.types.intern(SemaType::Str)
+            }
+        }
+    }
+
+    /// `.precision` only means something for Float/Double (decimal
+    /// places) or Str (max length, truncating) — anything else is a real
+    /// error (`TYPE-115`), not a silent no-op. Width/align/`?` apply to
+    /// any type (padding/truncation work on the rendered string
+    /// regardless), so nothing else to check yet.
+    fn check_format_spec(&mut self, spec: &FormatSpec, hole_ty: TypeId, span: Span) {
+        if spec.precision.is_some() {
+            let resolved = self.ctx.types.get(hole_ty);
+            let ok = matches!(resolved, SemaType::Float | SemaType::Double | SemaType::Str);
+            if !ok {
+                let on_type = resolved.display(&self.ctx.types, &self.ctx.symbols);
+                self.errors.add_type_error(TypeError::InvalidFormatSpec {
+                    spec_part: "precision".to_string(),
+                    on_type,
+                    span,
+                });
+            }
         }
     }
 

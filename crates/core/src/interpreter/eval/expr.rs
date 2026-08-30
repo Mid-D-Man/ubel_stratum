@@ -11,7 +11,7 @@ use crate::ast::common::{AssignOp, BinOp, UnaryOp};
 use crate::ast::expressions::{
     ArgKind, Expr, ExprKind, LambdaBody, MatchArmBody, OrElseFallback,
 };
-use crate::ast::literals::{InterpolationPart, Literal};
+use crate::ast::literals::{Align, FormatSpec, InterpolationPart, Literal};
 use crate::ast::types::{Type, TypeKind};
 use crate::interpreter::eval::{stmt, pattern, FunctionBody, FunctionDef, Interpreter};
 use crate::interpreter::value::{EvalResult, Signal, Value};
@@ -404,13 +404,57 @@ fn eval_literal<'ast>(interp: &mut Interpreter<'ast>, lit: &Literal<'ast>) -> Ev
             for part in parts.iter() {
                 match part {
                     InterpolationPart::Text(t) => result.push_str(t),
-                    InterpolationPart::Expr(expr) => {
+                    InterpolationPart::Expr { expr, spec } => {
                         let val = eval_expr(interp, expr)?;
-                        result.push_str(&val.to_string());
+                        result.push_str(&apply_format_spec(&val, spec.as_ref()));
                     }
                 }
             }
             Ok(Value::str_from(result))
+        }
+    }
+}
+
+/// Renders `val` per `spec` — width/precision/alignment (first slice; see
+/// docs/PRINT_FORMAT_RULES.md for what's deferred: fill character beyond
+/// space, sign forcing, `#`, `0`-padding, numeric bases). `spec == None`
+/// is exactly the old `val.to_string()` behavior, unchanged.
+fn apply_format_spec(val: &Value, spec: Option<&FormatSpec>) -> String {
+    let Some(spec) = spec else { return val.to_string(); };
+
+    // Precision: sema already rejected this combination for anything
+    // that isn't Float/Double/Str (TypeError::InvalidFormatSpec,
+    // TYPE-1xx — see type_infer.rs), so reaching here with a precision
+    // on some other type would mean sema has a bug, not that this code
+    // needs its own fallback story for it.
+    let base = match (val, spec.precision) {
+        (Value::Float(f), Some(p))  => format!("{:.*}", p as usize, f),
+        (Value::Double(f), Some(p)) => format!("{:.*}", p as usize, f),
+        (Value::Str(s), Some(p)) => {
+            let p = p as usize;
+            if s.chars().count() <= p { s.to_string() } else { s.chars().take(p).collect() }
+        }
+        _ => val.to_string(),
+    };
+
+    let Some(width) = spec.width else { return base; };
+    let width = width as usize;
+    let len = base.chars().count();
+    if len >= width { return base; }
+    let pad = width - len;
+
+    // No explicit align marker: left-align, matching "text flows left by
+    // default" rather than Rust's type-dependent default (right for
+    // numbers, left for strings) — a deliberate simplification since
+    // applying that here would need type info this function doesn't
+    // have. Use `>` explicitly for right-aligned numbers.
+    match spec.align.unwrap_or(Align::Left) {
+        Align::Left   => format!("{base}{}", " ".repeat(pad)),
+        Align::Right  => format!("{}{base}", " ".repeat(pad)),
+        Align::Center => {
+            let left  = pad / 2;
+            let right = pad - left;
+            format!("{}{base}{}", " ".repeat(left), " ".repeat(right))
         }
     }
 }

@@ -298,9 +298,24 @@ impl<'a> LogosLexer<'a> {
         span_range: std::ops::Range<usize>,
         lexeme: String,
     ) {
+        // `span_range` (from `self.logos_lex.span()`) is relative to
+        // whichever slice `self.logos_lex` currently starts from — and
+        // every branch below rebases it (`LogosToken::lexer(&self.input
+        // [pos..])`) after a string/comment, so after the FIRST rebase,
+        // `span_range` is no longer relative to `self.input` at all.
+        // `self.position`, by contrast, is a plain running byte counter
+        // (`update_position`) that's never reset by a rebase — it's the
+        // one value here that's always absolute. This was the actual
+        // root cause of the documented "a second interpolated string
+        // anywhere later currently breaks the lexer" gap (see
+        // ok_collections_full.ubl's own header comment): a SECOND
+        // InterpolatedStringStart's sub-parser was being told to start
+        // scanning from a rebase-relative offset as if it were absolute,
+        // landing it somewhere else in the file entirely.
+        let abs_start = self.position;
         match logos_token {
             LogosToken::InterpolatedStringStart => {
-                let mut parser = StringParser::new(self.input, span_range.start, self.line, self.column);
+                let mut parser = StringParser::new(self.input, abs_start, self.line, self.column);
                 match parser.parse_interpolated_string() {
                     Ok((token, pos, line, col)) => {
                         self.tokens.push(token);
@@ -312,7 +327,7 @@ impl<'a> LogosLexer<'a> {
                 return;
             }
             LogosToken::VerbatimStringStart => {
-                let mut parser = StringParser::new(self.input, span_range.start, self.line, self.column);
+                let mut parser = StringParser::new(self.input, abs_start, self.line, self.column);
                 match parser.parse_verbatim_string() {
                     Ok((token, pos, line, col)) => {
                         self.tokens.push(token);
@@ -324,7 +339,7 @@ impl<'a> LogosLexer<'a> {
                 return;
             }
             LogosToken::InterpolatedVerbatimStart => {
-                let mut parser = StringParser::new(self.input, span_range.start, self.line, self.column);
+                let mut parser = StringParser::new(self.input, abs_start, self.line, self.column);
                 match parser.parse_interpolated_verbatim_string() {
                     Ok((token, pos, line, col)) => {
                         self.tokens.push(token);
@@ -336,7 +351,7 @@ impl<'a> LogosLexer<'a> {
                 return;
             }
             LogosToken::BlockCommentStart => {
-                let mut parser = CommentParser::new(self.input, span_range.start, self.line, self.column);
+                let mut parser = CommentParser::new(self.input, abs_start, self.line, self.column);
                 match parser.parse_block_comment() {
                     Ok((_token, pos, line, col)) => {
                         self.position = pos; self.line = line; self.column = col;
@@ -348,7 +363,7 @@ impl<'a> LogosLexer<'a> {
             }
             LogosToken::DocCommentStar | LogosToken::DocCommentBang => {
                 let marker = if matches!(logos_token, LogosToken::DocCommentStar) { "/**" } else { "/*!" };
-                let mut parser = CommentParser::new(self.input, span_range.start, self.line, self.column);
+                let mut parser = CommentParser::new(self.input, abs_start, self.line, self.column);
                 match parser.parse_doc_comment(marker) {
                     Ok((token, pos, line, col)) => {
                         self.tokens.push(token);
@@ -366,7 +381,7 @@ impl<'a> LogosLexer<'a> {
             _ => {}
         }
 
-        let span = Span::new(span_range.start, span_range.end, self.line, self.column);
+        let span = Span::new(abs_start, abs_start + (span_range.end - span_range.start), self.line, self.column);
         self.update_position(&lexeme);
         let token_type = self.map_logos_token(logos_token, &lexeme);
         self.tokens.push(Token::new(token_type, span, lexeme));

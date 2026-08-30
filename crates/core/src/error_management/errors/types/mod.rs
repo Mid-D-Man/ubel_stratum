@@ -62,6 +62,15 @@ pub enum TypeError {
         span:  Span,
     },
 
+    /// A `{value:spec}` format spec used a part that doesn't apply to
+    /// `value`'s type — currently only `.precision` is type-restricted
+    /// (Float/Double/Str); width/align/`?` apply to anything.
+    InvalidFormatSpec {
+        spec_part: String,
+        on_type:   String,
+        span:      Span,
+    },
+
     /// A type could not be inferred — too ambiguous.
     CannotInferType {
         span:       Span,
@@ -137,6 +146,7 @@ impl TypeError {
             TypeError::TryOnNonFallible           { span, .. } => *span,
             TypeError::AwaitOnNonTask             { span, .. } => *span,
             TypeError::DerefOnNonReference        { span, .. } => *span,
+            TypeError::InvalidFormatSpec          { span, .. } => *span,
             TypeError::CannotInferType            { span, .. } => *span,
             TypeError::GenericArgCountMismatch    { span, .. } => *span,
             TypeError::UnknownVariant             { span, .. } => *span,
@@ -169,6 +179,9 @@ impl TypeError {
 
             TypeError::DerefOnNonReference { found, .. } =>
                 format!("`*`/`deref` requires a reference type (`&T`/`ref T`), found `{}`", found),
+
+            TypeError::InvalidFormatSpec { spec_part, on_type, .. } =>
+                format!("`{}` in a format spec doesn't apply to type `{}`", spec_part, on_type),
 
             TypeError::CannotInferType { .. } =>
                 "cannot infer type — add an explicit type annotation".to_string(),
@@ -219,6 +232,9 @@ impl TypeError {
             TypeError::InlineListCapacityNotLiteral { .. } =>
                 Some("write the capacity as a plain integer literal, e.g. InlineList.new(64) — a variable or computed expression can't be used here".to_string()),
 
+            TypeError::InvalidFormatSpec { spec_part, .. } if spec_part == "precision" =>
+                Some("`.precision` only applies to float/double (decimal places) or string (max length) — drop it, or format a value of one of those types".to_string()),
+
             _ => None,
         }
     }
@@ -252,6 +268,7 @@ impl crate::error_management::render::Diagnosable for TypeError {
             TypeError::MixedDiscriminantAndPayload { .. } => "TYPE-112",
             TypeError::InlineListCapacityNotLiteral { .. } => "TYPE-113",
             TypeError::DerefOnNonReference { .. }          => "TYPE-114",
+            TypeError::InvalidFormatSpec { .. }            => "TYPE-115",
         }
     }
     fn span(&self) -> Span { self.span() }
