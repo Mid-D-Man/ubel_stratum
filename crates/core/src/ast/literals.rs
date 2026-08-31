@@ -23,11 +23,11 @@ pub struct FormatSpec {
     pub align:     Option<Align>,
     pub width:     Option<u32>,
     pub precision: Option<u32>,
-    /// Trailing `?` — reserved for a future `Debug`-vs-`Display` split.
-    /// Currently a no-op at the value level (there is only one formatter),
-    /// but the syntax is wired through end-to-end now so it means
-    /// something the moment that split exists, rather than needing a
-    /// second syntax-plus-parser change later.
+    /// Trailing `?` — selects `Value::debug_string()` over `Display` as
+    /// the base formatter (see `interpreter::eval::expr::apply_format_spec`
+    /// and `Value::debug_string` doc comments for exactly what differs:
+    /// quoted/escaped `Str`/`Char`, and live `Rc::strong_count` on
+    /// `Shared`/`SyncShared`).
     pub debug:     bool,
 }
 

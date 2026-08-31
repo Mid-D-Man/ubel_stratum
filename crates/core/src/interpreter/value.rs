@@ -365,6 +365,139 @@ impl Value {
         }
     }
 
+    /// Ubel-language-level `{x:?}` formatter — distinct from `Display`
+    /// (`{x}`) in exactly two ways, both chosen because they're real
+    /// information available *right now*, not fabricated for the
+    /// occasion (docs/PRINT_FORMAT_RULES.md §4 explicitly rejected a
+    /// fabricated tier/arena tag here — no `Value` carries one at
+    /// runtime, on purpose, per MEMORY_MODEL.md §7):
+    ///
+    ///   1. `Str`/`Char` are quoted and escaped (Rust's own `{:?}` on
+    ///      `&str`/`char` does exactly this) — `hello` (Display) vs
+    ///      `"hello"` (Debug) — so embedded whitespace/quotes are
+    ///      visible instead of blending into surrounding text.
+    ///   2. `Shared`/`SyncShared` show their live `Rc::strong_count` —
+    ///      genuinely new info `Display` shouldn't clutter but a
+    ///      systems debugger printing an aliased value legitimately
+    ///      wants: how many places currently point at this.
+    ///
+    /// Everything else delegates straight to `Display` — nothing else
+    /// real to add yet (`PartialEq`/`Eq`/`Hash`/`Ord`/`Clone` as their
+    /// own derivable concepts remain a separate, deferred slice).
+    pub fn debug_string(&self) -> String {
+        match self {
+            Value::Str(s)  => format!("{:?}", s.as_str()),
+            Value::Char(c) => format!("{:?}", c),
+
+            Value::Tuple(elems) => {
+                let mut out = String::from("(");
+                for (i, e) in elems.iter().enumerate() {
+                    if i > 0 { out.push_str(", "); }
+                    out.push_str(&e.debug_string());
+                }
+                out.push(')');
+                out
+            }
+            Value::List(rc) => {
+                let items = rc.borrow();
+                let mut out = String::from("[");
+                for (i, v) in items.iter().enumerate() {
+                    if i > 0 { out.push_str(", "); }
+                    out.push_str(&v.debug_string());
+                }
+                out.push(']');
+                out
+            }
+            Value::Dict(rc) => {
+                let entries = rc.borrow();
+                let mut out = String::from("{");
+                for (i, (k, v)) in entries.iter().enumerate() {
+                    if i > 0 { out.push_str(", "); }
+                    out.push_str(&k.debug_string());
+                    out.push_str(": ");
+                    out.push_str(&v.debug_string());
+                }
+                out.push('}');
+                out
+            }
+            Value::Queue(rc) => {
+                let items = rc.borrow();
+                let mut out = String::from("Queue[");
+                for (i, v) in items.iter().enumerate() {
+                    if i > 0 { out.push_str(", "); }
+                    out.push_str(&v.debug_string());
+                }
+                out.push(']');
+                out
+            }
+            Value::Stack(rc) => {
+                let items = rc.borrow();
+                let mut out = String::from("Stack[");
+                for (i, v) in items.iter().enumerate() {
+                    if i > 0 { out.push_str(", "); }
+                    out.push_str(&v.debug_string());
+                }
+                out.push(']');
+                out
+            }
+            Value::InlineList(rc) => {
+                let data = rc.borrow();
+                let mut out = String::from("InlineList[");
+                for (i, v) in data.items.iter().enumerate() {
+                    if i > 0 { out.push_str(", "); }
+                    out.push_str(&v.debug_string());
+                }
+                out.push_str(&format!("] (len={}, capacity={})", data.items.len(), data.capacity));
+                out
+            }
+            Value::Unique(v) => format!("Unique({})", v.debug_string()),
+            Value::Shared(rc) => format!(
+                "Shared(refs={}, {})", Rc::strong_count(rc), rc.borrow().debug_string()
+            ),
+            Value::SyncShared(rc) => format!(
+                "SyncShared(refs={}, {})", Rc::strong_count(rc), rc.borrow().debug_string()
+            ),
+            Value::Struct { type_name, fields } => {
+                let fields = fields.borrow();
+                let mut out = format!("{} {{", type_name);
+                for (i, (k, v)) in fields.iter().enumerate() {
+                    if i > 0 { out.push_str(", "); }
+                    out.push_str(k);
+                    out.push_str(": ");
+                    out.push_str(&v.debug_string());
+                }
+                out.push('}');
+                out
+            }
+            Value::Enum { type_name, variant, payload } => match payload.as_ref() {
+                EnumPayload::None => format!("{}.{}", type_name, variant),
+                EnumPayload::Tuple(items) => {
+                    let mut out = format!("{}.{}(", type_name, variant);
+                    for (i, v) in items.iter().enumerate() {
+                        if i > 0 { out.push_str(", "); }
+                        out.push_str(&v.debug_string());
+                    }
+                    out.push(')');
+                    out
+                }
+                EnumPayload::Struct(fields) => {
+                    let mut out = format!("{}.{} {{", type_name, variant);
+                    for (i, (k, v)) in fields.iter().enumerate() {
+                        if i > 0 { out.push_str(", "); }
+                        out.push_str(k);
+                        out.push_str(": ");
+                        out.push_str(&v.debug_string());
+                    }
+                    out.push('}');
+                    out
+                }
+            },
+            // Null/Void/Bool/Int/Float/Double/Function/Pool/Handle/
+            // Linqerizer: nothing debug-specific to add over Display yet.
+            other => other.to_string(),
+        }
+    }
+
     /// Convenience: make an empty `Value::Pool` with the given capacity.
     pub fn new_pool(capacity: usize) -> Self {
         Value::Pool(Rc::new(RefCell::new(PoolData::with_capacity(capacity))))
@@ -521,3 +654,84 @@ impl fmt::Display for Value {
         }
     }
         }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_debug_string_quotes_str_display_does_not() {
+        let v = Value::str_from("hello");
+        assert_eq!(v.to_string(), "hello");
+        assert_eq!(v.debug_string(), "\"hello\"");
+    }
+
+    #[test]
+    fn test_debug_string_quotes_and_escapes_char() {
+        let v = Value::Char('x');
+        assert_eq!(v.to_string(), "x");
+        assert_eq!(v.debug_string(), "'x'");
+
+        let newline = Value::str_from("a\nb");
+        assert_eq!(newline.debug_string(), "\"a\\nb\"");
+        assert_eq!(newline.to_string(), "a\nb");
+    }
+
+    #[test]
+    fn test_debug_string_recurses_into_struct_fields() {
+        let mut fields = HashMap::new();
+        fields.insert("name".to_string(), Value::str_from("Ada"));
+        fields.insert("hp".to_string(), Value::Int(100));
+        let v = Value::Struct {
+            type_name: "Player".to_string(),
+            fields:    Rc::new(RefCell::new(fields)),
+        };
+        let debug = v.debug_string();
+        assert!(debug.contains("\"Ada\""), "expected quoted name in debug output, got: {debug}");
+        assert!(!v.to_string().contains('"'), "display should not quote strings, got: {}", v.to_string());
+    }
+
+    #[test]
+    fn test_debug_string_recurses_into_list_elements() {
+        let items = vec![Value::str_from("a"), Value::str_from("b")];
+        let v = Value::List(Rc::new(RefCell::new(items)));
+        assert_eq!(v.debug_string(), "[\"a\", \"b\"]");
+        assert_eq!(v.to_string(), "[a, b]");
+    }
+
+    #[test]
+    fn test_debug_string_shows_strong_count_for_shared_display_does_not() {
+        let rc = Rc::new(RefCell::new(Value::Int(42)));
+        let a  = Value::Shared(Rc::clone(&rc));
+        let b  = Value::Shared(Rc::clone(&rc));
+        // rc itself + a's clone + b's clone = 3 live owners right now.
+        assert_eq!(Rc::strong_count(&rc), 3);
+        let debug = a.debug_string();
+        assert!(debug.contains("refs=3"), "expected refs=3 in debug output, got: {debug}");
+        assert!(!a.to_string().contains("refs"), "display should not show ref count, got: {}", a.to_string());
+        drop(b);
+        assert_eq!(Rc::strong_count(&rc), 2);
+    }
+
+    #[test]
+    fn test_debug_string_equals_display_when_nothing_new_to_show() {
+        // Regression guard for the design principle itself: debug_string
+        // only ever diverges from Display for Str/Char/Shared/SyncShared.
+        // Everything else must produce byte-identical output.
+        let cases = vec![
+            Value::Null,
+            Value::Void,
+            Value::Bool(true),
+            Value::Int(42),
+            Value::Float(3.14),
+            Value::Double(2.718),
+            Value::Function(0),
+        ];
+        for v in cases {
+            assert_eq!(
+                v.debug_string(), v.to_string(),
+                "debug_string should equal Display for {}", v.type_name()
+            );
+        }
+    }
+}

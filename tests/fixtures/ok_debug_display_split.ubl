@@ -1,0 +1,43 @@
+// tests/fixtures/ok_debug_display_split.ubl
+// Real Debug-vs-Display divergence (docs/PRINT_FORMAT_RULES.md). The
+// two places `{x:?}` now genuinely differs from `{x}`:
+//   1. Str/Char are quoted+escaped in Debug, bare in Display.
+//   2. Shared/SyncShared show a live Rc::strong_count in Debug that
+//      Display deliberately omits (MEMORY_MODEL.md §7 — no `Value`
+//      carries a tier tag at runtime, so this is real alias-count
+//      info, not a fabricated tier/arena label).
+// ok_multi_interpolation_and_format_spec.ubl already covers the case
+// where Debug legitimately equals Display (plain numbers) — this
+// fixture covers the two cases where it doesn't.
+// Expected: sema OK, zero errors. Full pipeline OK.
+
+struct Player {
+    name: string
+    hp: int
+}
+
+@tier(low)
+fn alias_demo() void {
+    let s = Shared.new("hello")
+    // `let s2 = s` clones the Value out of the environment
+    // (Interpreter::lookup uses .cloned()) -- for Value::Shared that
+    // clones the Rc, so `s` and `s2` are 2 live owners.
+    let s2 = s
+    println($"shared display, no ref count shown: {s}")
+    // refs=3, not 2 -- genuinely correct, not a fixture bug. Evaluating
+    // the `{s:?}` hole itself clones `s` a third time (eval_interpolated
+    // -> eval_expr -> Interpreter::lookup -> .cloned()) to hand to
+    // apply_format_spec, and that transient clone is still alive while
+    // debug_string() reads Rc::strong_count -- the count necessarily
+    // includes the very copy currently being printed, same as it would
+    // in hand-written Rust asking Rc::strong_count(&some_clone).
+    println($"shared debug, live alias count shown: {s:?}")
+}
+
+fn main() void {
+    let p = Player { name = "Ada", hp = 100 }
+    println($"struct display, bare string field: {p}")
+    println($"struct debug, quoted string field: {p:?}")
+
+    alias_demo()
+}

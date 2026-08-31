@@ -225,7 +225,7 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
 
     /// Parse one argument inside a non-`@cfg` attribute.
     ///
-    /// ```
+    /// ```text
     /// arg ::= Ident                         // bare: @deprecated
     ///       | StringLit                     // string: @doc("blah")
     ///       | IntLit                        // integer: @version(2)
@@ -280,7 +280,7 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
 
     /// Parse one argument specifically inside `@cfg(...)`.
     ///
-    /// ```
+    /// ```text
     /// cfg_arg ::= "not"  "(" cfg_arg ")"          // negation
     ///           | "any"  "(" cfg_arg ("," cfg_arg)* ")"  // OR
     ///           | "all"  "(" cfg_arg ("," cfg_arg)* ")"  // AND

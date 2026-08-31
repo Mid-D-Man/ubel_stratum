@@ -44,11 +44,14 @@ fn main() void {
     let greeting = "hello there"
     println($"truncated to 5: [{greeting:.5}]")
 
-    // The reserved `?` debug flag -- currently a no-op at the value
-    // level (there's only one formatter), but wired through the full
-    // parser -> sema -> interpreter path so it means something the
-    // moment a real Debug/Display split exists.
-    println($"debug flag (currently == display): {pi:?}")
+    // The `?` debug flag -- real now (see ok_debug_display_split.ubl for
+    // a case where it actually diverges from Display). For a Double
+    // specifically it prints identically to Display: debug_string()'s
+    // only two divergences from Display are quoted/escaped Str/Char and
+    // an Rc::strong_count on Shared/SyncShared, neither of which applies
+    // to a plain number, so "== display" here is correct output, not a
+    // leftover no-op.
+    println($"debug flag on a Double (expected same as Display): {pi:?}")
 
     // No spec at all -- unchanged old behavior, still has to work.
     println($"plain, no spec: {pi}")

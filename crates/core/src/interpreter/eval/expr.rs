@@ -427,13 +427,23 @@ fn apply_format_spec(val: &Value, spec: Option<&FormatSpec>) -> String {
     // TYPE-1xx — see type_infer.rs), so reaching here with a precision
     // on some other type would mean sema has a bug, not that this code
     // needs its own fallback story for it.
+    //
+    // `spec.debug` picks Value::debug_string() over Display as the base
+    // formatter. For Str+precision specifically, precision truncates the
+    // raw content FIRST and debug-quoting (if requested) wraps the
+    // already-truncated result second — truncating a quoted/escaped
+    // string by character count would risk cutting an escape sequence
+    // in half or leaving an unbalanced quote.
     let base = match (val, spec.precision) {
         (Value::Float(f), Some(p))  => format!("{:.*}", p as usize, f),
         (Value::Double(f), Some(p)) => format!("{:.*}", p as usize, f),
         (Value::Str(s), Some(p)) => {
             let p = p as usize;
-            if s.chars().count() <= p { s.to_string() } else { s.chars().take(p).collect() }
+            let truncated: String =
+                if s.chars().count() <= p { s.to_string() } else { s.chars().take(p).collect() };
+            if spec.debug { format!("{:?}", truncated) } else { truncated }
         }
+        _ if spec.debug => val.debug_string(),
         _ => val.to_string(),
     };
 

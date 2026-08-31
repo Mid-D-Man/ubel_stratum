@@ -2,9 +2,10 @@
 
 > Canonical reference for `print`/`println`/`log`, string interpolation,
 > and the `{expr:spec}` format-spec syntax inside interpolation holes.
-> First slice landed this session — see §4 for what's deliberately
-> deferred, and §5 for what this delivery fixed along the way that
-> wasn't originally in scope.
+> First slice landed one session; the Debug-vs-Display split landed the
+> next — see §4 for what's still deliberately deferred, §5 for the
+> format-spec delivery's found-along-the-way fixes, and §6 for the
+> Debug-vs-Display delivery's.
 
 ---
 
@@ -22,6 +23,11 @@ not re-parsed later by sema or the interpreter.
 derive shape — `TypeName { field: value, ... }` for structs, recursing
 correctly through nested collections — not just bare primitives.
 
+`Value::debug_string()` is a second, separate formatter (not a `fmt::Debug`
+trait impl — see §6) that the `?` flag in a format spec now genuinely
+selects. It's real, not reserved — see §6 for exactly what it adds over
+`Display` and, just as importantly, what it deliberately doesn't.
+
 ## 2. Format-spec syntax
 
 ```
@@ -35,7 +41,7 @@ debug      ::= "?"
 
 Examples: `{n:>10}` (right-align, width 10), `{pi:.2}` (2 decimal
 places), `{pi:>10.2}` (both together), `{name:^20}` (centered), `{x:?}`
-(reserved debug flag — see §4).
+(debug flag — real, see §6).
 
 ### How the spec is found — parser-level, not lexer-level
 
@@ -89,12 +95,6 @@ string regardless of what produced it.
 - **Alternate form (`#`) / zero-padding (`0`).** Neither exists.
 - **Numeric bases** (`x`/`X`/`o`/`b` for hex/octal/binary). Not
   supported — everything renders in the type's normal `Display` base.
-- **A real `Debug`-vs-`Display` split.** The `?` flag parses and
-  type-checks but is currently a no-op at the value level — there's
-  only one formatter (`Value: Display`), so `{x:?}` and `{x}` render
-  identically today. The syntax is wired through end-to-end
-  specifically so this means something the moment a real split exists,
-  rather than needing a second syntax-plus-parser change later.
 - **A `format!`/positional-args function** separate from interpolation.
   Everything goes through `$"..."` holes; there's no `format(spec,
   arg1, arg2, ...)`-style call.
@@ -149,14 +149,98 @@ fixed via `ok_multi_interpolation_and_format_spec.ubl` (several
 interpolated strings, several holes each) and the full existing fixture
 suite re-passing unchanged.
 
-## 6. Open questions for the next slice
+## 6. The Debug-vs-Display split (this delivery)
+
+`Value::debug_string()` (`interpreter/value.rs`, right after `equals()`)
+is a plain inherent method, not an `impl fmt::Debug for Value` — `Value`
+already carries a `#[derive(Debug, Clone)]` at the Rust-implementation
+level (used internally, e.g. `dbg!`/assertion failure output during
+`ubel_stratum` development itself), and a second `fmt::Debug` impl for
+the same type would conflict with it. Keeping them separate is also the
+right call architecturally: the derived one is a Rust-maintainer
+concern (raw enum-variant shape, `RefCell`/`Rc` wrappers visible), this
+one is an Ubel-language concern (what `{x:?}` shows a person writing
+`.ubl` source). `apply_format_spec` picks `debug_string()` over
+`to_string()` based on `spec.debug`.
+
+It mirrors `Display`'s exact match structure, recursing through every
+variant, and diverges in exactly two places — both chosen because
+they're real information available *right now*, nothing fabricated for
+the occasion:
+
+1. **`Str`/`Char` are quoted and escaped** (Rust's own `{:?}` on
+   `&str`/`char` does the same) — `hello` (Display) vs `"hello"`
+   (Debug). Recurses correctly: a `Str` field nested inside a `Struct`,
+   `List`, `Dict`, `Tuple`, or `Enum` payload gets quoted too, not just
+   a bare top-level string.
+2. **`Shared`/`SyncShared` show their live `Rc::strong_count`** — e.g.
+   `Shared(refs=2, "hello")`. Genuinely useful systems-debugging info
+   Display shouldn't clutter. One real subtlety, worth knowing before
+   reading a count and being surprised by it: evaluating the interpolation
+   hole itself clones the `Value` being formatted (`eval_interpolated`
+   → `eval_expr` → `Interpreter::lookup` → `.cloned()`) before handing it
+   to `apply_format_spec`, so the count you see always includes that
+   transient print-time clone, not just the aliases the program itself
+   holds — a `Shared` with 2 program-visible bindings will show
+   `refs=3` while being printed. Confirmed empirically, not assumed
+   (`ok_debug_display_split.ubl`'s own comment walks through it).
+
+Everything else — `Null`, `Void`, `Bool`, `Int`, `Float`, `Double`,
+`Function`, `Pool`, `Handle`, `Linqerizer`, `Unique` (recurses, but adds
+no decoration of its own since single ownership has nothing to
+disambiguate) — delegates straight to `Display`. Regression-guarded by
+`test_debug_string_equals_display_when_nothing_new_to_show`.
+
+**Explicitly considered and rejected: showing tier/arena info in
+`Debug`.** This was the original motivating idea, and it doesn't work —
+not "not yet," genuinely doesn't work, for two independent, already-
+documented reasons. `MEMORY_MODEL.md` §2 records a deliberate decision
+that tier lives in the *reference* (`GcRef`/`ArenaRef`/`OwnedRef`),
+never in the type declaration — the same struct type is legitimately
+HIGH tier in one place and MID in another depending on the call site,
+so there's no single "this struct's tier" to look up even in principle.
+And §7 records that the interpreter deliberately shares one
+`Rust`-heap-backed `Value` representation across all three tiers today,
+with zero per-instance runtime tier tag — real memory-layout divergence
+is explicitly deferred to an LLVM-lowering phase that doesn't exist
+yet, and building real per-instance tier tracking now, for a print
+formatter, would be exactly the "wasted motion" that section warns
+against. Recorded here so this doesn't get re-proposed without
+re-deriving both reasons from scratch.
+
+**No `@derive` attribute landed with this.** `Display` was already
+unconditional for every struct/enum before this delivery (no opt-in
+needed), and `Debug` is unconditional too now, for the same reason —
+nothing here needs per-type codegen the way Rust's derive does, because
+the interpreter already has full structural visibility into every
+struct via one uniform `Value::Struct { fields: HashMap<...> }`. An
+attribute that would make Debug/Display *harder* to get, with no
+behavioral payoff, wasn't worth building. `@derive` still has a real,
+different first use case waiting: flipping `Struct`'s `PartialEq` from
+today's `Rc::ptr_eq` default to structural comparison on a specific
+type — that's an actual behavior change worth gating behind explicit
+opt-in, unlike this delivery.
+
+**Found along the way, fixed, not deferred:** two doc comments in
+`parse_attr.rs` (`parse_generic_attr_arg`, `parse_cfg_arg`) had
+un-tagged ` ``` ` fences containing literal EBNF grammar text, which
+rustdoc defaults to treating as compilable Rust and fails on. This was
+silently breaking `cargo test --workspace`'s doctest run at the HEAD
+this delivery started from — contradicts the prior handover's claim of
+an independently-reverified clean baseline, so that verification step
+evidently didn't include doctests. Fixed by tagging both fences
+` ```text `.
+
+## 7. Open questions for the next slice
 
 - Fill character, sign, `#`, `0`-padding, and numeric bases — real
   Rust-parity would want all of these; §4 has the exact list.
-- Whether a real `Debug`-vs-`Display` split is worth building before
-  the `?` flag has anything to differentiate, or whether it should wait
-  for a concrete need (e.g. a `derive`-style mechanism, or a
-  user-overridable formatting hook on structs).
+- `@derive(PartialEq)` for structural equality on `Struct` — the
+  attribute grammar already supports a bare comma-list of idents inside
+  parens with zero parser changes (`@derive(Debug, Display)` parses
+  today on the existing `AttrArgs ::= "(" AttrArg ("," AttrArg)* ")"`
+  rule); what's not built is the sema flag it would set and the
+  `equals()` branch that checks it. Genuinely deferred, not started.
 - Whether nested string literals inside a `{}` hole should be
   supported — currently `$"{cond} {"literal"}"`-style holes containing
   their own `"..."` string will confuse the *outer* interpolated
