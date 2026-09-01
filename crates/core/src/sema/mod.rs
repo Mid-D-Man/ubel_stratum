@@ -27,6 +27,7 @@ pub mod borrow_check;
 mod tests;
 mod cfg;
 mod facts;
+mod move_facts;
 
 pub use symbol_table::{DefId, DefKind, Def, SymbolTable, ResolutionMap, Scope, ScopeStack};
 pub use sema_context::SemaContext;

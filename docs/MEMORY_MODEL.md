@@ -365,7 +365,7 @@ didn't exist before this section had any type checking at all.
 
 ---
 
-## 9. LOW Tier — Reference Syntax, Loan-Based Borrow Checking, and the Ownership-Model Type Axis Landed; Move Tracking Still Ahead
+## 9. LOW Tier — Reference Syntax, Loan-Based Borrow Checking, and the Ownership-Model Type Axis Landed; Move Enforcement Still Ahead
 
 `OwnedRef` and full move/ownership checking are still marked "Phase 4" in
 the codebase's own comments — that part's still true. The reference
@@ -426,12 +426,14 @@ References are valid in **every** tier, not LOW-only — a HIGH/MID function
 handing out a read-only view is fine on its own terms. What's still LOW-only
 is *enforcement*, and it's now partially real:
 
-🚧 **Not implemented — the move half of the story.** No move/ownership
-checking (`Unique<T>` semantics), no `outlives` checking (the parser has
-parsed `[lifetime L, lifetime M where M outlives L]` on functions and `edge
-struct` for a while — see `PARSER_RULES.md` §5.1's neighbor content — but
-nothing in sema consumes it yet). The loan half — what's actually landed
-below — doesn't need either of these to be useful on its own.
+🚧 **Not implemented — move *enforcement*, the rest of the move half of
+the story.** `outlives` checking (the parser has parsed `[lifetime L,
+lifetime M where M outlives L]` on functions and `edge struct` for a
+while — see `PARSER_RULES.md` §5.1's neighbor content — but nothing in
+sema consumes it yet) and the actual reachability/violation fixed point
+for `Unique<T>` moves (see the fact-collection note below — the facts
+now exist, nothing reads them yet). The loan half — what's actually
+landed below — doesn't need either of these to be useful on its own.
 
 ✅ **Implemented — Phase A, the CFG builder** (`sema/cfg.rs`). Builds a
 statement-granularity control-flow graph for one function body: real
@@ -548,8 +550,50 @@ mutation-through-a-reference for scalar-typed values that's the honest gap.
 
 The actual borrow-checking algorithm — CFG construction, loan/liveness
 fixed-point propagation — is landed for the loan half described above.
-Move tracking, seeded by the already-parsed `outlives` facts, is what's
-still ahead.
+
+✅ **Implemented — move-fact collection** (`sema/move_facts.rs`), the
+natural next slice once the ownership-model type axis and its
+construction syntax landed (both described above) — the exact
+prerequisite this section used to say was missing ("building
+move-checking against it now would mean building it twice"). Mirrors
+`facts.rs`'s own division of labor precisely: pure, cheap, per-function
+AST scan, zero fixed-point computation, zero type-checker dependency —
+**fact collection only**, same relationship `facts.rs` (Phase C) has to
+`borrow_check.rs` (Phase D). Not wired into `sema::analyse` yet, for the
+same reason `cfg.rs`/`facts.rs` weren't until their own consuming phase
+existed: there's nothing user-visible to report until the reachability
+fixed point that would turn a candidate into a real `MoveError` gets
+built — that fixed point is what's still ahead now, not fact collection
+itself.
+
+A `let`-bound local is identified as move-tracked *syntactically* — an
+explicit `Unique<...>` type annotation, or an initializer that's
+directly a `Unique.new(...)` call — deliberately not by consulting real
+type inference, same restraint `Place::Unknown` and `Loan::bound_place`
+already use elsewhere in this checker family. A move is any bare
+(non-`&`/`&mut`) use of a tracked local's name; the walker adds two
+opacity rules on top of `facts.rs`'s own `Lambda`/`Block`/`If`/`Match`
+boundary: `Borrow`'s contents are never descended into at all (borrowing
+never consumes), and an assignment's *target* is never treated as a use
+(a definition site, not a read of the old value — matches
+`facts::classify_access`'s existing "Reassign, not Conflict"
+classification of that exact shape). One deliberate over-approximation,
+named rather than left implicit: a method-call receiver (`a.method()`)
+counts as a move of `a`, the safe direction while `resolve_receiver`
+still doesn't strip a `Unique` wrapper for dispatch either (open
+question, noted just above). Only `let`-bound locals are tracked, not
+`Unique<T>`-typed *parameters* — real, separate follow-up. 9 unit tests
+(both identification rules, move-vs-borrow, move-vs-reassignment-target,
+multiple-candidates-on-one-place, and the `@tier(low)`-only program
+walk). No `.ubl` fixtures with this delivery — genuinely nothing
+user-observable differs yet, same reason `facts.rs` itself shipped
+without any; those come back once the fixed point below exists to
+actually reject something.
+
+Move *enforcement* — the reachability fixed point that would turn a
+`moved_at` candidate into a real "use after move" diagnostic, seeded by
+the already-parsed `outlives` facts for the unrelated lifetime-checking
+half — is what's still ahead.
 
 ✅ **Implemented — the ownership-model type axis:** `Unique<T>`,
 `Shared<T>`, `SyncShared<T>` (`DATASTRUCTURES.md` "Decisions locked in").

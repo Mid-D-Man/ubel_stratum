@@ -10,15 +10,18 @@
 //! ## Scope, stated plainly
 //!
 //! **Loans only — no move tracking.** Move/ownership checking
-//! (`Unique<T>` semantics) is real, separate, deliberately-deferred work.
-//! `Unique<T>`/`Shared<T>`/`SyncShared<T>` now have real type-level
-//! wiring — three `SemaType` variants, a settled type each move check
-//! could read (see `MEMORY_MODEL.md` §9) — but no *enforcement* pass
-//! reads them yet, and no construction syntax exists for any of the
-//! three, so there's still no settled notion of which *values at
-//! runtime* are move-only. Loans (`&`/`ref`, `&mut`/`ref mut`) have a
-//! fully settled story — real syntax, real structural types (see §5.6),
-//! real checking (`borrow_check.rs`) — so that's what this collects.
+//! (`Unique<T>` semantics) is real, separate work — now real and landed
+//! as its own module, `sema/move_facts.rs`, not folded into this one
+//! (a genuinely different question: "was this consumed" vs. this
+//! module's "is a live reference still watching this"). `Unique<T>`/
+//! `Shared<T>`/`SyncShared<T>` have real type-level wiring, real
+//! `Unique.new(...)` construction syntax, and real fact collection over
+//! that construction syntax (see `MEMORY_MODEL.md` §9) — but no
+//! reachability/violation *fixed point* reads those facts yet, so
+//! there's still no enforcement rejecting a used-after-moved value.
+//! Loans (`&`/`ref`, `&mut`/`ref mut`) have a fully settled story — real
+//! syntax, real structural types (see §5.6), real checking
+//! (`borrow_check.rs`) — so that's what this collects.
 //!
 //! **Places: local bindings only.** `&x` is tracked precisely
 //! (`Place::Local`). `&x.field`, `&arr[i]` are still recorded as real
@@ -366,7 +369,11 @@ fn stmt_bare_borrow_target<'ast>(stmt: &'ast Stmt<'ast>) -> Option<Place<'ast>> 
 /// are already separate blocks in `cfg.rs`'s output, visited by
 /// `collect`'s own outer loop over every block — this only needs the
 /// expressions living directly ON the statement itself.
-fn for_each_top_expr<'ast>(stmt: &'ast Stmt<'ast>, f: &mut impl FnMut(&'ast Expr<'ast>)) {
+///
+/// `pub(crate)`, not private: `sema::move_facts` reuses this unchanged
+/// for the exact same reason — same statement-to-expression mapping,
+/// same scope boundary, no reason to duplicate it a second time.
+pub(crate) fn for_each_top_expr<'ast>(stmt: &'ast Stmt<'ast>, f: &mut impl FnMut(&'ast Expr<'ast>)) {
     match &stmt.kind {
         StmtKind::Let { value, .. } => f(value),
         StmtKind::Expr(e) => f(e),
