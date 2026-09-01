@@ -66,7 +66,7 @@
 
 use std::collections::HashMap;
 
-use crate::ast::common::{BinOp, GenericParam, Span, TierAnnotation, UnaryOp};
+use crate::ast::common::{BinOp, GenericParam, Span, TierAnnotation, UnaryOp, Attribute, AttrArg};
 use crate::ast::declarations::{
     ConstDecl, EnumDecl, EnumVariantPayload, ExtendDecl, FunctionDecl, ImplBlock,
     MethodDecl, Param, ParamKind, ReturnType, StructDecl, StructMember,
@@ -967,6 +967,7 @@ impl<'a> InferCtx<'a> {
 
     fn collect_struct_sig<'ast>(&mut self, s: &StructDecl<'ast>) {
         let Some(def_id) = self.ctx.top_level_def(s.name) else { return; };
+        self.check_derive_attrs(s.attributes, false);
         self.generic_arity.insert(def_id, s.generic_params.len());
         let prev_generics = self.push_generic_scope(s.generic_params);
         // The abstract "Self" type while collecting this struct's own
@@ -1019,6 +1020,7 @@ impl<'a> InferCtx<'a> {
 
     fn collect_enum_sig<'ast>(&mut self, e: &EnumDecl<'ast>) {
         let Some(def_id) = self.ctx.top_level_def(e.name) else { return; };
+        self.check_derive_attrs(e.attributes, true);
         self.generic_arity.insert(def_id, e.generic_params.len());
         let prev_generics = self.push_generic_scope(e.generic_params);
         let self_args: Vec<TypeId> = (0..e.generic_params.len())
@@ -2761,6 +2763,38 @@ impl<'a> InferCtx<'a> {
                     }
                 }
                 self.ctx.types.intern(SemaType::Str)
+            }
+        }
+    }
+
+    /// `TYPE-116` — everything `@derive(...)` can legitimately request
+    /// today is exactly `PartialEq`, and even that only on a `struct`
+    /// (`partial_eq_is_redundant`: an `enum`'s `==` is already
+    /// structural — `Value::equals`'s Enum arm — so `@derive(PartialEq)`
+    /// there is exactly as redundant as `@derive(Debug)` is everywhere).
+    ///
+    /// Walks `attribute.args` directly rather than going through
+    /// `ast::common::derive_trait_names` specifically so a non-`Ident`
+    /// arg (`@derive("PartialEq")`, `@derive(x = 1)`) gets reported
+    /// instead of silently vanishing — that helper exists for a
+    /// different consumer (the interpreter, post-validation) that
+    /// deliberately doesn't want to see those.
+    fn check_derive_attrs(&mut self, attributes: &[Attribute], partial_eq_is_redundant: bool) {
+        for attr in attributes.iter().filter(|a| a.name == "derive") {
+            for arg in attr.args.iter() {
+                let trait_name = match arg {
+                    AttrArg::Ident(name) if *name == "PartialEq" && !partial_eq_is_redundant => continue,
+                    AttrArg::Ident(name)         => name.to_string(),
+                    AttrArg::Str(s)              => format!("\"{}\"", s),
+                    AttrArg::Int(n)              => n.to_string(),
+                    AttrArg::Bool(b)             => b.to_string(),
+                    AttrArg::Named { key, .. }   => format!("{} = ...", key),
+                    AttrArg::Nested { name, .. } => format!("{}(...)", name),
+                };
+                self.errors.add_type_error(TypeError::UnknownDeriveTrait {
+                    trait_name,
+                    span: attr.span,
+                });
             }
         }
     }

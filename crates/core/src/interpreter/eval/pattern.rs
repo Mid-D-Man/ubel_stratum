@@ -251,7 +251,7 @@ fn match_inner(
                 return false;
             }
             let (type_name, field_map) = match value {
-                Value::Struct { type_name, fields } => {
+                Value::Struct { type_name, fields, .. } => {
                     (type_name.as_str(), fields.borrow().clone())
                 }
                 _ => return false,

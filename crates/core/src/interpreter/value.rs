@@ -46,6 +46,15 @@ pub enum Value {
     Struct {
         type_name: String,
         fields:    Rc<RefCell<HashMap<String, Value>>>,
+        /// Set once at construction (`ExprKind::StructLit` eval) from
+        /// `Interpreter::struct_partial_eq_derives`, itself built from
+        /// `@derive(PartialEq)` on this type's declaration — never
+        /// re-derived per comparison. `false` for `<anon>` object
+        /// literals (no declaration to have derived anything from).
+        /// Read by `equals()` to pick structural comparison over the
+        /// `Rc::ptr_eq` default; nothing else consults it (`Display`/
+        /// `debug_string` print identically either way).
+        derives_partial_eq: bool,
     },
     /// Enum variant with optional payload.
     Enum {
@@ -343,8 +352,22 @@ impl Value {
             (Value::Dict(a),   Value::Dict(b))   => Rc::ptr_eq(a, b),
             (Value::Queue(a),  Value::Queue(b))  => Rc::ptr_eq(a, b),
             (Value::Stack(a),  Value::Stack(b))  => Rc::ptr_eq(a, b),
-            (Value::Struct { fields: a, .. },
-             Value::Struct { fields: b, .. })    => Rc::ptr_eq(a, b),
+            (Value::Struct { type_name: ta, fields: a, derives_partial_eq: da },
+             Value::Struct { type_name: tb, fields: b, derives_partial_eq: db }) => {
+                if *da || *db {
+                    // Structural: same declared type, same field set,
+                    // each field equal by its own `.equals()` — recurses
+                    // correctly through Unique (by value) / Shared /
+                    // SyncShared (by pointer) fields using whatever each
+                    // of *their* variants already does, no special-casing
+                    // needed here.
+                    let (fa, fb) = (a.borrow(), b.borrow());
+                    ta == tb && fa.len() == fb.len()
+                        && fa.iter().all(|(k, v)| fb.get(k).is_some_and(|ov| v.equals(ov)))
+                } else {
+                    Rc::ptr_eq(a, b)
+                }
+            }
             (Value::Function(a), Value::Function(b)) => a == b,
             (Value::Pool(a), Value::Pool(b)) => Rc::ptr_eq(a, b),
             (Value::Handle { index: ia, generation: ga },
@@ -457,7 +480,7 @@ impl Value {
             Value::SyncShared(rc) => format!(
                 "SyncShared(refs={}, {})", Rc::strong_count(rc), rc.borrow().debug_string()
             ),
-            Value::Struct { type_name, fields } => {
+            Value::Struct { type_name, fields, .. } => {
                 let fields = fields.borrow();
                 let mut out = format!("{} {{", type_name);
                 for (i, (k, v)) in fields.iter().enumerate() {
@@ -616,7 +639,7 @@ impl fmt::Display for Value {
             Value::Unique(v) => write!(f, "Unique({})", v),
             Value::Shared(rc) => write!(f, "Shared({})", rc.borrow()),
             Value::SyncShared(rc) => write!(f, "SyncShared({})", rc.borrow()),
-            Value::Struct { type_name, fields } => {
+            Value::Struct { type_name, fields, .. } => {
                 let fields = fields.borrow();
                 write!(f, "{} {{", type_name)?;
                 for (i, (k, v)) in fields.iter().enumerate() {
@@ -685,6 +708,7 @@ mod tests {
         let v = Value::Struct {
             type_name: "Player".to_string(),
             fields:    Rc::new(RefCell::new(fields)),
+            derives_partial_eq: false,
         };
         let debug = v.debug_string();
         assert!(debug.contains("\"Ada\""), "expected quoted name in debug output, got: {debug}");
@@ -733,5 +757,105 @@ mod tests {
                 "debug_string should equal Display for {}", v.type_name()
             );
         }
+    }
+
+    #[test]
+    fn test_struct_equals_is_ptr_eq_by_default() {
+        let mut fa = HashMap::new();
+        fa.insert("x".to_string(), Value::Int(1));
+        let mut fb = HashMap::new();
+        fb.insert("x".to_string(), Value::Int(1));
+        let a = Value::Struct {
+            type_name: "Point".to_string(),
+            fields:    Rc::new(RefCell::new(fa)),
+            derives_partial_eq: false,
+        };
+        let b = Value::Struct {
+            type_name: "Point".to_string(),
+            fields:    Rc::new(RefCell::new(fb)),
+            derives_partial_eq: false,
+        };
+        // Same shape, same values, different instances, no derive ->
+        // today's tier-consistent default (Rc::ptr_eq) still applies.
+        assert!(!a.equals(&b));
+        let c = a.clone(); // clones the Rc -> same instance
+        assert!(a.equals(&c));
+    }
+
+    #[test]
+    fn test_struct_equals_is_structural_when_derived() {
+        let mut fa = HashMap::new();
+        fa.insert("x".to_string(), Value::Int(1));
+        fa.insert("y".to_string(), Value::str_from("hi"));
+        let mut fb = HashMap::new();
+        fb.insert("x".to_string(), Value::Int(1));
+        fb.insert("y".to_string(), Value::str_from("hi"));
+        let a = Value::Struct {
+            type_name: "Point".to_string(),
+            fields:    Rc::new(RefCell::new(fa)),
+            derives_partial_eq: true,
+        };
+        let b = Value::Struct {
+            type_name: "Point".to_string(),
+            fields:    Rc::new(RefCell::new(fb)),
+            derives_partial_eq: true,
+        };
+        assert!(a.equals(&b), "derived PartialEq should compare structurally, not by pointer");
+
+        let mut fc = HashMap::new();
+        fc.insert("x".to_string(), Value::Int(2)); // different value
+        fc.insert("y".to_string(), Value::str_from("hi"));
+        let c = Value::Struct {
+            type_name: "Point".to_string(),
+            fields:    Rc::new(RefCell::new(fc)),
+            derives_partial_eq: true,
+        };
+        assert!(!a.equals(&c), "structural comparison must still catch a real field difference");
+    }
+
+    #[test]
+    fn test_struct_equals_recurses_through_shared_fields_by_pointer() {
+        // A derived struct containing a Shared<T> field: the OUTER
+        // comparison is structural, but each field still uses its OWN
+        // established equals() -- Shared compares by Rc::ptr_eq (already
+        // shipped, unrelated to this delivery), so two structurally-
+        // derived structs holding two DIFFERENT Shared instances with
+        // the same inner value are still unequal at that field.
+        let shared_rc = Rc::new(RefCell::new(Value::Int(5)));
+        let mut fa = HashMap::new();
+        fa.insert("inner".to_string(), Value::Shared(Rc::clone(&shared_rc)));
+        let mut fb = HashMap::new();
+        fb.insert("inner".to_string(), Value::Shared(Rc::clone(&shared_rc)));
+        let a = Value::Struct {
+            type_name: "Holder".to_string(), fields: Rc::new(RefCell::new(fa)), derives_partial_eq: true,
+        };
+        let b = Value::Struct {
+            type_name: "Holder".to_string(), fields: Rc::new(RefCell::new(fb)), derives_partial_eq: true,
+        };
+        assert!(a.equals(&b), "same underlying Rc -> Shared fields should compare equal");
+
+        let other_rc = Value::Shared(Rc::new(RefCell::new(Value::Int(5)))); // same value, different Rc
+        let mut fc = HashMap::new();
+        fc.insert("inner".to_string(), other_rc);
+        let c = Value::Struct {
+            type_name: "Holder".to_string(), fields: Rc::new(RefCell::new(fc)), derives_partial_eq: true,
+        };
+        assert!(!a.equals(&c), "different Rc instance -> Shared fields should NOT compare equal, even with the same inner value");
+    }
+
+    #[test]
+    fn test_debug_string_and_display_ignore_derives_partial_eq() {
+        // derives_partial_eq only affects equals() -- it must not change
+        // what a struct prints as, either way.
+        let mut fields = HashMap::new();
+        fields.insert("x".to_string(), Value::Int(1));
+        let derived = Value::Struct {
+            type_name: "Point".to_string(), fields: Rc::new(RefCell::new(fields.clone())), derives_partial_eq: true,
+        };
+        let not_derived = Value::Struct {
+            type_name: "Point".to_string(), fields: Rc::new(RefCell::new(fields)), derives_partial_eq: false,
+        };
+        assert_eq!(derived.to_string(), not_derived.to_string());
+        assert_eq!(derived.debug_string(), not_derived.debug_string());
     }
 }

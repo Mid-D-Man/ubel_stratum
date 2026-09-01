@@ -252,6 +252,8 @@ pub fn eval_expr<'ast>(interp: &mut Interpreter<'ast>, expr: &Expr<'ast>) -> Eva
             Ok(Value::Struct {
                 type_name: "<anon>".to_string(),
                 fields:    Rc::new(RefCell::new(map)),
+                // No declaration to have `@derive`d anything from.
+                derives_partial_eq: false,
             })
         }
 
@@ -286,6 +288,9 @@ pub fn eval_expr<'ast>(interp: &mut Interpreter<'ast>, expr: &Expr<'ast>) -> Eva
                 map.insert(f.name.to_string(), v);
             }
             Ok(Value::Struct {
+                derives_partial_eq: interp.struct_derives
+                    .get(&type_name)
+                    .is_some_and(|traits| traits.contains("PartialEq")),
                 type_name,
                 fields: Rc::new(RefCell::new(map)),
             })

@@ -1,0 +1,47 @@
+// tests/fixtures/ok_derive_partial_eq_combined.ubl
+// @derive(PartialEq) real-world usage: this is WHY the feature exists,
+// not just that it works. List<T>.contains() (list_methods::contains,
+// already shipped) has always called Value::equals() under the hood --
+// before derive(PartialEq), that meant a fresh Item with the same
+// fields as one already in the list could never be found via
+// .contains(), because struct equality was Rc::ptr_eq only. Combines
+// derive with an enum, a struct method, and List<T> together, the way
+// an actual inventory system would actually use them.
+// Expected: sema OK, zero errors. Full pipeline OK.
+
+enum Rarity {
+    Common
+    Rare
+    Legendary
+}
+
+@derive(PartialEq)
+struct Item {
+    name:   string
+    rarity: Rarity
+
+    pub fn describe(self) string {
+        return self.name
+    }
+}
+
+fn main() void {
+    let inventory = List.new()
+    inventory.push(Item { name = "Shield", rarity = Rarity.Common })
+    inventory.push(Item { name = "Sword", rarity = Rarity.Rare })
+
+    // A freshly-built Item, never pushed -- structurally identical to
+    // the Shield already in the inventory, but a genuinely different
+    // instance. Without @derive(PartialEq) this would always be false.
+    let candidate = Item { name = "Shield", rarity = Rarity.Common }
+    assert(inventory.contains(candidate), "derive(PartialEq) makes List.contains() find a structurally-equal value, not just the exact same instance")
+
+    let not_owned = Item { name = "Bow", rarity = Rarity.Legendary }
+    assert(!inventory.contains(not_owned), "a genuinely different item is correctly reported as absent")
+
+    let same_name_wrong_rarity = Item { name = "Shield", rarity = Rarity.Rare }
+    assert(!inventory.contains(same_name_wrong_rarity), "structural equality checks every field, not just name")
+
+    println($"inventory has {inventory.len()} items; contains a Common Shield: {inventory.contains(candidate)}")
+    println($"{candidate.describe()} debug view: {candidate:?}")
+}

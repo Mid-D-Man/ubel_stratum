@@ -71,6 +71,22 @@ pub enum TypeError {
         span:      Span,
     },
 
+    /// `@derive(X)` named something that isn't a recognized, supported
+    /// derive trait *in this context*. Covers three distinct real cases
+    /// with one variant: a genuinely unknown name; `Debug`/`Display`
+    /// anywhere (both automatic for every struct/enum already, no
+    /// opt-in needed — docs/PRINT_FORMAT_RULES.md §6); and `PartialEq`
+    /// specifically on an `enum` (an enum's `==` is already structural,
+    /// see `Value::equals`'s Enum arm — only a `struct`'s default needs
+    /// flipping). `trait_name` holds a readable description of the bad
+    /// argument, not necessarily a real identifier — a non-`Ident` arg
+    /// (`@derive("PartialEq")`, `@derive(x = 1)`) reaches here too, not
+    /// just misspelled/inapplicable names.
+    UnknownDeriveTrait {
+        trait_name: String,
+        span:       Span,
+    },
+
     /// A type could not be inferred — too ambiguous.
     CannotInferType {
         span:       Span,
@@ -147,6 +163,7 @@ impl TypeError {
             TypeError::AwaitOnNonTask             { span, .. } => *span,
             TypeError::DerefOnNonReference        { span, .. } => *span,
             TypeError::InvalidFormatSpec          { span, .. } => *span,
+            TypeError::UnknownDeriveTrait          { span, .. } => *span,
             TypeError::CannotInferType            { span, .. } => *span,
             TypeError::GenericArgCountMismatch    { span, .. } => *span,
             TypeError::UnknownVariant             { span, .. } => *span,
@@ -182,6 +199,13 @@ impl TypeError {
 
             TypeError::InvalidFormatSpec { spec_part, on_type, .. } =>
                 format!("`{}` in a format spec doesn't apply to type `{}`", spec_part, on_type),
+
+            TypeError::UnknownDeriveTrait { trait_name, .. }
+                if trait_name == "Debug" || trait_name == "Display" || trait_name == "PartialEq" =>
+                format!("`@derive({})` is unnecessary — this is already automatic", trait_name),
+
+            TypeError::UnknownDeriveTrait { trait_name, .. } =>
+                format!("unknown derive trait `{}`", trait_name),
 
             TypeError::CannotInferType { .. } =>
                 "cannot infer type — add an explicit type annotation".to_string(),
@@ -235,6 +259,13 @@ impl TypeError {
             TypeError::InvalidFormatSpec { spec_part, .. } if spec_part == "precision" =>
                 Some("`.precision` only applies to float/double (decimal places) or string (max length) — drop it, or format a value of one of those types".to_string()),
 
+            TypeError::UnknownDeriveTrait { trait_name, .. }
+                if trait_name == "Debug" || trait_name == "Display" || trait_name == "PartialEq" =>
+                Some(format!("drop `@derive({})` — it has no effect", trait_name)),
+
+            TypeError::UnknownDeriveTrait { .. } =>
+                Some("supported derive traits: `PartialEq`".to_string()),
+
             _ => None,
         }
     }
@@ -269,6 +300,7 @@ impl crate::error_management::render::Diagnosable for TypeError {
             TypeError::InlineListCapacityNotLiteral { .. } => "TYPE-113",
             TypeError::DerefOnNonReference { .. }          => "TYPE-114",
             TypeError::InvalidFormatSpec { .. }            => "TYPE-115",
+            TypeError::UnknownDeriveTrait { .. }            => "TYPE-116",
         }
     }
     fn span(&self) -> Span { self.span() }

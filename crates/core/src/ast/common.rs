@@ -86,6 +86,26 @@ pub enum AttrArg<'ast> {
     },
 }
 
+/// Extract the bare-ident trait names listed inside `@derive(...)` on an
+/// item's attribute list (empty if there's no `@derive` attribute).
+/// Non-`Ident` args (a string literal, a `key=value` pair, ...) are
+/// silently excluded here — this helper is for consumers that only care
+/// about "what was validly requested" (the interpreter, building its
+/// runtime opt-in table after sema has already passed). Sema's own
+/// validation (`type_infer.rs`, `TYPE-116`) walks `attribute.args`
+/// directly instead of going through this helper, specifically so a
+/// non-`Ident` arg doesn't just vanish unreported.
+pub fn derive_trait_names<'ast>(attributes: &[Attribute<'ast>]) -> Vec<&'ast str> {
+    attributes.iter()
+        .filter(|a| a.name == "derive")
+        .flat_map(|a| a.args.iter())
+        .filter_map(|arg| match arg {
+            AttrArg::Ident(name) => Some(*name),
+            _ => None,
+        })
+        .collect()
+}
+
 /// The right-hand side of a `Named` attribute argument.
 #[derive(Debug, Clone, Copy)]
 pub enum AttrValue<'ast> {

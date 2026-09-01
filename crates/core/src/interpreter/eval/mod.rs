@@ -10,7 +10,7 @@ pub mod pattern;
 #[cfg(test)]
 mod tests;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::ast::arena::AstArena;
 use crate::ast::common::TierAnnotation;
@@ -85,6 +85,16 @@ pub struct Interpreter<'ast> {
     /// already validated arity/types by the time any of these run, so
     /// construction here doesn't re-check either.
     pub(crate) enum_table:   HashMap<String, HashMap<String, VariantKind>>,
+    /// struct_type_name → set of that type's `@derive`d trait names.
+    /// Only `"PartialEq"` is ever inserted today (sema's already
+    /// rejected anything else by the time `run_program` runs — see
+    /// `TYPE-116` — so this doesn't re-validate, just re-derives the
+    /// same fact sema already established, the same relationship
+    /// `method_table`/`enum_table` have with their own sema passes).
+    /// Consulted once, at `ExprKind::StructLit` construction, to set
+    /// `Value::Struct::derives_partial_eq` — not re-checked per
+    /// comparison.
+    pub(crate) struct_derives: HashMap<String, HashSet<String>>,
     /// The arena used to parse the program.  Kept here so interpolated-string
     /// expression holes (`$"Hello {expr}"`) can be parsed at runtime via
     /// `crate::parser::parse_expr`.
@@ -104,6 +114,7 @@ impl<'ast> Interpreter<'ast> {
             functions:    Vec::new(),
             method_table: HashMap::new(),
             enum_table:   HashMap::new(),
+            struct_derives: HashMap::new(),
             arena,
             pool_capacity_stack: Vec::new(),
         };
@@ -199,6 +210,18 @@ impl<'ast> Interpreter<'ast> {
                     top_level_fns.push(id);
                 }
                 Item::Struct(s) => {
+                    // Sema (TYPE-116) already rejected anything but
+                    // `PartialEq` here -- this just re-derives the same
+                    // already-validated fact, same relationship
+                    // method_table/enum_table have with their own passes.
+                    let derived: HashSet<String> =
+                        crate::ast::common::derive_trait_names(s.attributes)
+                            .into_iter()
+                            .map(|name| name.to_string())
+                            .collect();
+                    if !derived.is_empty() {
+                        self.struct_derives.insert(s.name.to_string(), derived);
+                    }
                     for member in s.members.iter().copied() {
                         if let StructMember::Method(m) = member {
                             let id = self.register_method(s.name, m);

@@ -1,0 +1,49 @@
+// tests/fixtures/err_derive_debug_on_struct_combined.ubl
+// @derive(...) error case, combined/real-world: the realistic way
+// someone actually hits TYPE-116 isn't a contrived one-liner -- it's
+// reaching for @derive(Debug) out of Rust habit on a struct inside an
+// otherwise normal small program, not realizing Debug/Display are
+// automatic here (docs/PRINT_FORMAT_RULES.md §6). Everything else in
+// this file -- the enum, the second struct, the methods, the List,
+// the {x:?} debug-format usage -- is valid and unrelated to the bug.
+// Expected: sema error (TYPE-116, UnknownDeriveTrait on `Item`), zero
+// other errors.
+
+enum Rarity {
+    Common
+    Rare
+    Legendary
+}
+
+// The mistake: reaching for @derive(Debug) out of habit. It's
+// unnecessary -- every struct already gets a real Debug formatter
+// (quoted strings, live Shared/SyncShared alias counts) with zero
+// opt-in required.
+@derive(Debug)
+struct Item {
+    name:   string
+    rarity: Rarity
+
+    pub fn describe(self) string {
+        return self.name
+    }
+}
+
+struct Inventory {
+    label: string
+
+    pub fn new(label: string) Inventory {
+        return Inventory { label = label }
+    }
+}
+
+fn main() void {
+    let sword = Item { name = "Longsword", rarity = Rarity.Rare }
+    let inv = Inventory.new("Player 1")
+
+    let items = List.new()
+    items.push(sword)
+
+    println($"{inv.label}: {sword.describe()} ({items.len()} item)")
+    println($"debug view: {sword:?}")
+}

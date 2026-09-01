@@ -1,0 +1,36 @@
+// tests/fixtures/ok_derive_partial_eq_isolated.ubl
+// @derive(PartialEq) narrow test, isolated: two structurally-identical
+// but distinct instances of a derived struct compare equal; the same
+// shape on a NON-derived struct keeps today's Rc::ptr_eq default, side
+// by side, so the opt-in nature is actually exercised, not just the
+// derived case alone.
+// Expected: sema OK, zero errors. Full pipeline OK.
+
+@derive(PartialEq)
+struct Point {
+    x: int
+    y: int
+}
+
+struct Marker {
+    x: int
+    y: int
+}
+
+fn main() void {
+    let a = Point { x = 1, y = 2 }
+    let b = Point { x = 1, y = 2 }
+    let c = Point { x = 1, y = 3 }
+    assert(a == b, "derived PartialEq: same fields, different instances -> equal")
+    assert(a != c, "derived PartialEq: a real field difference is still caught")
+
+    let m1 = Marker { x = 1, y = 2 }
+    let m2 = Marker { x = 1, y = 2 }
+    // No @derive here -- unchanged tier-consistent default. Same field
+    // values, different instances, still NOT equal.
+    assert(m1 != m2, "no derive: same fields, different instances -> still not equal (ptr-eq default)")
+    let m3 = m1
+    assert(m1 == m3, "no derive: same instance (env clone of the same Rc) -> equal")
+
+    println($"a == b: {a == b}, m1 == m2: {m1 == m2}")
+}

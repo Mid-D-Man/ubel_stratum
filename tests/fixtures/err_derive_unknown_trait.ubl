@@ -1,0 +1,16 @@
+// tests/fixtures/err_derive_unknown_trait.ubl
+// @derive(...) narrow error case, isolated: a name that isn't a
+// recognized derive trait at all -- not Debug/Display/PartialEq
+// (redundant, see err_derive_debug_on_struct_combined.ubl for that
+// bucket), just genuinely unknown. TYPE-116.
+// Expected: sema error (TYPE-116, UnknownDeriveTrait), zero other errors.
+
+@derive(Comparable)
+struct Money {
+    cents: int
+}
+
+fn main() void {
+    let a = Money { cents = 500 }
+    println($"{a.cents}")
+}

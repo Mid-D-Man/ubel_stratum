@@ -209,6 +209,7 @@ family in `TierError`.
 | TYPE-113 | InlineListCapacityNotLiteral |
 | TYPE-114 | DerefOnNonReference |
 | TYPE-115 | InvalidFormatSpec |
+| TYPE-116 | UnknownDeriveTrait |
 
 ### TIER-0xx — tier & arena enforcement, `errors/tier/mod.rs`
 
@@ -312,6 +313,7 @@ larger effort, not started.
 - `TYPE-113` `InlineListCapacityNotLiteral` — *Error*. "`InlineList.new(...)` requires a literal integer capacity" — DATASTRUCTURES.md §5. `InlineList<T>` is stack-checked and bounded, so its capacity has to be known at compile time — a variable or computed expression can't be used. Backfilled into this registry; existed in code before this entry did. Suggestion: write the capacity as a plain integer literal, e.g. `InlineList.new(64)`.
 - `TYPE-114` `DerefOnNonReference` — *Error*. "`*`/`deref` requires a reference type (`&T`/`ref T`), found `{found}`" — MEMORY_MODEL.md §9. Fires when `*`/`deref` (the dual-spelling deref operators) are applied to a non-`Reference`-typed value. Backfilled into this registry; existed in code before this entry did.
 - `TYPE-115` `InvalidFormatSpec` — *Error*. "`{spec_part}` in a format spec doesn't apply to type `{on_type}`" — docs/PRINT_FORMAT_RULES.md. Currently the only checked case is `.precision` outside Float/Double/Str (width/align/`?` apply to any type, since padding/truncation work on the rendered string regardless of what produced it). Fires from the same `infer_literal` walk that made interpolation holes get real type-checking at all for the first time — see that doc's "what this fixed along the way" section. Suggestion: drop `.precision`, or format a value of one of the three types it applies to.
+- `TYPE-116` `UnknownDeriveTrait` — *Error*. "unknown derive trait `{trait_name}`", or "`@derive({trait_name})` is unnecessary — this is already automatic" for the three names that ARE recognized but never legitimately reach this error — docs/PRINT_FORMAT_RULES.md §6. Fires on `struct`/`enum` declarations from `check_derive_attrs` in `type_infer.rs`, called from `collect_struct_sig`/`collect_enum_sig`. One variant, three real cases: a genuinely unknown name; `Debug`/`Display` anywhere (both automatic for every struct/enum already — no `@derive` needed, ever); `PartialEq` specifically on an `enum` (an enum's `==` is already structural — `Value::equals`'s Enum arm predates this delivery). `PartialEq` on a `struct` is the one case that's actually accepted and does something (opts that struct's `==` into structural comparison, replacing the `Rc::ptr_eq` tier-consistent default) — see `Value::Struct::derives_partial_eq`. `trait_name` is a readable description of whatever was actually written, not necessarily a real identifier — a non-`Ident` arg (`@derive("PartialEq")`, `@derive(x = 1)`) reaches here too, deliberately not silently dropped. Suggestion: for the redundant three, drop the attribute; otherwise, "supported derive traits: `PartialEq`".
 
 **TIER-0xx**
 - `TIER-001` `ArenaInWrongTier` — *Error*. "`with arena` is only valid in `@tier(mid)`; this function is `@tier(x)`". Suggestion: annotate with `@tier(mid)` or remove the arena block.

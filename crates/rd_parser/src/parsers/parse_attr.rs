@@ -45,6 +45,12 @@ pub enum BuiltinAttr {
     Inline,
     /// `@cold` — hint that this function is rarely called (error paths, etc.).
     Cold,
+    /// `@derive(PartialEq)` — opt a `struct` into structural (field-wise)
+    /// `==`, replacing the tier-consistent `Rc::ptr_eq` default. See
+    /// docs/PRINT_FORMAT_RULES.md §6 for why `Debug`/`Display` are
+    /// deliberately NOT part of this — both are automatic already, no
+    /// opt-in attribute needed.
+    Derive,
 }
 
 /// O(1) lookup: attribute name string → `BuiltinAttr`.
@@ -58,6 +64,7 @@ static BUILTIN_ATTRS: phf::Map<&'static str, BuiltinAttr> = phf_map! {
     "doc"    => BuiltinAttr::Doc,
     "inline" => BuiltinAttr::Inline,
     "cold"   => BuiltinAttr::Cold,
+    "derive" => BuiltinAttr::Derive,
 };
 
 /// Valid keys inside `@cfg(key = "value")` or `@cfg(key)`.
