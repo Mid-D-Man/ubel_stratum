@@ -1,0 +1,27 @@
+// tests/fixtures/err_move_in_loop_combined.ubl
+// Move checking, combined/real-world: the loop-carried case, not the
+// straight-line one -- `payload` is constructed ONCE before the loop
+// and mistakenly reused every iteration instead of being given a fresh
+// value each time. One syntactic move candidate, but move_check.rs's
+// own reachability walk finds it reachable from itself via the loop's
+// back-edge, which is exactly "moved again next iteration" -- see
+// move_check.rs's module doc. Combines with an ordinary counter, a
+// while loop, and println -- all already-shipped, unrelated features,
+// the way an actual batch job would really be structured, with the one
+// deliberate mistake being the missing reinitialization inside the loop.
+// Expected: sema FAIL (UseAfterMove, MOVE-001).
+
+@tier(low)
+fn process_batch(job_count: int) void {
+    let payload = Unique.new(0)
+    let processed = 0
+    while processed < job_count {
+        let consumed = payload
+        println($"processing job {processed} with payload: {consumed:?}")
+        processed += 1
+    }
+}
+
+fn main() void {
+    process_batch(3)
+}

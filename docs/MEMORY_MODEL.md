@@ -365,7 +365,7 @@ didn't exist before this section had any type checking at all.
 
 ---
 
-## 9. LOW Tier — Reference Syntax, Loan-Based Borrow Checking, and the Ownership-Model Type Axis Landed; Move Enforcement Still Ahead
+## 9. LOW Tier — Reference Syntax, Loan-Based Borrow Checking, the Ownership-Model Type Axis, and Move Checking All Landed; `outlives`/Lifetime Checking Still Ahead
 
 `OwnedRef` and full move/ownership checking are still marked "Phase 4" in
 the codebase's own comments — that part's still true. The reference
@@ -424,16 +424,15 @@ interaction to add.
 
 References are valid in **every** tier, not LOW-only — a HIGH/MID function
 handing out a read-only view is fine on its own terms. What's still LOW-only
-is *enforcement*, and it's now partially real:
+is *enforcement*, and both halves of it are now real:
 
-🚧 **Not implemented — move *enforcement*, the rest of the move half of
-the story.** `outlives` checking (the parser has parsed `[lifetime L,
-lifetime M where M outlives L]` on functions and `edge struct` for a
-while — see `PARSER_RULES.md` §5.1's neighbor content — but nothing in
-sema consumes it yet) and the actual reachability/violation fixed point
-for `Unique<T>` moves (see the fact-collection note below — the facts
-now exist, nothing reads them yet). The loan half — what's actually
-landed below — doesn't need either of these to be useful on its own.
+🚧 **Not implemented — `outlives`/lifetime checking, the one piece of the
+LOW-tier enforcement story still missing.** The parser has parsed
+`[lifetime L, lifetime M where M outlives L]` on functions and `edge
+struct` for a while — see `PARSER_RULES.md` §5.1's neighbor content —
+but nothing in sema consumes it yet. Both the loan half (`borrow_check.rs`)
+and the move half (`move_check.rs`, described below) are landed and don't
+need this to be useful on their own.
 
 ✅ **Implemented — Phase A, the CFG builder** (`sema/cfg.rs`). Builds a
 statement-granularity control-flow graph for one function body: real
@@ -559,12 +558,8 @@ move-checking against it now would mean building it twice"). Mirrors
 `facts.rs`'s own division of labor precisely: pure, cheap, per-function
 AST scan, zero fixed-point computation, zero type-checker dependency —
 **fact collection only**, same relationship `facts.rs` (Phase C) has to
-`borrow_check.rs` (Phase D). Not wired into `sema::analyse` yet, for the
-same reason `cfg.rs`/`facts.rs` weren't until their own consuming phase
-existed: there's nothing user-visible to report until the reachability
-fixed point that would turn a candidate into a real `MoveError` gets
-built — that fixed point is what's still ahead now, not fact collection
-itself.
+`borrow_check.rs` (Phase D — and now `move_check.rs`, described just
+below, is exactly that consuming phase for the move half).
 
 A `let`-bound local is identified as move-tracked *syntactically* — an
 explicit `Unique<...>` type annotation, or an initializer that's
@@ -585,15 +580,46 @@ question, noted just above). Only `let`-bound locals are tracked, not
 `Unique<T>`-typed *parameters* — real, separate follow-up. 9 unit tests
 (both identification rules, move-vs-borrow, move-vs-reassignment-target,
 multiple-candidates-on-one-place, and the `@tier(low)`-only program
-walk). No `.ubl` fixtures with this delivery — genuinely nothing
-user-observable differs yet, same reason `facts.rs` itself shipped
-without any; those come back once the fixed point below exists to
-actually reject something.
+walk).
 
-Move *enforcement* — the reachability fixed point that would turn a
-`moved_at` candidate into a real "use after move" diagnostic, seeded by
-the already-parsed `outlives` facts for the unrelated lifetime-checking
-half — is what's still ahead.
+✅ **Implemented — move enforcement** (`sema/move_check.rs`), landed the
+same delivery as the fixed point itself, not a separate slice — a
+`moved_at` candidate is a real violation (`MoveError::UseAfterMove`,
+`MOVE-001`) if it's forward-reachable, same point-level worklist
+`borrow_check::compute_reaches_before` already uses for loans, from
+*another* candidate for the same place, stopping propagation at any
+`facts::place_defined_at` point (a reinitialization). May-analysis, same
+philosophy `BORROW-001` uses: reachable on *some* path is enough. The
+one design point worth calling out by name: a candidate is allowed to
+reach *itself* — that's what catches a value consumed on every loop
+iteration without ever being reinitialized in between (one syntactic
+move candidate sitting in a loop body, reachable from itself via the
+back-edge), unifying the straight-line case and the loop-carried case
+into a single rule instead of needing a separate one for loops. When
+that's what fired, the diagnostic's `moved_span` and `used_span` point
+at the same line — correct, not a bug (`err_move_in_loop_combined.ubl`).
+Each violated place is reported once, even if multiple earlier
+candidates would independently reach it. Wired into `sema::analyse` as
+Pass 5, and into both example tools' error-collection (`pipeline.rs`,
+`diagnose.rs`) *from this same delivery* — `BorrowError`'s own history
+just above is the reason that wiring didn't get deferred and forgotten
+a second time. 8 unit tests (straight-line use-after-move, a lone move
+never flagged alone, a borrow between two real moves not interfering,
+reinitialization clearing a would-be violation, the loop-carried case,
+reinitialization *inside* the loop body clearing it, call-argument
+moves, untracked locals never flagged). 4 fixtures — the standing
+2-err/2-ok, isolated/combined split (`err_move_after_use.ubl`,
+`err_move_in_loop_combined.ubl`, `ok_move_reinit_isolated.ubl`,
+`ok_move_combined.ubl`) — these are the fixtures the fact-collection-only
+delivery said would come back once there was a real diagnostic to assert
+against; here they are.
+
+Scope, today, honestly: only `let`-bound locals, same limit
+`move_facts.rs` itself already has — a `Unique<T>`-typed *parameter*
+isn't checked, and a value arriving indirectly (returned from another
+function, round-tripped through a field) isn't tracked at all. `outlives`
+checking (the unrelated lifetime half mentioned above) is still
+completely untouched by any of this.
 
 ✅ **Implemented — the ownership-model type axis:** `Unique<T>`,
 `Shared<T>`, `SyncShared<T>` (`DATASTRUCTURES.md` "Decisions locked in").

@@ -251,6 +251,37 @@ scope (mutable loans only, traceable-carrier loans only, no
 intra-statement checking yet) — each of those boundaries is a real,
 separate, documented follow-up, not silently dropped.
 
+### MOVE-0xx — LOW-tier move checking, `errors/move_check/mod.rs`
+
+| Code | Variant |
+|---|---|
+| MOVE-001 | UseAfterMove |
+
+New family, not folded into `BORROW-0xx` even though both live under
+LOW-tier's umbrella — aliasing (loans) and consuming (moves) are
+genuinely different questions about a value, same call `borrow`'s own
+family made rather than being a split-out of an existing enum. Fires
+from `sema/move_check.rs`'s reachability fixed point, seeded by
+`sema/move_facts.rs`'s move-candidate collection — see both modules'
+doc comments for exactly how a `Unique<T>` local gets identified as
+move-tracked (syntactic: an explicit `Unique<...>` annotation, or an
+initializer that's directly a `Unique.new(...)` call — not real type
+inference) and what counts as consuming it (any bare, non-`&`/`&mut`
+use). May-analysis, same philosophy `BORROW-001` already uses: a value
+that *might* already be moved on some incoming path is rejected
+unconditionally. One design point worth naming since it isn't obvious
+from the diagnostic alone: the reachability check allows a move point
+to reach *itself*, which is what catches a value consumed on every loop
+iteration without ever being reinitialized in between — in that case
+`moved_span` and `used_span` end up pointing at the same line, which is
+correct, not a rendering bug (see `err_move_in_loop_combined.ubl`).
+Scope, today: only `let`-bound locals are tracked, not `Unique<T>`-typed
+*parameters* — real, separate follow-up, not silently assumed safe; a
+method-call receiver (`a.method()`) is conservatively treated as a move
+of `a`, the safe direction while method dispatch through a `Unique`
+wrapper is itself still an open question elsewhere (`MEMORY_MODEL.md`
+§9).
+
 **Adding a new variant:** append at the end of its class's range
 (don't renumber to keep things "tidy" — see above), add the `code()`
 match arm, add a row to the relevant table above, and add an entry to
@@ -333,6 +364,9 @@ larger effort, not started.
 
 **BORROW-0xx**
 - `BORROW-001` `ConflictingAccessWhileBorrowed` — *Error*. "cannot use `place` while it is mutably borrowed" — MEMORY_MODEL.md §9, `sema/borrow_check.rs` (Phase D). Fires when a `&mut` loan's `bound_place` (the local it's assigned to, e.g. `p` in `let p = &mut n`) is still *live* — will be read again later, per backward liveness over the CFG — at the point some other statement conflictingly reads or re-borrows the loan's place. Liveness-gated deliberately: a conflicting read after the loan's carrier has already had its last use is NOT flagged (see `ok_borrow_dead_after_last_use.ubl`) — that's the actual non-lexical-scope behavior this checker is built around, not a naive "any candidate is an error" rule. Secondary span points at the loan's own `&mut` site ("mutable borrow occurs here"). Suggestion: move the conflicting use before the borrow's last use, or restructure so the borrow doesn't need to outlive it. Scope, today: only mutable loans are checked (two shared loans never conflict with each other, and this checker doesn't yet distinguish "plain read" from "new borrow" among conflicting accesses precisely enough to safely check the shared-then-mutable-elsewhere direction — real, separate follow-up); only loans bound to a traceable local are checked (a borrow consumed inline, e.g. a bare call argument, has no carrier that could still be "live" later); intra-statement conflicts (two loans issued at the very same point, e.g. `f(&n, &mut n)`) are excluded upstream by `facts::collect` itself and never reach this check at all — a distinct, separate, not-yet-built piece of work.
+
+**MOVE-0xx**
+- `MOVE-001` `UseAfterMove` — *Error*. "use of `place` after it was already moved" — MEMORY_MODEL.md §9, `sema/move_check.rs`. Fires when a `Unique<T>`-typed local's bare (non-`&`/`&mut`) use is forward-reachable, over the same point-level CFG walk `BORROW-001` uses, from an *earlier* bare use of the same local, with no reinitialization (`facts::place_defined_at`) in between. May-analysis, same direction `BORROW-001` already takes: reachable on *some* path is enough, not every path. Reachability deliberately allows a move point to reach itself — the mechanism that catches a value consumed on every loop iteration without ever being reinitialized (see `err_move_in_loop_combined.ubl`); when that's what fired, `moved_span` and `used_span` point at the same line, correctly. Secondary span points at the earlier consuming use ("value moved here"). Suggestion: borrow instead of moving if the earlier use didn't need to consume the value, or reassign a fresh value before this point. Scope, today: only `let`-bound locals are tracked — a move-tracked local is identified *syntactically* (an explicit `Unique<...>` annotation, or an initializer that's directly a `Unique.new(...)` call), not via real type inference, so a `Unique<T>` value arriving more indirectly (returned from another function, round-tripped through a field) isn't tracked at all yet; a `Unique<T>`-typed function *parameter* isn't tracked either, only locals bound via `let`; a method-call receiver (`a.method()`) is conservatively treated as a move of `a`, matching the fact that `resolve_receiver` doesn't strip a `Unique` wrapper for dispatch yet either (`MEMORY_MODEL.md` §9's own open question) — each of these is real, separate, documented follow-up, not silently dropped.
 
 ---
 

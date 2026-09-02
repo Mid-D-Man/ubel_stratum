@@ -1,0 +1,36 @@
+// tests/fixtures/ok_move_combined.ubl
+// Move checking, real-world usage: the CORRECT version of
+// err_move_in_loop_combined.ubl's mistake -- `payload` is constructed
+// FRESH every iteration (a new `let` each pass through the loop body)
+// instead of once before it, so there's nothing stale for the next
+// iteration to reuse. Passing it to `consume` by value is a real move,
+// but it's the only use of that iteration's binding, so nothing is
+// violated. Combines with a Shared<T> value (from the earlier
+// Debug-vs-Display delivery's alias-count formatting) alongside the
+// move-checked Unique<T> handoff, the way an actual batch job mixing
+// both ownership models really would.
+// Expected: sema OK, zero errors. Full pipeline OK.
+
+@tier(low)
+fn consume(payload: Unique<int>) void {
+    println($"consumed: {payload:?}")
+}
+
+@tier(low)
+fn process_batch(job_count: int) void {
+    let processed = 0
+    while processed < job_count {
+        let payload = Unique.new(processed)
+        consume(payload)
+        processed += 1
+    }
+}
+
+@tier(low)
+fn main() void {
+    process_batch(3)
+
+    let counter = Shared.new(0)
+    let counter_alias = counter
+    println($"shared alias count after handoff: {counter:?}")
+}

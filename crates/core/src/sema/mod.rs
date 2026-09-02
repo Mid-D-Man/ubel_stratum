@@ -1,5 +1,5 @@
 // src/sema/mod.rs
-//! Semantic analysis — four passes over the arena AST.
+//! Semantic analysis — five passes over the arena AST.
 //!
 //! Pass order:
 //!   1. name_resolution  → SymbolTable, ResolutionMap, top_level map
@@ -11,6 +11,12 @@
 //!      liveness/reaching fixed point and turns real violations into
 //!      diagnostics; see borrow_check.rs's module doc for exactly what
 //!      this pass does and doesn't catch yet)
+//!   5. move_check       → LOW-tier use-after-move checking for
+//!      `Unique<T>` locals (move_facts.rs collects move candidates over
+//!      the same cfg.rs graph, move_check.rs runs the reachability fixed
+//!      point and turns real violations into diagnostics; see
+//!      move_check.rs's module doc for exactly what "reaches" means,
+//!      including the loop-back-edge case)
 //!
 //! Each pass appends errors to a shared ErrorManager and the orchestrator
 //! stops after any phase that produced errors.
@@ -22,6 +28,7 @@ pub mod name_resolution;
 pub mod type_infer;
 pub mod tier_check;
 pub mod borrow_check;
+pub mod move_check;
 
 #[cfg(test)]
 mod tests;
@@ -35,7 +42,7 @@ pub use type_table::{TypeId, TypeTable, SemaType, ArenaId};
 
 use crate::ast::arena::AstArena;
 use crate::ast::root::Program;
-use crate::error_management::{ErrorManager, errors::BorrowError};
+use crate::error_management::{ErrorManager, errors::{BorrowError, MoveError}};
 
 /// Run all semantic analysis passes on `program`.
 /// Returns a populated `SemaContext` on success, `Err(ErrorManager)` on failure.
@@ -71,6 +78,18 @@ pub fn analyse<'ast>(
             place: violation.place,
             loan_span: violation.loan_span,
             conflict_span: violation.conflict_span,
+        });
+    }
+    if errors.has_errors() {
+        return Err(errors);
+    }
+
+    // ── Pass 5: LOW-tier move checking ───────────────────────────
+    for violation in move_check::check_program(program) {
+        errors.add_move_error(MoveError::UseAfterMove {
+            place: violation.place,
+            moved_span: violation.moved_span,
+            used_span: violation.used_span,
         });
     }
     if errors.has_errors() {

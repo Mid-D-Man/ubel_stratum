@@ -1,7 +1,7 @@
 // src/error_management/error_manager.rs
 
 use crate::error_management::errors::{
-    LexicalError, ParseError, NameError, TypeError, TierError, BorrowError,
+    LexicalError, ParseError, NameError, TypeError, TierError, BorrowError, MoveError,
 };
 use crate::error_management::logger::Logger;
 use crate::error_management::Diagnosable;
@@ -19,6 +19,7 @@ use crate::error_management::Diagnosable;
 ///   4. TypeCheck → `add_type_error`
 ///   5. TierCheck → `add_tier_error`
 ///   6. BorrowCheck (LOW tier only) → `add_borrow_error`
+///   7. MoveCheck (LOW tier only) → `add_move_error`
 #[derive(Debug)]
 pub struct ErrorManager {
     lexical_errors: Vec<LexicalError>,
@@ -27,6 +28,7 @@ pub struct ErrorManager {
     type_errors:    Vec<TypeError>,
     tier_errors:    Vec<TierError>,
     borrow_errors:  Vec<BorrowError>,
+    move_errors:    Vec<MoveError>,
     source:         String,
     max_errors:     usize,
 }
@@ -40,6 +42,7 @@ impl ErrorManager {
             type_errors:    Vec::new(),
             tier_errors:    Vec::new(),
             borrow_errors:  Vec::new(),
+            move_errors:    Vec::new(),
             source,
             max_errors: 100,
         }
@@ -129,6 +132,20 @@ impl ErrorManager {
         std::mem::take(&mut self.borrow_errors)
     }
 
+    // ── Move checking (LOW tier) ─────────────────────────────────
+
+    pub fn add_move_error(&mut self, error: MoveError) {
+        if self.total_errors() < self.max_errors {
+            self.move_errors.push(error);
+        }
+    }
+
+    pub fn move_error_count(&self) -> usize { self.move_errors.len() }
+
+    pub fn take_move_errors(&mut self) -> Vec<MoveError> {
+        std::mem::take(&mut self.move_errors)
+    }
+
     // ── Combined ─────────────────────────────────────────────────
 
     pub fn has_errors(&self) -> bool {
@@ -138,6 +155,7 @@ impl ErrorManager {
             || !self.type_errors.is_empty()
             || !self.tier_errors.is_empty()
             || !self.borrow_errors.is_empty()
+            || !self.move_errors.is_empty()
     }
 
     pub fn total_errors(&self) -> usize {
@@ -147,6 +165,7 @@ impl ErrorManager {
             + self.type_errors.len()
             + self.tier_errors.len()
             + self.borrow_errors.len()
+            + self.move_errors.len()
     }
 
     /// Backwards-compatible alias used by older call sites.
@@ -160,6 +179,7 @@ impl ErrorManager {
         self.report_section("type", &self.type_errors);
         self.report_section("tier", &self.tier_errors);
         self.report_section("borrow", &self.borrow_errors);
+        self.report_section("move", &self.move_errors);
     }
 
     fn report_section<E: Diagnosable>(

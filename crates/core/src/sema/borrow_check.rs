@@ -190,7 +190,13 @@ fn first_points_of(cfg: &Cfg<'_>, block: BlockId, seen: &mut HashSet<BlockId>) -
     out
 }
 
-fn succ_points(cfg: &Cfg<'_>, p: Point) -> Vec<Point> {
+/// Point-level successor(s) of `p` -- the next statement in the same
+/// block, or the first point(s) of each successor block if `p` is a
+/// block's last statement. `pub(crate)`: `sema::move_check` reuses this
+/// unchanged for its own forward reachability propagation — same CFG,
+/// same point granularity, no reason to duplicate the block/empty-block
+/// skipping logic a second time.
+pub(crate) fn succ_points(cfg: &Cfg<'_>, p: Point) -> Vec<Point> {
     let b = cfg.block(p.block);
     if p.stmt_index + 1 < b.stmts.len() {
         return vec![Point { block: p.block, stmt_index: p.stmt_index + 1 }];

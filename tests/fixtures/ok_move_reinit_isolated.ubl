@@ -1,0 +1,15 @@
+// tests/fixtures/ok_move_reinit_isolated.ubl
+// Move checking, narrow: reinitializing a moved-from local BEFORE the
+// next use gives it a fresh value -- move_check.rs's reachability walk
+// stops at any redefinition (facts::place_defined_at), so `c` below
+// reads the NEW value `a` was reassigned, not the one `b` already took.
+// Expected: sema OK, zero errors. Full pipeline OK.
+
+@tier(low)
+fn main() void {
+    let a = Unique.new(1)
+    let b = a
+    a = Unique.new(2)
+    let c = a
+    println($"b: {b:?}, c: {c:?}")
+}

@@ -120,6 +120,12 @@ fn main() {
         // every other "new error family needs wiring into every consumer"
         // gap this project has hit before.
         diags.extend(errs.take_borrow_errors().iter().map(|e| e.to_diagnostic()));
+        // MoveError (move_check.rs, MOVE-0xx) added alongside BorrowError
+        // in the same delivery that wires this stage up correctly from
+        // the start -- BorrowError's own comment just above documents
+        // the exact "new error family, forgot to collect it here" gap
+        // this project has already hit once; not repeating it this time.
+        diags.extend(errs.take_move_errors().iter().map(|e| e.to_diagnostic()));
         print!("{}", ubel_stratum::error_management::render_all(&diags, &source));
     }
     if !sema_ok {

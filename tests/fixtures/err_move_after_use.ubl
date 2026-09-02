@@ -1,0 +1,11 @@
+// tests/fixtures/err_move_after_use.ubl
+// Move checking, isolated: the plainest possible use-after-move. `a` is
+// consumed by `let b = a`, then used again by `let c = a` -- MOVE-001.
+// Expected: sema FAIL (UseAfterMove, MOVE-001).
+
+@tier(low)
+fn main() void {
+    let a = Unique.new(42)
+    let b = a
+    let c = a
+}

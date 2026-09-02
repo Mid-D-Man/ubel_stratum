@@ -67,6 +67,9 @@ fn main() {
                 for e in errs.take_borrow_errors() {
                     println!("                    borrow:  {:?}", e);
                 }
+                for e in errs.take_move_errors() {
+                    println!("                    move:  {:?}", e);
+                }
                 continue;
             }
         };
