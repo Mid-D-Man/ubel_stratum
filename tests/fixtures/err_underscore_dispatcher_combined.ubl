@@ -1,0 +1,36 @@
+// tests/fixtures/err_underscore_dispatcher_combined.ubl
+// Wildcard/discard, combined/real-world error: a small event-dispatch
+// system -- an enum, a wildcard catch-all for unhandled event types,
+// and a callback-style handler whose signature ignores its context
+// argument, the way an actual plugin/interface system really would be
+// shaped. Everything here is valid EXCEPT one handler mistakenly tries
+// to read its own discarded `_` context parameter back out, the same
+// underlying mistake as err_underscore_in_expression_position.ubl, just
+// discovered in a realistic program instead of a one-liner.
+// Expected: PARSE FAIL (UnexpectedToken, found Underscore).
+
+enum Event {
+    Login
+    Logout
+    Click
+    Scroll
+}
+
+fn describe(e: Event) string {
+    match e {
+        Event.Login => { return "login" }
+        Event.Logout => { return "logout" }
+        _ => { return "other" }
+    }
+}
+
+// `_: string` here is the context argument every handler in this
+// registry must accept to match the callback shape, even though this
+// particular handler has no use for it.
+fn on_click(e: Event, _: string) string {
+    return $"handled: {describe(e)}, context was: {_}"
+}
+
+fn main() void {
+    println(on_click(Event.Click, "toolbar"))
+}

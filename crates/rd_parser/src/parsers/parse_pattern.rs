@@ -1,3 +1,8 @@
+// ============================================================================
+// NOTICE: Full documentation, design decisions, and fix history for this file
+// live in docs/ubel_stratum_rd.md, section "parsers/parse_pattern.rs"
+// ============================================================================
+//
 // crates/rd_parser/src/parsers/parse_pattern.rs
 //
 // Pattern parser for Ubel Stratum.
@@ -128,8 +133,8 @@ fn parse_single_pattern<'ast, 'tok>(p: &mut Parser<'ast, 'tok>) -> Option<Patter
 
     match p.cursor.peek().clone() {
 
-        // ── Wildcard `_` ──────────────────────────────────────────────────────
-        TokenType::Ident(ref name) if name == "_" => {
+        // Wildcard `_`. This is TokenType::Underscore, not Ident("_").
+        TokenType::Underscore => {
             p.cursor.advance();
             Some(Pattern { kind: PatternKind::Wildcard, span: lo })
         }
@@ -542,7 +547,8 @@ fn parse_destructure_element<'ast, 'tok>(
     p: &mut Parser<'ast, 'tok>,
 ) -> Option<DestructureElement<'ast>> {
     match p.cursor.peek().clone() {
-        TokenType::Ident(ref n) if n == "_" => {
+        // Wildcard `_`. This is TokenType::Underscore, not Ident("_").
+        TokenType::Underscore => {
             p.cursor.advance();
             Some(DestructureElement::Wildcard)
         }

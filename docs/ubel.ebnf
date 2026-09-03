@@ -78,10 +78,19 @@ Item          ::= Attributes? Visibility? ItemBody
 (* ── Parameters ── *)
 ParamList     ::= Param ("," Param)*
 Param         ::= "mut"? Ident TypeAnnotation? ("=" Expr)?
+                | "_" TypeAnnotation?
                 | "self"
                 | "mut" "self"
                 | "&" "self"
                 | "&" "mut" "self"
+
+(* "_" (Discard) has no name to bind and no default -- it exists only to
+   satisfy a callback/interface signature that requires an argument in
+   this position. Its declared type is still real: it's part of the
+   function's signature and checked at every call site like any other
+   parameter's, only the name is gone. Unlike "_" in pattern position
+   (see Pattern below), a discarded parameter can never be read back --
+   the expression grammar has no production for a bare "_" at all. *)
 
 (* ── Structs ── *)
 StructDecl    ::= "pub"? "edge"? "struct" Ident LifetimeParams? GenericParams? "{" StructBody "}"

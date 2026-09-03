@@ -1,0 +1,38 @@
+// tests/fixtures/ok_wildcard_and_discard_isolated.ubl
+// Wildcard/discard, narrow: a match with an explicit variant plus a
+// wildcard catch-all (real now -- see the parser bug this fixed:
+// `_` is its own lexer token, Underscore, and the old check for
+// Ident("_") could never match it), and a function using `_: Type` to
+// discard a parameter it doesn't need, both used correctly.
+// Expected: sema OK, zero errors. Full pipeline OK.
+
+enum Color {
+    Red
+    Green
+    Blue
+    Yellow
+}
+
+fn tag(c: Color) string {
+    match c {
+        Color.Red => { return "r" }
+        _ => { return "other" }
+    }
+}
+
+// The middle parameter's declared type is still real and still checked
+// at every call site (see the two sema regression tests this delivery
+// added) -- only its NAME is gone.
+fn ignore_second(a: int, _: string, b: bool) int {
+    if b {
+        return a
+    }
+    return 0
+}
+
+fn main() void {
+    println(tag(Color.Red))
+    println(tag(Color.Yellow))
+    let n = ignore_second(42, "unused string arg", true)
+    println($"n = {n}")
+}

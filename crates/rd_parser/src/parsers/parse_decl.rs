@@ -1,3 +1,8 @@
+// ============================================================================
+// NOTICE: Full documentation, design decisions, and fix history for this file
+// live in docs/ubel_stratum_rd.md, section "parsers/parse_decl.rs"
+// ============================================================================
+//
 // crates/rd_parser/src/parsers/parse_decl.rs
 //
 // Declaration parser: fn, struct, enum, trait, impl, extend, const, type alias.
@@ -308,6 +313,11 @@ impl<'ast, 'tok> Parser<'ast, 'tok> {
                         span: lo,
                     })
                 }
+            }
+            TokenType::Underscore => {
+                self.cursor.advance();
+                let ty = self.parse_type_annotation();
+                Some(Param { kind: ParamKind::Discard { ty }, span: lo })
             }
             TokenType::Ident(_) => {
                 let (name, _) = self.eat_ident().unwrap();

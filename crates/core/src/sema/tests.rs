@@ -129,11 +129,32 @@ fn int_type(arena: &AstArena) -> &Type<'_> {
     arena.alloc(Type { kind: TypeKind::Int, span: Z })
 }
 
+fn str_type(arena: &AstArena) -> &Type<'_> {
+    arena.alloc(Type { kind: TypeKind::Str, span: Z })
+}
+
+fn bool_type(arena: &AstArena) -> &Type<'_> {
+    arena.alloc(Type { kind: TypeKind::Bool, span: Z })
+}
+
 fn param_named<'a>(arena: &'a AstArena, name: &str, ty: &'a Type<'a>) -> Param<'a> {
     Param {
         kind: ParamKind::Named { mutable: false, name: arena.alloc_str(name), ty: Some(ty), default: None },
         span: Z,
     }
+}
+
+/// `_: Type` — see `ParamKind::Discard`'s own doc comment for why it
+/// carries no name and no default.
+fn param_discard<'a>(ty: &'a Type<'a>) -> Param<'a> {
+    Param { kind: ParamKind::Discard { ty: Some(ty) }, span: Z }
+}
+
+fn call_expr_multi<'a>(arena: &'a AstArena, callee_name: &str, args: &[&'a Expr<'a>]) -> &'a Expr<'a> {
+    let callee = arena.alloc(Expr { kind: ExprKind::Ident(arena.alloc_str(callee_name)), span: Z });
+    let arg_nodes: Vec<Arg> = args.iter().map(|a| Arg { kind: ArgKind::Positional(a), span: Z }).collect();
+    let args_slice: &[Arg] = arena.alloc_slice_copy(&arg_nodes);
+    arena.alloc(Expr { kind: ExprKind::Call { callee, args: args_slice }, span: Z })
 }
 
 /// Like `make_fn`/`make_fn_tiered`, but with real params and an optional
@@ -984,6 +1005,60 @@ fn test_sema_interpolation_hole_undefined_name_rejected() {
         Err(mut errors) => {
             let name_errs = errors.take_name_errors();
             assert!(!name_errs.is_empty(), "expected at least one name error, got none");
+        }
+    }
+}
+
+#[test]
+fn test_sema_discard_param_on_free_function_does_not_report_self_outside_method() {
+    // fn f(_: int) void {} -- regression test for a real bug found
+    // while wiring ParamKind::Discard in: resolve_param's catch-all
+    // (name_resolution.rs) was written with ONLY the self-family
+    // variants in mind, and Discard fell into it too, incorrectly
+    // firing NameError::SelfOutsideMethod for a plain free function
+    // that has nothing to do with `self` at all.
+    let arena = AstArena::new();
+    let f = make_fn_full(
+        &arena, "f", &[param_discard(int_type(&arena))],
+        None, Block { stmts: &[], span: Z },
+    );
+    assert_ok(&arena, &prog_with(&arena, &[Item::Function(f)]));
+}
+
+#[test]
+fn test_sema_discard_param_type_is_enforced_at_call_site() {
+    // fn f(a: int, _: string, b: bool) void {}, called as f(1, 2, true)
+    // -- the middle argument is an Int where the discarded slot expects
+    // a Str. Regression test for a real bug found while wiring
+    // ParamKind::Discard in: three separate signature-collection sites
+    // in type_infer.rs used `ParamKind::Named { ty, .. } => ..., _ =>
+    // None` with filter_map, silently DROPPING a discard param's type
+    // from the computed signature entirely rather than just skipping
+    // its (nonexistent) name -- an arity/type-checking gap, not merely
+    // an unused value. If that's still broken, this call would
+    // type-check cleanly since the signature would only expect 2
+    // arguments' worth of real type constraints; it must not.
+    let arena = AstArena::new();
+    let f = make_fn_full(
+        &arena, "f",
+        &[param_named(&arena, "a", int_type(&arena)),
+          param_discard(str_type(&arena)),
+          param_named(&arena, "b", bool_type(&arena))],
+        None, Block { stmts: &[], span: Z },
+    );
+
+    let arg_a = arena.alloc(Expr { kind: ExprKind::Lit(Literal::Int(1)), span: Z });
+    let arg_wrong = arena.alloc(Expr { kind: ExprKind::Lit(Literal::Int(2)), span: Z }); // should be a Str
+    let arg_b = arena.alloc(Expr { kind: ExprKind::Lit(Literal::Bool(true)), span: Z });
+    let call = call_expr_multi(&arena, "f", &[arg_a, arg_wrong, arg_b]);
+    let call_stmt = Stmt { kind: StmtKind::Expr(call), span: Z };
+    let main = make_fn(&arena, "main", Block { stmts: arena.alloc_slice_copy(&[call_stmt]), span: Z });
+
+    match sema::analyse(&prog_with(&arena, &[Item::Function(f), Item::Function(main)]), &arena, String::new()) {
+        Ok(_) => panic!("expected sema to reject an Int argument where the discarded param expects a Str"),
+        Err(mut errors) => {
+            let type_errs = errors.take_type_errors();
+            assert!(!type_errs.is_empty(), "expected at least one type error, got none -- the discard param's type may have been silently dropped from the signature again");
         }
     }
 }

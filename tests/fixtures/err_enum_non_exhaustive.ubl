@@ -1,6 +1,8 @@
 // tests/fixtures/err_enum_non_exhaustive.ubl
-// ENUM_RULES.md — West is never covered, and there's no wildcard/
-// catch-all arm to fall back on.
+// ENUM_RULES.md — West is never covered. A wildcard arm (`_ => ...`)
+// would close this and is real now (see ok_wildcard_and_discard_isolated.ubl)
+// -- deliberately not used here, so this fixture still demonstrates
+// what happens without one.
 // Expected: sema FAIL (NonExhaustiveMatch).
 
 enum Direction {

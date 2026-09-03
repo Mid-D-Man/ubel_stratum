@@ -1,3 +1,7 @@
+// ============================================================================
+// NOTICE: Full documentation, design decisions, and fix history for this file
+// live in docs/ubel_stratum.md, section "ast/declarations.rs"
+// ============================================================================
 // src/ast/declarations.rs
 //! All declaration-level AST nodes.
 
@@ -25,6 +29,12 @@ pub enum ParamKind<'ast> {
         name:    &'ast str,
         ty:      Option<&'ast Type<'ast>>,
         default: Option<&'ast Expr<'ast>>,
+    },
+    /// `_: Type`. An unused parameter kept only to satisfy a
+    /// callback/interface signature. No name and no default; see
+    /// docs/ubel_stratum.md for why.
+    Discard {
+        ty: Option<&'ast Type<'ast>>,
     },
     SelfVal,
     SelfMut,

@@ -1,3 +1,7 @@
+// ============================================================================
+// NOTICE: Full documentation, design decisions, and fix history for this file
+// live in docs/ubel_stratum.md, section "interpreter/eval/mod.rs"
+// ============================================================================
 // src/interpreter/eval/mod.rs
 //! Interpreter struct, function table, and call dispatch.
 
@@ -150,9 +154,17 @@ impl<'ast> Interpreter<'ast> {
     /// (`body: Block<'ast>`, etc.) are copied off the stack while the
     /// underlying arena data they point to lives as long as `'ast`.
     pub fn register_fn(&mut self, f: FunctionDecl<'ast>) -> FunctionId {
-        let params: Vec<String> = f.params.iter()
-            .filter_map(|p| match p.kind {
+        // enumerate() + a synthesized name for Discard, not filter_map
+        // dropping it: param_names gets zipped positionally against real
+        // call arguments at call sites (see e.g. line ~314 below) --
+        // dropping a slot here would shift every later argument onto the
+        // wrong name. `$`-prefixed: identifiers can't start with `$`
+        // (Letter (Letter|Digit|_)*), so this can never collide with a
+        // real binding a user could write or read.
+        let params: Vec<String> = f.params.iter().enumerate()
+            .filter_map(|(i, p)| match p.kind {
                 ParamKind::Named { name, .. } => Some(name.to_string()),
+                ParamKind::Discard { .. } => Some(format!("$discard{i}")),
                 _ => None,
             })
             .collect();
@@ -173,10 +185,16 @@ impl<'ast> Interpreter<'ast> {
 
     /// Register a struct method. The FunctionId is stored in `method_table`.
     pub fn register_method(&mut self, struct_name: &str, m: MethodDecl<'ast>) -> FunctionId {
-        // Only Named params — `self` variants are handled at call sites.
-        let params: Vec<String> = m.params.iter()
-            .filter_map(|p| match p.kind {
+        // Only Named/Discard params contribute a slot -- `self` variants
+        // are handled at call sites. Same arity-preserving reasoning as
+        // register_fn just above: Discard gets a synthesized `$`-prefixed
+        // name (never a real, writable/readable identifier) instead of
+        // being dropped, so later params don't shift onto the wrong
+        // argument at call time.
+        let params: Vec<String> = m.params.iter().enumerate()
+            .filter_map(|(i, p)| match p.kind {
                 ParamKind::Named { name, .. } => Some(name.to_string()),
+                ParamKind::Discard { .. } => Some(format!("$discard{i}")),
                 _ => None,
             })
             .collect();

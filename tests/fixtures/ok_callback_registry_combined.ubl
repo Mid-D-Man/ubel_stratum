@@ -1,0 +1,48 @@
+// tests/fixtures/ok_callback_registry_combined.ubl
+// Wildcard/discard, real-world usage: the actual motivating case for
+// `_: Type` -- a fixed callback signature every handler in a registry
+// must match, even when a given handler doesn't need every argument
+// -- combined with a wildcard catch-all for event types nobody's
+// written a specific handler for yet, and List<T> to hold the dispatch
+// results, the way an actual small plugin system would really be
+// shaped.
+// Expected: sema OK, zero errors. Full pipeline OK.
+
+enum Event {
+    Login
+    Logout
+    Click
+    Scroll
+}
+
+fn describe(e: Event) string {
+    match e {
+        Event.Login  => { return "login" }
+        Event.Logout => { return "logout" }
+        _            => { return "unhandled" }
+    }
+}
+
+// Every handler in this registry takes (event, source) to match one
+// fixed shape -- `on_scroll` has no use for `source`, so it's discarded
+// rather than given a name nobody would ever read.
+fn on_click(e: Event, source: string) string {
+    return $"click from {source}: {describe(e)}"
+}
+
+fn on_scroll(e: Event, _: string) string {
+    return $"scroll: {describe(e)}"
+}
+
+fn main() void {
+    let results = List.new()
+    results.push(on_click(Event.Click, "toolbar"))
+    results.push(on_scroll(Event.Scroll, "sidebar"))
+    results.push(describe(Event.Logout))
+
+    let i = 0
+    while i < results.len() {
+        println(results.get(i))
+        i += 1
+    }
+}

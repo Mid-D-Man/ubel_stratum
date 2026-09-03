@@ -1,3 +1,7 @@
+// ============================================================================
+// NOTICE: Full documentation, design decisions, and fix history for this file
+// live in docs/ubel_stratum.md, section "sema/name_resolution.rs"
+// ============================================================================
 // src/sema/name_resolution.rs
 //! Pass 1 — Name Resolution.
 //!
@@ -269,6 +273,14 @@ impl<'a> Resolver<'a> {
                     self.resolve_expr(default_expr);
                 }
             }
+            // Nothing to declare: no name, no def_id, and unlike Named
+            // there's no default expression that could reference other
+            // names either. Deliberately its own arm, not folded into
+            // the self-family catch-all below -- a `_: Type` param on a
+            // plain free function is completely unrelated to `self`,
+            // and that catch-all's SelfOutsideMethod check would
+            // otherwise incorrectly fire for it too.
+            ParamKind::Discard { .. } => {}
             // self / &self / mut self / &mut self — only valid inside a method.
             _ => {
                 if !self.in_method {

@@ -1,3 +1,7 @@
+// ============================================================================
+// NOTICE: Full documentation, design decisions, and fix history for this file
+// live in docs/ubel_stratum.md, section "sema/type_infer.rs"
+// ============================================================================
 // src/sema/type_infer.rs
 //! Pass 2 — Type Inference and Arena Coloring.
 //!
@@ -900,7 +904,7 @@ impl<'a> InferCtx<'a> {
         let prev_generics = self.push_generic_scope(f.generic_params);
         let param_tys: Vec<TypeId> = f.params.iter()
             .filter_map(|p| match p.kind {
-                ParamKind::Named { ty, .. } => ty.map(|t| self.ast_type_to_sema(t)),
+                ParamKind::Named { ty, .. } | ParamKind::Discard { ty } => ty.map(|t| self.ast_type_to_sema(t)),
                 _ => None,
             })
             .collect();
@@ -928,7 +932,7 @@ impl<'a> InferCtx<'a> {
         // deliberately skipped rather than half-wired.
         let param_tys: Vec<TypeId> = m.params.iter()
             .filter_map(|p| match p.kind {
-                ParamKind::Named { ty, .. } => ty.map(|t| self.ast_type_to_sema(t)),
+                ParamKind::Named { ty, .. } | ParamKind::Discard { ty } => ty.map(|t| self.ast_type_to_sema(t)),
                 _ => None,
             })
             .collect();
@@ -949,7 +953,7 @@ impl<'a> InferCtx<'a> {
     fn collect_trait_method_sig<'ast>(&mut self, sig: &MethodSig<'ast>) {
         let param_tys: Vec<TypeId> = sig.params.iter()
             .filter_map(|p| match p.kind {
-                ParamKind::Named { ty, .. } => ty.map(|t| self.ast_type_to_sema(t)),
+                ParamKind::Named { ty, .. } | ParamKind::Discard { ty } => ty.map(|t| self.ast_type_to_sema(t)),
                 _ => None,
             })
             .collect();

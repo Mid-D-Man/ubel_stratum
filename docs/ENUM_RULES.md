@@ -178,6 +178,28 @@ turns out to name. Fixed the same way, in both places: sema's
 matching arm each now check the scrutinee/value's enum-ness first and
 reinterpret accordingly.
 
+### A third bug, complementary to the first two, found while finally wiring `_` up
+
+The first two bugs above were about a *bare identifier* being ambiguous
+between a real variant name and a fresh catch-all binding. This one is
+different. The literal `_` wildcard itself (not an identifier standing
+in for one, the actual token) silently could never parse as a pattern
+at all, in either a `match` arm or a struct-destructure field. `_` is
+its own lexer token, `Underscore`, deliberately kept out of the `Ident`
+bucket (the lexer's own comment says a bare `_` is tokenised as
+Underscore, not Ident("_")), but both of `parse_pattern.rs`'s
+wildcard-recognizing arms checked for `TokenType::Ident(n) if n == "_"`,
+a token the lexer would never actually produce for a bare `_`. Every
+downstream consumer (`name_resolution`, `type_infer`'s
+`PatternCoverage::CatchAll`, the interpreter's `PatternKind::Wildcard =>
+true`) was already correct and had been the whole time; nothing could
+ever reach them through this specific parse path. Confirmed via a real
+`_ => ...` match arm before fixing anything: `UnexpectedToken { found:
+Underscore, expected: ["pattern", "'_'", ...] }`, the parser's own
+error message listing `'_'` as expected right next to the token it
+actually received is what gave this away. Fixed by checking
+`TokenType::Underscore` directly in both places instead.
+
 ### Where it lives
 
 - `type_infer.rs`: `VariantShape`/`PatternCoverage` types,

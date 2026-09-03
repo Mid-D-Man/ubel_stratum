@@ -1,0 +1,17 @@
+// tests/fixtures/err_underscore_in_expression_position.ubl
+// Wildcard/discard, isolated error: `_` is its own lexer token
+// (Underscore), never an Ident -- it's valid in pattern/param position
+// only. The expression parser has no arm for it at all, so trying to
+// read a discarded parameter back out inside the function body is a
+// parse error, not a name-resolution error: there's genuinely nothing
+// bound to look up.
+// Expected: PARSE FAIL (UnexpectedToken, found Underscore).
+
+fn f(_: int) int {
+    return _
+}
+
+fn main() void {
+    let n = f(5)
+    println($"{n}")
+}
