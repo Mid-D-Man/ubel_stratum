@@ -86,20 +86,17 @@ pub fn order_by_desc(pipeline: &Rc<LinqPipeline>, args: &[Value]) -> EvalResult 
     Ok(push_op(pipeline, LinqOp::OrderBy(key_id, true)))
 }
 
-/// Compare two values for ordering. Returns `None` if incomparable —
-/// `order_by`/`order_by_desc` fall back to treating incomparable pairs
-/// as equal (stable sort leaves their relative order alone) rather than
-/// panicking on, say, a key selector that returns structs.
-fn compare_values(a: &Value, b: &Value) -> Option<std::cmp::Ordering> {
-    match (a, b) {
-        (Value::Int(x),    Value::Int(y))    => Some(x.cmp(y)),
-        (Value::Float(x),  Value::Float(y))  => x.partial_cmp(y),
-        (Value::Double(x), Value::Double(y)) => x.partial_cmp(y),
-        (Value::Str(x),    Value::Str(y))    => Some(x.cmp(y)),
-        (Value::Bool(x),   Value::Bool(y))   => Some(x.cmp(y)),
-        _ => None,
-    }
-}
+/// `.order_by()`/`.order_by_desc()`'s comparison now goes straight
+/// through `Value::partial_cmp` — the single comparison implementation
+/// this interpreter has, the same relationship every other comparison
+/// already has with `Value::equals`. Retires this module's own,
+/// narrower `compare_values` (Int/Float/Double/Str/Bool only); a struct
+/// with a derived ordering now sorts correctly too, as a direct
+/// consequence rather than something built specifically for this call
+/// site. Falls back to treating an incomparable pair as equal (stable
+/// sort leaves their relative order alone) rather than panicking on,
+/// say, a key selector that returns `List`s — unchanged behavior, just
+/// re-hung off `partial_cmp` instead of a local match.
 
 /// Run every pending op against the snapshot, in order. The one real
 /// piece of shared logic every terminal method needs — where the actual
@@ -132,7 +129,7 @@ fn materialize(interp: &mut Interpreter<'_>, pipeline: &LinqPipeline) -> Result<
                     keyed.push((key, item));
                 }
                 keyed.sort_by(|(ka, _), (kb, _)| {
-                    compare_values(ka, kb).unwrap_or(std::cmp::Ordering::Equal)
+                    ka.partial_cmp(kb).unwrap_or(std::cmp::Ordering::Equal)
                 });
                 if *descending {
                     keyed.reverse();

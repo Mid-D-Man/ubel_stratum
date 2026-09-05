@@ -1,3 +1,7 @@
+// ============================================================================
+// NOTICE: Full documentation, design decisions, and fix history for this file
+// live in docs/ubel_stratum.md, section "error_management/errors/types/mod.rs"
+// ============================================================================
 // src/error_management/errors/types/mod.rs
 //! Errors produced during ordinary type inference and type checking.
 //!
@@ -87,6 +91,40 @@ pub enum TypeError {
         span:       Span,
     },
 
+    /// `@derive(X)` named a real, recognized trait, but without a
+    /// companion trait it depends on also being present in the same
+    /// `@derive(...)` list — `Eq` needs `PartialEq`, `PartialOrd` needs
+    /// `PartialEq`, `Ord` needs `PartialOrd` (which transitively covers
+    /// `PartialEq` too, but both are checked directly rather than
+    /// relying on transitivity, so the message always names the
+    /// *immediate* gap), `Hash` needs `Eq` — not a real Rust supertrait
+    /// bound for `Hash` specifically, but the bound every actual
+    /// hash-map API uses in practice (`K: Eq + Hash`), and the entire
+    /// reason this project wants `Hash` at all (a future `Dict` key).
+    /// `Clone` has no prerequisite. Distinct from `UnknownDeriveTrait`
+    /// on purpose: this isn't an invalid or unrecognized name, it's a
+    /// valid one requested incompletely.
+    DeriveRequiresOther {
+        trait_name: String,
+        requires:   String,
+        span:       Span,
+    },
+
+    /// `<`/`<=`/`>`/`>=` used on a type with no ordering: anything other
+    /// than `Int`/`Float`/`Double`/`Str`/`Bool`, or a `struct` that
+    /// hasn't `@derive`d `PartialOrd`/`Ord`. Previously a silent gap —
+    /// these operators only ever worked for numeric operands
+    /// (`eval_binop`'s `promote_numeric`), and anything else reached a
+    /// runtime panic (`"arithmetic not supported on {type}"`) with no
+    /// sema-time check at all. `on_type` is the resolved type as
+    /// displayed to the person, not necessarily a struct — this also
+    /// catches e.g. two `List`s compared with `<`, which never had an
+    /// ordering to begin with and isn't expected to gain one here.
+    TypeNotOrderable {
+        on_type: String,
+        span:    Span,
+    },
+
     /// A type could not be inferred — too ambiguous.
     CannotInferType {
         span:       Span,
@@ -164,6 +202,8 @@ impl TypeError {
             TypeError::DerefOnNonReference        { span, .. } => *span,
             TypeError::InvalidFormatSpec          { span, .. } => *span,
             TypeError::UnknownDeriveTrait          { span, .. } => *span,
+            TypeError::DeriveRequiresOther          { span, .. } => *span,
+            TypeError::TypeNotOrderable             { span, .. } => *span,
             TypeError::CannotInferType            { span, .. } => *span,
             TypeError::GenericArgCountMismatch    { span, .. } => *span,
             TypeError::UnknownVariant             { span, .. } => *span,
@@ -206,6 +246,12 @@ impl TypeError {
 
             TypeError::UnknownDeriveTrait { trait_name, .. } =>
                 format!("unknown derive trait `{}`", trait_name),
+
+            TypeError::DeriveRequiresOther { trait_name, requires, .. } =>
+                format!("`@derive({})` also needs `@derive({})`", trait_name, requires),
+
+            TypeError::TypeNotOrderable { on_type, .. } =>
+                format!("type `{}` doesn't support ordering comparisons", on_type),
 
             TypeError::CannotInferType { .. } =>
                 "cannot infer type — add an explicit type annotation".to_string(),
@@ -264,7 +310,13 @@ impl TypeError {
                 Some(format!("drop `@derive({})` — it has no effect", trait_name)),
 
             TypeError::UnknownDeriveTrait { .. } =>
-                Some("supported derive traits: `PartialEq`".to_string()),
+                Some("supported derive traits: `PartialEq`, `Eq`, `Hash`, `Ord`, `PartialOrd`, `Clone`".to_string()),
+
+            TypeError::DeriveRequiresOther { trait_name, requires, .. } =>
+                Some(format!("add `@derive({}, {})`", requires, trait_name)),
+
+            TypeError::TypeNotOrderable { .. } =>
+                Some("add `@derive(PartialOrd)` (or `@derive(Ord)`) to the struct, or compare a different field".to_string()),
 
             _ => None,
         }
@@ -301,6 +353,8 @@ impl crate::error_management::render::Diagnosable for TypeError {
             TypeError::DerefOnNonReference { .. }          => "TYPE-114",
             TypeError::InvalidFormatSpec { .. }            => "TYPE-115",
             TypeError::UnknownDeriveTrait { .. }            => "TYPE-116",
+            TypeError::DeriveRequiresOther { .. }           => "TYPE-117",
+            TypeError::TypeNotOrderable { .. }              => "TYPE-118",
         }
     }
     fn span(&self) -> Span { self.span() }

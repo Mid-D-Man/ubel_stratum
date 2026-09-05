@@ -1,0 +1,28 @@
+// tests/fixtures/err_derive_missing_prerequisite_and_not_orderable_combined.ubl
+// TYPE-117 + TYPE-118 together, the way a person iterating on real code
+// would actually hit both: a cache-entry struct that wants `Hash` for a
+// future Dict key but forgot `Eq` (TYPE-117, `Hash` needs `Eq`, not
+// just any equality notion), plus, separately, a plain struct with no
+// derived ordering at all getting compared with `<` in a sort-adjacent
+// spot (TYPE-118), previously a silent sema pass followed by a runtime
+// panic, now caught here instead, at the point of use, with the actual
+// offending type named in the message.
+// Expected: TYPE-117 (CacheEntry: Hash needs Eq) and TYPE-118
+// (Unranked: not orderable). No other errors.
+
+@derive(Hash)
+struct CacheEntry {
+    key: string
+}
+
+struct Unranked {
+    label: string
+}
+
+fn main() void {
+    let a = Unranked { label = "first" }
+    let b = Unranked { label = "second" }
+    if a < b {
+        println("a comes first")
+    }
+}

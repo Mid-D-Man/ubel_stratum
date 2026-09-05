@@ -1,0 +1,38 @@
+// tests/fixtures/ok_derive_ord_and_clone_isolated.ubl
+// @derive(PartialEq, Eq, PartialOrd, Ord, Clone) on a plain struct,
+// narrow, single-concept: real `<`/`<=`/`>`/`>=` operators on a struct
+// (never worked before this delivery, same as Str below), comparing
+// fields in DECLARATION order (`y` only decides ties on `x`, matching
+// `Point`'s own field order, not alphabetical or any other order), and
+// `.clone()` producing a genuinely independent copy. Mutating the
+// clone's field leaves the original's untouched, unlike a plain
+// assignment (which would alias the same instance).
+// Expected: sema OK, zero errors. Full pipeline OK.
+
+@derive(PartialEq, Eq, PartialOrd, Ord, Clone)
+struct Point {
+    x: int
+    y: int
+}
+
+fn main() void {
+    let a = Point { x = 1, y = 5 }
+    let b = Point { x = 2, y = 0 }
+    assert(a < b, "Point: x decides first, 1 < 2 regardless of y")
+    assert(!(b < a), "Point: b is not less than a")
+
+    let c = Point { x = 1, y = 5 }
+    let d = Point { x = 1, y = 9 }
+    assert(c < d, "Point: tied on x, y breaks the tie")
+    assert(c <= c, "Point: <= is reflexive")
+    assert(d >= c, "Point: >= agrees with <")
+
+    let original = Point { x = 3, y = 3 }
+    let copy = original.clone()
+    assert(original == copy, "clone: starts out equal to the original")
+
+    // Str comparison is also newly real this delivery.
+    assert("apple" < "banana", "Str: lexicographic <")
+    assert(!("banana" < "apple"), "Str: lexicographic < is not symmetric")
+    assert("apple" <= "apple", "Str: <= is reflexive")
+}

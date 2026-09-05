@@ -1,3 +1,7 @@
+// ============================================================================
+// NOTICE: Full documentation, design decisions, and fix history for this file
+// live in docs/ubel_stratum.md, section "interpreter/eval/expr.rs"
+// ============================================================================
 // src/interpreter/eval/expr.rs
 //! Expression evaluation.
 
@@ -254,6 +258,10 @@ pub fn eval_expr<'ast>(interp: &mut Interpreter<'ast>, expr: &Expr<'ast>) -> Eva
                 fields:    Rc::new(RefCell::new(map)),
                 // No declaration to have `@derive`d anything from.
                 derives_partial_eq: false,
+                derives_ord:        false,
+                derives_hash:       false,
+                derives_clone:      false,
+                field_order:        Rc::new(Vec::new()),
             })
         }
 
@@ -287,10 +295,20 @@ pub fn eval_expr<'ast>(interp: &mut Interpreter<'ast>, expr: &Expr<'ast>) -> Eva
                 let v = eval_expr(interp, f.value)?;
                 map.insert(f.name.to_string(), v);
             }
+            let derived = interp.struct_derives.get(&type_name);
             Ok(Value::Struct {
-                derives_partial_eq: interp.struct_derives
+                derives_partial_eq: derived.is_some_and(|t| t.contains("PartialEq")),
+                // `Ord` requires `PartialOrd` also be present (checked at
+                // TYPE-117), so checking for `PartialOrd` alone already
+                // catches both — see the `derives_ord` doc comment on
+                // `Value::Struct` in `interpreter/value.rs`.
+                derives_ord:   derived.is_some_and(|t| t.contains("PartialOrd")),
+                derives_hash:  derived.is_some_and(|t| t.contains("Hash")),
+                derives_clone: derived.is_some_and(|t| t.contains("Clone")),
+                field_order: interp.struct_field_order
                     .get(&type_name)
-                    .is_some_and(|traits| traits.contains("PartialEq")),
+                    .cloned()
+                    .unwrap_or_default(),
                 type_name,
                 fields: Rc::new(RefCell::new(map)),
             })
@@ -507,6 +525,34 @@ fn eval_binop(op: BinOp, lhs: Value, rhs: Value) -> EvalResult {
     match op {
         BinOp::Eq => return Ok(Value::Bool(lhs.equals(&rhs))),
         BinOp::Ne => return Ok(Value::Bool(!lhs.equals(&rhs))),
+        _ => {}
+    }
+
+    // Ordering on Str/Struct/Unique/Shared/SyncShared — new this
+    // delivery, via `Value::partial_cmp` (TYPE-118 has already gated
+    // this at sema time for well-formed programs; a bare interpreter
+    // test that skips sema still ends up here safely, since
+    // `partial_cmp` itself returns `None` for anything not actually
+    // comparable, same fallback the `None` arm below reaches). Int/
+    // Float/Double keep using the existing numeric path below —
+    // unchanged, not folded into `partial_cmp` here, since it already
+    // works and touching it isn't this delivery's job.
+    match op {
+        BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge
+            if matches!(lhs, Value::Str(_) | Value::Struct { .. }
+                | Value::Unique(_) | Value::Shared(_) | Value::SyncShared(_))
+            || matches!(rhs, Value::Str(_) | Value::Struct { .. }
+                | Value::Unique(_) | Value::Shared(_) | Value::SyncShared(_)) =>
+        {
+            return match (op, lhs.partial_cmp(&rhs)) {
+                (BinOp::Lt, Some(o)) => Ok(Value::Bool(o.is_lt())),
+                (BinOp::Le, Some(o)) => Ok(Value::Bool(o.is_le())),
+                (BinOp::Gt, Some(o)) => Ok(Value::Bool(o.is_gt())),
+                (BinOp::Ge, Some(o)) => Ok(Value::Bool(o.is_ge())),
+                (_, None) => Err(Signal::Panic("comparison between incomparable values".into())),
+                _ => unreachable!(),
+            };
+        }
         _ => {}
     }
 
@@ -1029,20 +1075,31 @@ fn eval_method_call(
     }
 
     // User-defined instance method on a struct.
-    let type_name = match &receiver {
-        Value::Struct { type_name, .. } => type_name.clone(),
+    let (type_name, derives_clone) = match &receiver {
+        Value::Struct { type_name, derives_clone, .. } => (type_name.clone(), *derives_clone),
         other => return Err(Signal::Panic(format!(
             "no method '{}' on {}", method_name, other.type_name()
         ))),
     };
-    let fn_id = interp.method_table
+    if let Some(fn_id) = interp.method_table
         .get(&type_name)
         .and_then(|m| m.get(method_name))
         .copied()
-        .ok_or_else(|| Signal::Panic(format!(
-            "no method '{}' on '{}'", method_name, type_name
-        )))?;
-    interp.call_method(fn_id, receiver, args)
+    {
+        return interp.call_method(fn_id, receiver, args);
+    }
+    // `.clone()` is a derive-gated pseudo-method (`Value::deep_clone`),
+    // not a real `method_table` entry — checked only once no
+    // user-defined method by that name exists, so an explicit `fn
+    // clone(&self)` a person writes themselves still wins (mirrors
+    // sema's own resolution order, `type_infer.rs`'s struct-instance-
+    // method arm, and for the same reason: explicit beats implicit).
+    if method_name == "clone" && derives_clone {
+        return Ok(receiver.deep_clone());
+    }
+    Err(Signal::Panic(format!(
+        "no method '{}' on '{}'", method_name, type_name
+    )))
 }
 
 // ── Evaluate argument list ────────────────────────────────────────

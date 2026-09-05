@@ -1,0 +1,49 @@
+// tests/fixtures/ok_clone_deep_vs_shared_alias_combined.ubl
+// @derive(Clone), real-world usage: a struct holding both owned data
+// (a List, deep-copied) and a genuinely shared counter (Shared<int>,
+// aliased) at once. That's the actual motivating case for why
+// `.clone()` treats them differently instead of copying everything the
+// same way.
+// `Shared<T>`'s whole purpose is deliberate aliasing (MEMORY_MODEL.md
+// §9); a `.clone()` that copied through it too would silently defeat
+// the one thing the person wrote `Shared` to ask for. Confirmed via
+// `==` (Shared's own equality is `Rc::ptr_eq`, so two Shared fields
+// still comparing equal after `.clone()` IS the proof they're the same
+// underlying counter, not a coincidentally-equal separate one).
+// Expected: sema OK, zero errors. Full pipeline OK.
+
+@derive(Clone)
+struct Session {
+    tags:          List<string>
+    shared_visits: Shared<int>
+}
+
+@tier(low)
+fn build_visits_counter() Shared<int> {
+    return Shared.new(0)
+}
+
+fn build_session() Session {
+    let tags = List.new()
+    tags.push("first-login")
+    return Session { tags = tags, shared_visits = build_visits_counter() }
+}
+
+fn main() void {
+    let original = build_session()
+    let copy = original.clone()
+
+    // The Shared field: still the *same* underlying counter after
+    // clone. `==` on Shared is pointer identity, so this is the real
+    // test, not just "these look the same right now".
+    assert(original.shared_visits == copy.shared_visits,
+        "clone: Shared field is aliased, not copied, same underlying counter")
+
+    // The List field: a genuinely independent copy. Mutating the
+    // clone's tags must not touch the original's.
+    copy.tags.push("second-login")
+    assert(original.tags.len() == 1, "clone: original's List untouched by mutating the copy's")
+    assert(copy.tags.len() == 2, "clone: copy's List has its own, independent addition")
+    assert(copy.tags.get(0) == "first-login", "clone: copy kept the original's existing entry")
+    assert(copy.tags.get(1) == "second-login", "clone: copy's own addition is really there")
+}

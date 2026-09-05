@@ -15,6 +15,7 @@ pub mod pattern;
 mod tests;
 
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 
 use crate::ast::arena::AstArena;
 use crate::ast::common::TierAnnotation;
@@ -99,6 +100,18 @@ pub struct Interpreter<'ast> {
     /// `Value::Struct::derives_partial_eq` — not re-checked per
     /// comparison.
     pub(crate) struct_derives: HashMap<String, HashSet<String>>,
+    /// struct_type_name → field names in declaration order. Built in the
+    /// same pre-declare pass as `struct_derives`, from the same `s:
+    /// StructDecl` walk (`StructMember::Field` members, in encounter
+    /// order) — re-derives an already-available fact rather than reading
+    /// back through sema's own `struct_fields` (def_id-keyed, not
+    /// type-name-keyed, and not something the interpreter otherwise
+    /// shares with sema). Consulted once, at `ExprKind::StructLit`
+    /// construction, to set `Value::Struct::field_order` — see that
+    /// field's own doc comment in `interpreter/value.rs` for why a
+    /// declaration-derived order matters for `partial_cmp`/`compute_hash`
+    /// and not just `HashMap`'s own (unstable, unordered) iteration.
+    pub(crate) struct_field_order: HashMap<String, Rc<Vec<String>>>,
     /// The arena used to parse the program.  Kept here so interpolated-string
     /// expression holes (`$"Hello {expr}"`) can be parsed at runtime via
     /// `crate::parser::parse_expr`.
@@ -119,6 +132,7 @@ impl<'ast> Interpreter<'ast> {
             method_table: HashMap::new(),
             enum_table:   HashMap::new(),
             struct_derives: HashMap::new(),
+            struct_field_order: HashMap::new(),
             arena,
             pool_capacity_stack: Vec::new(),
         };
@@ -240,6 +254,13 @@ impl<'ast> Interpreter<'ast> {
                     if !derived.is_empty() {
                         self.struct_derives.insert(s.name.to_string(), derived);
                     }
+                    let field_names: Vec<String> = s.members.iter()
+                        .filter_map(|m| match m {
+                            StructMember::Field(f) => Some(f.name.to_string()),
+                            _ => None,
+                        })
+                        .collect();
+                    self.struct_field_order.insert(s.name.to_string(), Rc::new(field_names));
                     for member in s.members.iter().copied() {
                         if let StructMember::Method(m) = member {
                             let id = self.register_method(s.name, m);

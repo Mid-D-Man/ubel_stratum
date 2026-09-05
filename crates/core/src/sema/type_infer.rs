@@ -68,7 +68,7 @@
 
 #![allow(dead_code, unused_variables, unused_imports)]
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::ast::common::{BinOp, GenericParam, Span, TierAnnotation, UnaryOp, Attribute, AttrArg};
 use crate::ast::declarations::{
@@ -225,6 +225,19 @@ struct InferCtx<'a> {
     /// Populated once per struct by `collect_struct_sig`. Same `Param`-
     /// placeholder treatment as `struct_fields`.
     struct_methods:   HashMap<DefId, Vec<(String, MethodShape)>>,
+    /// Populated once per struct by `collect_struct_sig`, alongside
+    /// `check_derive_attrs`'s own validation of the same `@derive(...)`
+    /// list. Sema's own copy — not shared with `Interpreter::
+    /// struct_derives`, which is type-name-keyed and built later, at
+    /// `run_program` time, from the same source (each pass re-derives
+    /// this fact from the AST rather than one borrowing the other's
+    /// table, the same relationship this file's other struct tables
+    /// already have with the interpreter's). Consulted so far only by
+    /// the `.clone()` instance-method special case below (`ExprKind::
+    /// Call`'s struct-instance-method arm) — recognizing `.clone()` as
+    /// a real, typed method when `@derive(Clone)` is present, instead
+    /// of it always reaching `NoSuchMethod`.
+    struct_derives:   HashMap<DefId, HashSet<String>>,
     /// How many generic params the struct/enum at this `DefId` declares.
     /// Consulted at `TypeKind::Named` use sites to validate argument
     /// count (`GenericArgCountMismatch`) and at construction/call sites
@@ -258,6 +271,7 @@ impl<'a> InferCtx<'a> {
             current_struct_type:    None,
             struct_fields:    HashMap::new(),
             struct_methods:   HashMap::new(),
+            struct_derives:   HashMap::new(),
             generic_arity:    HashMap::new(),
             current_tier:     TierAnnotation::High,
         }
@@ -972,6 +986,9 @@ impl<'a> InferCtx<'a> {
     fn collect_struct_sig<'ast>(&mut self, s: &StructDecl<'ast>) {
         let Some(def_id) = self.ctx.top_level_def(s.name) else { return; };
         self.check_derive_attrs(s.attributes, false);
+        let derived: HashSet<String> = crate::ast::common::derive_trait_names(s.attributes)
+            .into_iter().map(str::to_string).collect();
+        self.struct_derives.insert(def_id, derived);
         self.generic_arity.insert(def_id, s.generic_params.len());
         let prev_generics = self.push_generic_scope(s.generic_params);
         // The abstract "Self" type while collecting this struct's own
@@ -2361,6 +2378,33 @@ impl<'a> InferCtx<'a> {
                                         self.maybe_arena_ref(return_type)
                                     }
                                     None => {
+                                        // `.clone()` isn't a real entry in
+                                        // `struct_methods` (nothing in
+                                        // `StructDecl::members` produced
+                                        // one) — it's a derive-gated
+                                        // pseudo-method, recognized here
+                                        // directly instead. Mirrors the
+                                        // interpreter's own dispatch order
+                                        // (`eval_method_call`,
+                                        // `interpreter/eval/expr.rs`):
+                                        // a real user-defined method
+                                        // named `clone` would already have
+                                        // been found above and returned,
+                                        // so this only ever fires for the
+                                        // derived case.
+                                        if field == "clone"
+                                            && self.struct_derives.get(&def)
+                                                .is_some_and(|d| d.contains("Clone"))
+                                        {
+                                            if !args.is_empty() {
+                                                self.errors.add_type_error(TypeError::ArgumentCountMismatch {
+                                                    expected: 0,
+                                                    found:    args.len(),
+                                                    span:     expr.span,
+                                                });
+                                            }
+                                            return self.maybe_arena_ref(receiver_ty);
+                                        }
                                         let on_type = self.display_type(receiver_ty);
                                         self.errors.add_type_error(TypeError::NoSuchMethod {
                                             method: field.to_string(),
@@ -2441,7 +2485,19 @@ impl<'a> InferCtx<'a> {
                         // field nor a method is genuinely unknown.
                         let is_method = self.struct_methods.get(&def)
                             .map(|ms| ms.iter().any(|(n, _)| n == field))
-                            .unwrap_or(false);
+                            .unwrap_or(false)
+                            // `.clone()` is a derive-gated pseudo-method,
+                            // not a real `struct_methods` entry — this
+                            // `Field` node is only ever the pre-inferred
+                            // *callee* of an enclosing `Call` when it's
+                            // "clone" (there's no real field of that
+                            // name either), so this only needs to stop
+                            // `NoSuchField` from firing here; the actual
+                            // return-type computation happens in the
+                            // `Call` arm's own instance-method dispatch
+                            // below, which already knows about `Clone`.
+                            || (*field == "clone" && self.struct_derives.get(&def)
+                                .is_some_and(|d| d.contains("Clone")));
                         if !is_method {
                             let on_type = self.display_type(receiver_ty);
                             self.errors.add_type_error(TypeError::NoSuchField {
@@ -2771,11 +2827,33 @@ impl<'a> InferCtx<'a> {
         }
     }
 
-    /// `TYPE-116` — everything `@derive(...)` can legitimately request
-    /// today is exactly `PartialEq`, and even that only on a `struct`
-    /// (`partial_eq_is_redundant`: an `enum`'s `==` is already
+    /// `TYPE-116`/`TYPE-117` — `@derive(...)` recognizes six trait names
+    /// today: `PartialEq`, `Eq`, `Hash`, `Ord`, `PartialOrd`, `Clone`,
+    /// all struct-only for now (`on_enum`: an `enum`'s `==` is already
     /// structural — `Value::equals`'s Enum arm — so `@derive(PartialEq)`
-    /// there is exactly as redundant as `@derive(Debug)` is everywhere).
+    /// there is exactly as redundant as `@derive(Debug)` is everywhere;
+    /// the other five simply aren't implemented for enum declarations
+    /// yet — no derived ordering/hash/clone exists for an enum at all,
+    /// so a request for one is treated the same as any other name this
+    /// function doesn't recognize *in this context*, same as
+    /// `UnknownDeriveTrait`'s own doc comment already frames the
+    /// variant: "recognized, supported... in this context").
+    ///
+    /// Two passes: the first accepts or rejects each individual name
+    /// (unrecognized, `Debug`/`Display`, `PartialEq`-on-enum, or a
+    /// struct-only name used on an enum all report `UnknownDeriveTrait`
+    /// here) and separately records which of the six were accepted; the
+    /// second checks prerequisite chains against that full set,
+    /// regardless of what order the names were written in (`@derive(Eq,
+    /// PartialEq)` and `@derive(PartialEq, Eq)` are both fine) — `Eq`
+    /// needs `PartialEq`, `PartialOrd` needs `PartialEq`, `Ord` needs
+    /// both `PartialOrd` and `Eq` (checked directly, not just
+    /// transitively through `PartialOrd`, so `@derive(Ord)` alone
+    /// reports both gaps rather than only the first one found), `Hash`
+    /// needs `Eq` (not a real Rust supertrait bound for `Hash`, but the
+    /// bound every actual hash-map API uses, and this project's whole
+    /// reason for wanting `Hash` — a future `Dict` key). `Clone` has no
+    /// prerequisite.
     ///
     /// Walks `attribute.args` directly rather than going through
     /// `ast::common::derive_trait_names` specifically so a non-`Ident`
@@ -2783,24 +2861,50 @@ impl<'a> InferCtx<'a> {
     /// instead of silently vanishing — that helper exists for a
     /// different consumer (the interpreter, post-validation) that
     /// deliberately doesn't want to see those.
-    fn check_derive_attrs(&mut self, attributes: &[Attribute], partial_eq_is_redundant: bool) {
+    fn check_derive_attrs(&mut self, attributes: &[Attribute], on_enum: bool) {
+        const RECOGNIZED: &[&str] = &["PartialEq", "Eq", "Hash", "Ord", "PartialOrd", "Clone"];
+        let mut present: HashSet<&str> = HashSet::new();
+        let mut derive_span: Option<Span> = None;
+
         for attr in attributes.iter().filter(|a| a.name == "derive") {
+            derive_span.get_or_insert(attr.span);
             for arg in attr.args.iter() {
-                let trait_name = match arg {
-                    AttrArg::Ident(name) if *name == "PartialEq" && !partial_eq_is_redundant => continue,
-                    AttrArg::Ident(name)         => name.to_string(),
-                    AttrArg::Str(s)              => format!("\"{}\"", s),
-                    AttrArg::Int(n)              => n.to_string(),
-                    AttrArg::Bool(b)             => b.to_string(),
-                    AttrArg::Named { key, .. }   => format!("{} = ...", key),
-                    AttrArg::Nested { name, .. } => format!("{}(...)", name),
+                let bad_name = match arg {
+                    AttrArg::Ident(name) if RECOGNIZED.contains(name) && !on_enum => {
+                        present.insert(name);
+                        None
+                    }
+                    AttrArg::Ident(name)         => Some(name.to_string()),
+                    AttrArg::Str(s)              => Some(format!("\"{}\"", s)),
+                    AttrArg::Int(n)              => Some(n.to_string()),
+                    AttrArg::Bool(b)             => Some(b.to_string()),
+                    AttrArg::Named { key, .. }   => Some(format!("{} = ...", key)),
+                    AttrArg::Nested { name, .. } => Some(format!("{}(...)", name)),
                 };
-                self.errors.add_type_error(TypeError::UnknownDeriveTrait {
-                    trait_name,
-                    span: attr.span,
-                });
+                if let Some(trait_name) = bad_name {
+                    self.errors.add_type_error(TypeError::UnknownDeriveTrait {
+                        trait_name,
+                        span: attr.span,
+                    });
+                }
             }
         }
+
+        let Some(span) = derive_span else { return; };
+        let mut requires = |this: &mut Self, name: &str, needs: &str| {
+            if present.contains(name) && !present.contains(needs) {
+                this.errors.add_type_error(TypeError::DeriveRequiresOther {
+                    trait_name: name.to_string(),
+                    requires:   needs.to_string(),
+                    span,
+                });
+            }
+        };
+        requires(self, "Eq", "PartialEq");
+        requires(self, "PartialOrd", "PartialEq");
+        requires(self, "Ord", "PartialOrd");
+        requires(self, "Ord", "Eq");
+        requires(self, "Hash", "Eq");
     }
 
     /// `.precision` only means something for Float/Double (decimal
@@ -2832,8 +2936,45 @@ impl<'a> InferCtx<'a> {
                 self.unify(lhs, rhs, span);
                 self.apply(lhs)
             }
-            BinOp::Eq | BinOp::Ne | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
+            BinOp::Eq | BinOp::Ne => {
                 self.unify(lhs, rhs, span);
+                self.bool_ty()
+            }
+            // TYPE-118 — previously nothing checked here at all: this
+            // arm used to cover Eq/Ne/Lt/Le/Gt/Ge together, unifying the
+            // operand types and calling it done, so `"a" < "b"` or two
+            // structs compared with `<` sailed through sema only to hit
+            // a runtime panic in `eval_binop`'s `promote_numeric`
+            // ("arithmetic not supported on {type}"). Orderable now:
+            // Int/Float/Double (the pre-existing numeric behavior,
+            // unchanged), Str (newly real), and a struct that's
+            // `@derive`d `PartialOrd`/`Ord` (newly real). Everything
+            // else — `Bool` included, which used to reach the same
+            // runtime panic Str did — now fails here instead, with a
+            // real message pointing at the missing derive instead of an
+            // opaque runtime crash.
+            BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
+                self.unify(lhs, rhs, span);
+                let resolved = self.apply(lhs);
+                let orderable = match self.ctx.types.get(resolved) {
+                    SemaType::Int | SemaType::Float | SemaType::Double | SemaType::Str => true,
+                    SemaType::Named { def, .. } => self.struct_derives.get(def)
+                        .is_some_and(|d| d.contains("PartialOrd") || d.contains("Ord")),
+                    // Genuinely unresolved (e.g. a Linqerizer lambda
+                    // parameter's type, still pending unification with
+                    // the pipeline's element type at the point this
+                    // particular comparison gets visited) — "don't know
+                    // yet" isn't "known to be wrong". Not flagging this
+                    // matches every other type check in this file: none
+                    // of them treat `SemaType::Unknown` as a positive
+                    // finding of its own.
+                    SemaType::Unknown => true,
+                    _ => false,
+                };
+                if !orderable {
+                    let on_type = self.display_type(resolved);
+                    self.errors.add_type_error(TypeError::TypeNotOrderable { on_type, span });
+                }
                 self.bool_ty()
             }
             BinOp::And | BinOp::Or => {

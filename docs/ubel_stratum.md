@@ -46,6 +46,157 @@ sites.
 **Tests:** `sema/tests.rs`,
 `test_sema_discard_param_type_is_enforced_at_call_site`.
 
+**Decisions (this delivery, `@derive(Eq, Hash, Ord, PartialOrd,
+Clone)`, and real `<`/`<=`/`>`/`>=` operators for `Str` and structs):**
+- `check_derive_attrs` now recognizes all six derive trait names
+  (`PartialEq`, `Eq`, `Hash`, `Ord`, `PartialOrd`, `Clone`), all
+  struct-only for now. The five new ones simply aren't implemented for
+  `enum` declarations yet, so a request for one on an `enum` is treated
+  the same as any other name the function doesn't recognize in that
+  context.
+- Prerequisite chain, checked directly rather than only transitively:
+  `Eq` needs `PartialEq`; `PartialOrd` needs `PartialEq`; `Ord` needs
+  both `PartialOrd` and `Eq` (so `@derive(Ord)` alone reports both gaps,
+  not just the first one found); `Hash` needs `Eq`. That last one isn't
+  a real Rust supertrait bound for `Hash`, but it's the bound every
+  actual hash-map API uses in practice, and this project's whole reason
+  for wanting `Hash` at all (a future `Dict` key). `Clone` has no
+  prerequisite. New error: `TypeError::DeriveRequiresOther`, TYPE-117.
+- New `InferCtx::struct_derives: HashMap<DefId, HashSet<String>>`,
+  populated in `collect_struct_sig` alongside `check_derive_attrs`'s own
+  validation. Sema's own copy, not shared with `Interpreter::
+  struct_derives` (type-name-keyed, built later). Each pass re-derives
+  this fact from the AST rather than one borrowing the other's table,
+  matching the existing relationship between this file's struct tables
+  and the interpreter's.
+- `.clone()` is now a real, typed instance method on any struct that
+  derives `Clone`, resolved as `Self` (the receiver's own type), zero
+  arguments. Two separate places needed to know about it, not one: the
+  struct-instance-method-call arm (`ExprKind::Call`) computes the actual
+  return type, but `ExprKind::Field`'s own struct-field-access handling
+  runs *first* whenever a method call's callee gets pre-inferred (the
+  same pre-inference this file's own comments already note for
+  `boxed.unwrap()`), and that handler's `is_method` check didn't know
+  about derive-gated pseudo-methods at all, so it reported `NoSuchField`
+  before the `Call` arm's dispatch ever ran. Fixed by teaching that
+  check about `Clone`'s `.clone()` too, not just `struct_methods`.
+- `binop_result`'s `Lt`/`Le`/`Gt`/`Ge` arm used to be folded in with
+  `Eq`/`Ne`, unifying operand types and calling it done, with no check
+  that the resulting type was actually orderable at all. Split out on
+  its own now: orderable means `Int`/`Float`/`Double` (unchanged), `Str`
+  (new), or a struct that's derived `PartialOrd`/`Ord` (new). New error:
+  `TypeError::TypeNotOrderable`, TYPE-118. `Bool` used to reach the
+  exact same runtime panic `Str` did (`eval_binop`'s `promote_numeric`,
+  "arithmetic not supported on bool"); it now fails here instead, at
+  compile time, with a real message. That isn't new scope, just the
+  same underlying always-broken case getting a proper diagnosis instead
+  of a crash.
+
+**Tests:** the four new fixtures under `err_derive_missing_prerequisite_*`
+and `ok_derive_ord_and_clone_*` / `ok_clone_deep_vs_shared_alias_*`
+exercise the sema side end to end; `interpreter/value.rs`'s own test
+module covers the `Value`-level comparison/hash/clone semantics these
+checks gate.
+
+### `interpreter/value.rs`
+
+**What it does:** Runtime `Value` representation and its core
+operations: `equals`, `debug_string`, `Display`, and, as of this
+delivery, `partial_cmp`, `compute_hash`, and `deep_clone`.
+
+**Decisions:**
+- `Value::Struct` gained four fields: `derives_ord`, `derives_hash`,
+  `derives_clone` (booleans, same construction-time-resolved pattern
+  `derives_partial_eq` already established), and `field_order:
+  Rc<Vec<String>>`, field names in declaration order. `fields` itself
+  is a `HashMap`, which has no defined iteration order and isn't
+  guaranteed to agree between two separately-constructed instances of
+  the same type, so a well-defined `partial_cmp` (field order changes
+  the actual comparison result, not just the iteration) and a
+  *consistent* `compute_hash` (two structurally-equal instances must
+  hash equal, which an arbitrary per-`HashMap` bucket order can't
+  promise) both needed a real, shared, declaration-derived order.
+  Populated unconditionally for every named struct, not gated on the
+  derives themselves. It costs one `Rc<Vec<String>>` clone either way,
+  and unconditional population is one code path instead of two.
+- `partial_cmp`: `Unique`/`Shared`/`SyncShared` all delegate to the
+  *inner* value's ordering. Confirmed, and a deliberate divergence from
+  `equals()` for `Shared`/`SyncShared` specifically, which compare by
+  `Rc::ptr_eq`. Ordering two `Shared<T>` values by raw pointer address
+  would be legal Rust but meaningless to whoever wrote `a < b` (and
+  non-deterministic run-to-run besides), so content is the only choice
+  actually useful for sorting, unlike equality, where "same object" is
+  a meaningful question on its own.
+- `compute_hash`: checked variant-by-variant against `equals()`'s own
+  rule for that variant, not assumed. Structural-in-`equals()` variants
+  (`Struct` when derived, `Tuple`, `Unique`, `Enum` always) hash
+  structurally; ptr-eq-in-`equals()` variants (`List`/`Dict`/`Queue`/
+  `Stack`/`Pool`/`InlineList`/`Linqerizer`/`Shared`/`SyncShared`, and a
+  non-derived `Struct`) hash the `Rc` pointer address instead of
+  contents. Hashing contents there would let two *unequal* (by
+  `equals()`) same-valued instances collide into looking
+  interchangeable, and would break the moment either mutated after
+  insertion. `Float`/`Double` hash by bit pattern with `-0.0`
+  normalized to `0.0`'s bits first (`equals()`'s plain `==` says `-0.0
+  == 0.0`; without normalizing, that pair would still hash unequal).
+  `NaN` gets no such treatment: `equals()` already says `NaN != NaN`,
+  so two `NaN`s aren't required to hash equal. `EnumPayload::Struct`
+  sorts its field map by name at hash time instead of needing its own
+  `field_order`-style plumbing, since enum `@derive` isn't in scope this
+  delivery, and hash order only needs to be consistent, not meaningful
+  to a reader the way `Struct`'s declaration order needs to be for
+  `partial_cmp`. No consumer yet (`Dict` is still `Vec<pair>`, and
+  `Value` having no `Hash` is why, per this file's own top doc comment),
+  shipped ahead of one anyway, same precedent `move_facts.rs` set in
+  an earlier delivery: real behavior, real unit tests, nothing
+  user-observable different until something downstream consumes it.
+- `deep_clone`: recurses through everything a struct might hold
+  *except* `Shared`/`SyncShared`, which alias (bump the `Rc`) instead.
+  The whole reason those two wrappers exist is deliberate, explicit
+  shared ownership, so recursing through one would silently undo the
+  one thing the person wrote `Shared<T>` to ask for; matches
+  `Rc<RefCell<T>>::clone()` in real Rust for the same reason. `Pool`/
+  `InlineList`/`Linqerizer` are a stated, known limitation: deep-cloning
+  a generational slot table or a lazy pipeline's snapshot correctly is
+  real, separate design work with no motivating use case yet, so they
+  fall back to the same shallow `Rc`-bump the derived Rust `Clone`
+  already gives every `Value` for free.
+
+**Tests:** `interpreter/value.rs`'s own `#[cfg(test)]` module gained 10
+new tests, covering numeric/`Str`/`Bool` `partial_cmp`, `NaN`
+incomparability, struct comparison respecting declaration order (not
+alphabetical), non-derived structs being incomparable, all three
+wrapper types delegating to their inner value, hash/equals agreement
+for a derived struct, `-0.0`/`0.0` hashing equal, a non-derived
+struct's identity-based hash, and `deep_clone`'s two divergent cases
+(a `List` field genuinely independent after cloning; a `Shared` field
+still the same `Rc`).
+
+### `interpreter/eval/expr.rs`
+
+**What it does:** Expression evaluation: binary/unary operators,
+method calls, struct/anon-object construction.
+
+**Decisions:**
+- `eval_binop`'s `Lt`/`Le`/`Gt`/`Ge` used to go straight to
+  `promote_numeric`, which only handles `Int`/`Float`/`Double`; `Str`,
+  `Struct`, and anything else reached a runtime panic
+  ("arithmetic not supported on {type}"). Added a new match arm ahead of
+  the numeric path, gated on either operand being `Str`/`Struct`/
+  `Unique`/`Shared`/`SyncShared`, that calls `Value::partial_cmp`
+  directly. The existing numeric path is untouched, not folded into
+  `partial_cmp` here, since it already works and this delivery's job
+  didn't include touching it. `TYPE-118` has already gated this at sema
+  time for well-formed programs, so `None` from `partial_cmp` here (an
+  interpreter-only test that skips sema, or a genuinely incomparable
+  runtime pair) becomes a panic, not a silent wrong answer.
+- `eval_method_call`'s struct dispatch: a user-defined `method_table`
+  entry is still checked first (an explicit `fn clone(&self)` a person
+  writes themselves wins), and only once that lookup misses does
+  `.clone()` get checked against `derives_clone`, calling
+  `Value::deep_clone`. Mirrors sema's own resolution order for the
+  same reason.
+
 ### `interpreter/eval/mod.rs`
 
 **What it does:** The `Interpreter` struct and its top-level program
@@ -60,6 +211,43 @@ the driver loop that walks the parsed program before execution starts.
   would shift every later argument onto the wrong parameter name. The
   `$` prefix cannot collide with a real identifier, since identifiers
   cannot start with `$`.
+- New `struct_field_order: HashMap<String, Rc<Vec<String>>>`, built in
+  the same pre-declare pass as `struct_derives`, from the same
+  `StructDecl` walk. Re-derives an already-available fact (field
+  declaration order) rather than reading back through sema's own
+  `struct_fields` table, which is `DefId`-keyed and not otherwise
+  shared with the interpreter. See `Value::Struct::field_order`'s own
+  doc comment (`interpreter/value.rs`) for why this matters for
+  `partial_cmp`/`compute_hash` specifically.
+
+### `error_management/errors/types/mod.rs`
+
+**What it does:** `TypeError`, errors from ordinary type inference and
+type checking (TYPE-1xx range).
+
+**Decisions:**
+- `TypeError::DeriveRequiresOther` (TYPE-117) and `TypeError::
+  TypeNotOrderable` (TYPE-118), both new this delivery. See
+  `sema/type_infer.rs` above for what triggers each. Kept as two
+  separate variants from `UnknownDeriveTrait` (TYPE-116) on purpose:
+  neither an incomplete-but-valid derive request nor a real orderability
+  failure is "unknown" in the sense that variant's own doc comment
+  means.
+
+### `builtins/instance/linqerizer_methods.rs`
+
+**What it does:** Instance methods on `Value::Linqerizer`: `.order_by()`,
+`.group_by()`, `.select()`, `.where()`, and the rest of the lazy pipeline.
+
+**Decisions:**
+- Retired this file's own private `compare_values` (`Int`/`Float`/
+  `Double`/`Str`/`Bool` only) in favor of calling `Value::partial_cmp`
+  directly from `.order_by()`/`.order_by_desc()`'s `materialize` step,
+  the same single-source-of-truth relationship every other comparison
+  in the interpreter already has with `Value::equals`. A struct with a
+  derived ordering now sorts correctly through `.order_by()` too, as a
+  direct consequence of reusing the general implementation rather than
+  something built specifically for this call site.
 
 ## CI and Workflows
 
@@ -97,6 +285,41 @@ the driver loop that walks the parsed program before execution starts.
   per discarded parameter. Fixed by matching `Named` and `Discard`
   together, since both contribute a real type to the signature; only
   `self` variants are correctly excluded.
+- (this delivery) First pass at `binop_result`'s new orderability check
+  flagged `SemaType::Unknown`, a genuinely not-yet-resolved type
+  variable, not a known-bad one, as "not orderable". This fired for
+  real inside a `Linqerizer` lambda body (`ok_linqerizer_group_by.ubl`'s
+  `.where(fn(i) i.name.len() > 5)`): the lambda parameter's type is
+  still pending unification with the pipeline's element type at the
+  point that particular `>` gets visited, so `self.apply(lhs)` resolved
+  to `Unknown` rather than the `Int` it would settle on moments later.
+  Not caught by writing the check, caught by running the full fixture
+  sweep afterward and finding this one `ok_` fixture had regressed to a
+  sema failure it shouldn't have had. Fixed by treating
+  `SemaType::Unknown` as orderable. "Don't know yet" isn't "known to
+  be wrong", and no other check in this file treats `Unknown` as a
+  positive finding of its own either.
+- (this delivery) `.clone()` dispatch needed fixing twice, not once,
+  both found by actually running the new
+  `ok_derive_ord_and_clone_isolated.ubl` fixture rather than by
+  inspection alone:
+  - First: `ExprKind::Field`'s own `is_method` check (used to decide
+    whether a name that isn't a real field might still be a method,
+    before reporting `NoSuchField`) didn't know about derive-gated
+    pseudo-methods at all, so `original.clone()` failed with
+    `NoSuchField` before the `Call` arm's own instance-method dispatch,
+    which *did* already know about `Clone`, ever got a chance to
+    run. `.clone()`'s callee gets pre-inferred as a bare `Field`
+    expression first, the same pre-inference this file's comments
+    already note happens for `boxed.unwrap()`.
+  - Second, once the first fix was in place: a plain `field == "clone"`
+    comparison failed to compile. This function matches on `&expr.kind`
+    (a reference), so under Rust's default binding modes `field` binds
+    as `&&str`, not `&str`. Every other `field == "..."` comparison in
+    this file lives inside a *different* pattern (`if let
+    ExprKind::Field { .. } = callee.kind`, matching an owned, `Copy`
+    value), which is why the existing code never needed the extra
+    deref. Fixed with `*field == "clone"`.
 
 ### `interpreter/eval/mod.rs`
 
@@ -107,3 +330,21 @@ the driver loop that walks the parsed program before execution starts.
   later argument onto the wrong parameter name, silently binding the
   wrong value. Fixed with a synthesized per-position placeholder name
   instead of dropping the slot; see the Decisions note above.
+
+## Documentation convention: scope note
+
+`interpreter/value.rs`, `interpreter/eval/mod.rs`, `interpreter/eval/expr.rs`,
+`sema/type_infer.rs`, `error_management/errors/types/mod.rs`, and
+`builtins/instance/linqerizer_methods.rs` were all touched this
+delivery, so all six got NOTICE headers, and every line actually added
+or rewritten this delivery follows the style rules (no em dashes, no
+first/second person). What did not happen: a retroactive sweep of each
+file's full pre-existing comment history. Several of these files
+predate DOCUMENTATION_AND_COMMENTING_GUIDELINES.md by multiple earlier
+sessions and carry hundreds of pre-existing em dashes each (`type_infer.rs`
+alone has well over a hundred). Rewriting all of that was not part of
+this delivery's actual work and risks introducing real bugs by touching
+thousands of unrelated lines under time pressure, for a purely
+cosmetic gain. Same incremental principle the guidelines file itself
+states for the documentation split: real, separate future work if
+wanted, not assumed, ask first.

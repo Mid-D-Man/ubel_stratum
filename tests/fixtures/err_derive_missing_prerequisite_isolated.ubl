@@ -1,0 +1,15 @@
+// tests/fixtures/err_derive_missing_prerequisite_isolated.ubl
+// TYPE-117, narrow: `@derive(Ord)` alone, with neither `PartialOrd` nor
+// `Eq` also derived. `Ord` needs both, checked directly against each,
+// not just transitively through `PartialOrd`, so this is two separate
+// DeriveRequiresOther errors on one struct, not one combined message.
+// Expected: TYPE-117 x2 (missing PartialOrd, missing Eq). No other
+// errors.
+
+@derive(Ord)
+struct Rank {
+    value: int
+}
+
+fn main() void {
+}
