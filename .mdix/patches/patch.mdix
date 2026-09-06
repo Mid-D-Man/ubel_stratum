@@ -1,30 +1,28 @@
 // Brought to u by MidManStudio
-// Generic enums/structs delivery: cleanup of the now-stale
-// enum-sema-implementation.tar.gz replacements bundle from the previous
-// session (already applied, and would otherwise get re-extracted alongside
-// this session's generics-implementation.tar.gz, clobbering the files both
-// bundles touch — type_infer.rs in particular — with its older content).
-// Also patches a small, real, pre-existing parser bug found and fixed
-// while building the generics work: try_parse_generic_args() speculatively
-// backed out of a real generic-args parse whenever the token right after
-// the closing `>` was `=`/`==`, on the theory it might be a misparsed
-// comparison — a heuristic that only makes sense in expression position,
-// but the function is only ever called from type-grammar positions
-// (parse_type_base's Named arm, and the impl-Foo-for-Bar trait-impl check
-// in parse_decl.rs), where it only ever misfired. `let x: Option<int> = ..`
-// — `=` right after `>`, the single most ordinary shape a generic type
-// annotation takes — failed to parse at all before this patch.
+// Housekeeping cleanup after the print-format-leftovers delivery.
 //
-// NOTE: patch_replace_text (exact literal substring, Mode 1) is used here
-// deliberately instead of patch_replace_fn — try_parse_generic_args's own
-// NAME also appears as a plain call site (self.try_parse_generic_args())
-// earlier in this same file, and patch_replace_fn's declaration-finding
-// regex matches on the function name alone, not `fn `-prefixed
-// declarations specifically, so it latches onto the call site instead of
-// the real declaration — confirmed by testing patch_replace_fn against a
-// throwaway clone first; it corrupted the file with a duplicated function
-// body. patch_replace_text's anchor is a big, multi-line block (verified
-// unique in the original file before writing this) with no such ambiguity.
+// The replacements.tar.gz pipeline only adds/replaces files, so the 5
+// stale root-level test files that got relocated into crates/core/tests/
+// during that delivery (basic_tokens_test.rs, comment_test.rs,
+// error_recovery_test.rs, string_interpolation_test.rs) plus the one
+// file confirmed to be a strict subset of basic_tokens_test.rs with
+// zero unique coverage (lexer/keywords_test.rs) were left behind at
+// their old root tests/ paths. Confirmed still present via a fresh
+// clone at the start of this session, exactly as the prior handover
+// flagged.
+//
+// Also fixes a real doc-staleness bug found during that same fresh-clone
+// verification: docs/PRINT_FORMAT_RULES.md section 8 ("Open questions
+// for the next slice") still listed fill character, sign, hash, zero
+// padding and numeric bases as an open question, even though section 4
+// of the SAME file, added by the SAME delivery, documents them as
+// shipped. It also still listed @derive(PartialEq) as "genuinely
+// deferred, not started", which was already wrong before this delivery
+// (PartialEq shipped Sep 3) and doubly wrong after it (Eq, Hash, Ord,
+// PartialOrd, Clone shipped the session before this one). Both stale
+// bullets removed by line range (verified against the exact current
+// content, lines 264-271); the remaining nested-string-literal bullet
+// is untouched and is the only genuinely still-open item in that list.
 
 @CONFIG(
   version  -> "1.0.0",
@@ -33,13 +31,12 @@
 
 @DATA(
   delete_files::
-    { path = ".mdix/replacements/enum-sema-implementation.tar.gz" }
+    { path = "tests/basic_tokens_test.rs" }
+    { path = "tests/comment_test.rs" }
+    { path = "tests/error_recovery_test.rs" }
+    { path = "tests/string_interpolation_test.rs" }
+    { path = "tests/lexer/keywords_test.rs" }
 
   patch_files::
-    {
-      path    = "crates/rd_parser/src/parsers/parse_type.rs",
-      op      = "replace_text",
-      anchor  = "        // Confirm close `>` AND that what follows isn't `=` (that would be a\n        // comparison `a < b >= c` which we'd misparse)\n        if ok && self.cursor.is_at(&TokenType::Greater) {\n            self.cursor.advance(); // consume `>`\n            // Validate: next token should be something that can follow a type,\n            // not an `=` (which would indicate this was `<=`)\n            let next = self.cursor.peek();\n            if matches!(next, TokenType::Equal | TokenType::EqualEqual) {\n                // Looks like a comparison — restore\n                self.cursor.restore(saved);\n                self.memo_set(start_pos, crate::parser::MemoRule::GenericArgs,\n                    crate::parser::MemoEntry::Miss);\n                return &[];\n            }\n\n            self.memo_set(start_pos, crate::parser::MemoRule::GenericArgs,\n",
-      content = "        // Confirm close `>`. NOTE: earlier revisions of this function also\n        // speculatively backed out if the token right after `>` was `=`/`==`\n        // (worried about misparsing a chained comparison `a < b >= c`) — but\n        // both real call sites (`parse_type_base`'s `Named` arm, and the\n        // `impl Foo<T> for Bar` trait-impl check in `parse_decl.rs`) are\n        // *type*-grammar positions, not expression positions; there's no\n        // comparison-expression interpretation possible there at all, so\n        // that guard only ever misfired — e.g. `let x: Option<int> = ...`\n        // (`=` right after `>`, the single most ordinary case for a\n        // generic type annotation) would wrongly restore and leave a bare\n        // `<` for the caller to choke on. Removed; nothing currently calls\n        // this from expression/Pratt context, where a real ambiguity could\n        // exist (see PARSER_RULES.md §5.1 — that disambiguation isn't\n        // wired through this function).\n        if ok && self.cursor.is_at(&TokenType::Greater) {\n            self.cursor.advance(); // consume `>`\n            self.memo_set(start_pos, crate::parser::MemoRule::GenericArgs,\n"
-    }
+    { path = "docs/PRINT_FORMAT_RULES.md", op = "delete_lines", from_line = 264, to_line = 271 }
 )
