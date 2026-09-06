@@ -1,0 +1,10 @@
+// tests/fixtures/err_format_spec_wrong_type_isolated.ubl
+// TYPE-115, narrow: sign forcing (+) on a string. Only one issue in the
+// file, to isolate the exact diagnostic this one restriction produces.
+// Expected: TYPE-115 (sign (+) doesn't apply to string). No other
+// errors.
+
+fn main() void {
+    let name = "Ada"
+    println($"{name:+}")
+}

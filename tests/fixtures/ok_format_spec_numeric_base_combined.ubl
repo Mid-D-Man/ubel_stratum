@@ -1,0 +1,33 @@
+// tests/fixtures/ok_format_spec_numeric_base_combined.ubl
+// Real-world usage: a small "render a byte as a hex pair" utility, the
+// actual motivating case for numeric bases plus the alternate form and
+// zero-padding all composing together (a hex/color-code dump is
+// probably the single most common reason anyone wants base x/X/o/b at
+// all). Also covers Hex/HexUpper/Octal/Binary each once, and confirms a
+// negative value renders as its 64-bit two's-complement bit pattern
+// rather than a "-" sign plus the magnitude's digits.
+// Expected: sema OK, zero errors. Full pipeline OK.
+
+fn hex_byte(b: int) string {
+    return $"{b:02x}"
+}
+
+fn main() void {
+    assert(hex_byte(255) == "ff", "hex_byte: zero-padded to at least 2 digits")
+    assert(hex_byte(10) == "0a", "hex_byte: single hex digit still gets zero-padded")
+
+    let color = 16711680 // 0xFF0000, pure red
+    assert($"#{color:06X}" == "#FF0000", "real use case: an RGB hex color code, uppercase, zero-padded to 6")
+
+    assert($"{255:#x}" == "0xff", "alternate form: 0x prefix")
+    assert($"{255:#X}" == "0XFF", "alternate form: 0X prefix, uppercase digits too")
+    assert($"{255:#o}" == "0o377", "alternate form: 0o prefix, octal digits")
+    assert($"{255:#b}" == "0b11111111", "alternate form: 0b prefix, binary digits")
+
+    assert($"{255:#010x}" == "0x000000ff", "alternate form composes with zero-pad: zeros land after the prefix")
+    assert($"{255:+#x}" == "+0xff", "alternate form composes with sign forcing")
+
+    // Two's-complement bit pattern, not a "-" plus magnitude digits.
+    assert($"{-1:x}" == "ffffffffffffffff", "negative int in hex: 64-bit two's complement")
+    assert($"{-1:b}".len() == 64, "negative int in binary: also a full 64-bit two's complement pattern")
+}

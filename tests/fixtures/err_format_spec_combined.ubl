@@ -1,0 +1,17 @@
+// tests/fixtures/err_format_spec_combined.ubl
+// The way a person would actually hit several of these leftovers at
+// once while formatting a small report: zero-padding a label that isn't
+// numeric (TYPE-115), asking for a numeric base on that same label
+// (TYPE-115 again, a different spec_part), and reaching for the
+// alternate form on a real Int without giving it a base to apply to
+// (TYPE-119). Three real mistakes, not one, collected together the same
+// way sema already collects multiple @derive prerequisite errors.
+// Expected: TYPE-115 (zero-pad (0) on string), TYPE-115 (numeric base on
+// string), TYPE-119 (alternate form without base). No other errors.
+
+fn main() void {
+    let label = "score"
+    let value = 42
+    println($"{label:05}: {value}")
+    println($"{label:x} = {value:#}")
+}

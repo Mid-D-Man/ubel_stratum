@@ -1,3 +1,7 @@
+// ============================================================================
+// NOTICE: Full documentation, design decisions, and fix history for this file
+// live in docs/ubel_stratum_rd.md, section "parsers/parse_expr.rs"
+// ============================================================================
 // crates/rd_parser/src/parsers/parse_expr.rs
 //! Expression parser — Pratt / Top-Down Operator Precedence.
 //!
@@ -29,7 +33,7 @@ use ubel_stratum::{
             MatchArm, MatchExpr,
             ObjectField, OptionalAccess, OrElseFallback,
         },
-        literals::{Align, FormatSpec, InterpolationPart, Literal},
+        literals::{Align, FormatSpec, InterpolationPart, Literal, NumericBase},
     },
     error_management::errors::ParseContext,
     lexer::{InterpolationPart as LexPart, Span as LSpan, TokenType},
@@ -554,13 +558,33 @@ fn parse_lambda<'ast, 'tok>(p: &mut Parser<'ast, 'tok>, lo: LSpan) -> Option<&'a
 
 // ── Format spec ───────────────────────────────────────────────────────────
 //
-// `[align] [width] ['.' precision] ['?']` — a deliberately separate, tiny
-// grammar from the rest of the expression parser (see docs/PRINT_FORMAT_
-// RULES.md). Runs on the same token stream `parse_expr` above already
-// consumed part of, continuing from wherever the leftover `:` was.
+// `[[fill]align] [sign] ['#'] [width] ['.' precision] ['?' | base]`, a
+// deliberately separate, tiny grammar from the rest of the expression
+// parser (see docs/PRINT_FORMAT_RULES.md §4). Runs on the same token
+// stream `parse_expr` above already consumed part of, continuing from
+// wherever the leftover `:` was.
 
 fn parse_format_spec<'ast, 'tok>(p: &mut Parser<'ast, 'tok>) -> Option<FormatSpec> {
+    // `[[fill]align]`: a fill character is only ever recognized when the
+    // token right after it is an align marker; otherwise it's ambiguous
+    // with everything else a spec can hold. Restricted to tokens whose own
+    // lexeme is exactly one character and aren't `Ident`/a numeric literal
+    // (so a fill char can never collide with `x`/`X`/`o`/`b` in the
+    // trailing base position, or with an ordinary width digit).
+    let mut fill: Option<char> = None;
     let mut align: Option<Align> = None;
+    let next_is_align = matches!(p.cursor.peek_nth(1),
+        TokenType::Less | TokenType::Greater | TokenType::Caret);
+    if next_is_align && !matches!(p.cursor.peek(),
+        TokenType::Ident(_) | TokenType::IntLit(_) | TokenType::FloatLit(_) | TokenType::DoubleLit(_))
+    {
+        let lexeme: &'tok str = p.cursor.peek_token().lexeme.as_str();
+        let mut chars = lexeme.chars();
+        if let (Some(c), None) = (chars.next(), chars.next()) {
+            fill = Some(c);
+            p.cursor.advance();
+        }
+    }
     match p.cursor.peek() {
         TokenType::Less    => { align = Some(Align::Left);   p.cursor.advance(); }
         TokenType::Greater => { align = Some(Align::Right);  p.cursor.advance(); }
@@ -568,38 +592,52 @@ fn parse_format_spec<'ast, 'tok>(p: &mut Parser<'ast, 'tok>) -> Option<FormatSpe
         _ => {}
     }
 
+    // `[sign]`: `+` forces a sign on positive numbers too.
+    let sign_plus = p.cursor.eat(&TokenType::Plus);
+
+    // `['#']`: the alternate form. Only means something alongside a
+    // trailing base (checked at TYPE-119, not here; this function only
+    // parses, sema decides whether the combination makes sense).
+    let alternate = p.cursor.eat(&TokenType::Hash);
+
     // `{value:10.2}` (width 10, precision 2, no space between them) is
     // genuinely ambiguous at the TOKEN level, not just visually: the
     // general tokenizer has no notion of "format spec" context, so
     // `10.2` with a digit immediately before the dot lexes as one
     // Float/DoubleLit token, same as it would anywhere else in the
-    // language (`{value:.2}` alone is fine — a leading dot with no
+    // language (`{value:.2}` alone is fine, a leading dot with no
     // digit before it never forms a numeric literal, confirmed via the
     // token stream in earlier testing). Recover width/precision from the
     // literal's own source text rather than its parsed f32/f64 value,
     // since a float's fractional part doesn't reliably round-trip back
     // to "how many digits were written" (`10.20` and `10.2` are the same
-    // f64 but different precisions).
+    // f64 but different precisions). The same source text also carries
+    // whether the width half had a genuine zero-pad leading zero
+    // (`010.2`) versus an ordinary width that happens to start past zero.
     if let TokenType::FloatLit(_) | TokenType::DoubleLit(_) = p.cursor.peek() {
         let lexeme = p.cursor.peek_token().lexeme.trim_end_matches(['f', 'F']);
         if let Some((w, prec)) = lexeme.split_once('.') {
-            if let (Ok(w), Ok(prec)) = (w.parse::<u32>(), prec.parse::<u32>()) {
+            if let (Ok(w_val), Ok(prec)) = (w.parse::<u32>(), prec.parse::<u32>()) {
+                let zero_pad = w.len() > 1 && w.starts_with('0');
                 p.cursor.advance();
-                let debug = if p.cursor.is_at(&TokenType::Question) { p.cursor.advance(); true } else { false };
+                let Some((debug, base)) = parse_format_trailer(p) else { return None; };
                 if !p.cursor.is_eof() {
                     p.emit(crate::error::illegal_here(
                         "format spec", "unexpected trailing content",
                         p.cursor.current_span(),
-                        Some("expected `[align][width][.precision][?]`, e.g. `{value:>10.2}`"),
+                        Some("expected `[[fill]align][sign]['#']width[.precision][?|base]`, e.g. `{value:*>+#010x}`"),
                     ));
                     return None;
                 }
-                return Some(FormatSpec { align, width: Some(w), precision: Some(prec), debug });
+                return Some(FormatSpec {
+                    fill, align, sign_plus, alternate, zero_pad,
+                    width: Some(w_val), precision: Some(prec), debug, base,
+                });
             }
         }
     }
 
-    let width = if let TokenType::IntLit(n) = p.cursor.peek() {
+    let (zero_pad, width) = if let TokenType::IntLit(n) = p.cursor.peek() {
         let n = *n;
         if n < 0 {
             p.emit(crate::error::illegal_here(
@@ -607,10 +645,12 @@ fn parse_format_spec<'ast, 'tok>(p: &mut Parser<'ast, 'tok>) -> Option<FormatSpe
             ));
             return None;
         }
+        let lexeme: &'tok str = p.cursor.peek_token().lexeme.as_str();
+        let zero_pad = lexeme.len() > 1 && lexeme.starts_with('0');
         p.cursor.advance();
-        Some(n as u32)
+        (zero_pad, Some(n as u32))
     } else {
-        None
+        (false, None)
     };
 
     let precision = if p.cursor.is_at(&TokenType::Dot) {
@@ -633,23 +673,51 @@ fn parse_format_spec<'ast, 'tok>(p: &mut Parser<'ast, 'tok>) -> Option<FormatSpe
         None
     };
 
-    let debug = if p.cursor.is_at(&TokenType::Question) {
-        p.cursor.advance();
-        true
-    } else {
-        false
-    };
+    let Some((debug, base)) = parse_format_trailer(p) else { return None; };
 
     if !p.cursor.is_eof() {
         p.emit(crate::error::illegal_here(
             "format spec", "unexpected trailing content",
             p.cursor.current_span(),
-            Some("expected `[align][width][.precision][?]`, e.g. `{value:>10.2}`"),
+            Some("expected `[[fill]align][sign]['#']width[.precision][?|base]`, e.g. `{value:*>+#010x}`"),
         ));
         return None;
     }
 
-    Some(FormatSpec { align, width, precision, debug })
+    Some(FormatSpec { fill, align, sign_plus, alternate, zero_pad, width, precision, debug, base })
+}
+
+/// `['?' | base]`: trailing debug flag or numeric base, mutually
+/// exclusive (an `Int`, the only type `base` accepts, never diverges
+/// between `Display` and `debug_string` in the first place, so asking
+/// for both at once has nothing to actually pick between). Returns
+/// `None` (already emitted the error) only when both appear together.
+fn parse_format_trailer<'ast, 'tok>(p: &mut Parser<'ast, 'tok>) -> Option<(bool, Option<NumericBase>)> {
+    let debug = p.cursor.eat(&TokenType::Question);
+
+    let base = if let TokenType::Ident(name) = p.cursor.peek() {
+        let b = match name.as_str() {
+            "x" => Some(NumericBase::Hex),
+            "X" => Some(NumericBase::HexUpper),
+            "o" => Some(NumericBase::Octal),
+            "b" => Some(NumericBase::Binary),
+            _ => None,
+        };
+        if b.is_some() { p.cursor.advance(); }
+        b
+    } else {
+        None
+    };
+
+    if debug && base.is_some() {
+        p.emit(crate::error::illegal_here(
+            "format spec", "`?` and a numeric base can't both apply",
+            p.cursor.current_span(),
+            Some("pick one: `{value:?}` or `{value:x}` (or `X`/`o`/`b`)"),
+        ));
+        return None;
+    }
+    Some((debug, base))
 }
 
 // ── Interpolated string ───────────────────────────────────────────────────────

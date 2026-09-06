@@ -1,3 +1,7 @@
+// ============================================================================
+// NOTICE: Full documentation, design decisions, and fix history for this file
+// live in docs/ubel_stratum.md, section "lexer/token.rs"
+// ============================================================================
 // src/lexer/token.rs
 
 use std::fmt;
@@ -90,7 +94,7 @@ pub enum TokenType {
     LeftBracket, RightBracket,
 
     // ── Punctuation ──────────────────────────────────────────────
-    Comma, Dot, Colon, Semicolon, At,
+    Comma, Dot, Colon, Semicolon, At, Hash,
 
     // ── Comments ─────────────────────────────────────────────────
     DocComment(String),
@@ -230,6 +234,7 @@ impl fmt::Display for TokenType {
             TokenType::Colon         => write!(f, ":"),
             TokenType::Semicolon     => write!(f, ";"),
             TokenType::At            => write!(f, "@"),
+            TokenType::Hash          => write!(f, "#"),
             TokenType::DocComment(s) => write!(f, "/** {} */", s),
             TokenType::Comment(s)    => write!(f, "/* {} */", s),
             TokenType::Newline       => write!(f, "<newline>"),

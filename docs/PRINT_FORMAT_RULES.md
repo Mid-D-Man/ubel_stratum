@@ -3,9 +3,11 @@
 > Canonical reference for `print`/`println`/`log`, string interpolation,
 > and the `{expr:spec}` format-spec syntax inside interpolation holes.
 > First slice landed one session; the Debug-vs-Display split landed the
-> next — see §4 for what's still deliberately deferred, §5 for the
-> format-spec delivery's found-along-the-way fixes, and §6 for the
-> Debug-vs-Display delivery's.
+> next; the fill/sign/alternate-form/zero-pad/numeric-base leftovers
+> landed the one after that. §5 covers what's still deliberately
+> deferred, §6 for the first format-spec delivery's found-along-the-way
+> fixes, §7 for the Debug-vs-Display delivery's, and §8 for open
+> questions.
 
 ---
 
@@ -24,8 +26,8 @@ derive shape — `TypeName { field: value, ... }` for structs, recursing
 correctly through nested collections — not just bare primitives.
 
 `Value::debug_string()` is a second, separate formatter (not a `fmt::Debug`
-trait impl — see §6) that the `?` flag in a format spec now genuinely
-selects. It's real, not reserved — see §6 for exactly what it adds over
+trait impl, see §7) that the `?` flag in a format spec now genuinely
+selects. It's real, not reserved, see §7 for exactly what it adds over
 `Display` and, just as importantly, what it deliberately doesn't.
 
 ## 2. Format-spec syntax
@@ -41,7 +43,7 @@ debug      ::= "?"
 
 Examples: `{n:>10}` (right-align, width 10), `{pi:.2}` (2 decimal
 places), `{pi:>10.2}` (both together), `{name:^20}` (centered), `{x:?}`
-(debug flag — real, see §6).
+(debug flag, real, see §7).
 
 ### How the spec is found — parser-level, not lexer-level
 
@@ -52,7 +54,7 @@ part of that expression is leftover; if the leftover starts with `:`,
 everything after it is parsed as a format spec
 (`parse_expr.rs::parse_format_spec`) — a small, separate grammar, not
 Ubel Stratum expression syntax. Any other leftover content is a real
-parse error (`PARSE-004`) — previously (see §5) it was silently
+parse error (`PARSE-004`), previously (see §6) it was silently
 discarded instead.
 
 This has to happen at the parser level because only the parser actually
@@ -81,25 +83,51 @@ written" (`10.20` and `10.2` are the same `f64`, different precisions).
 ## 3. Type checking
 
 `.precision` only applies to `Float`/`Double` (decimal places) or `Str`
-(max length, truncating) — anything else is `TypeError::
-InvalidFormatSpec` (`TYPE-115`, `DIAGNOSTICS_RULES.md`). Width/align/`?`
-apply to any type, since padding/truncation operate on the rendered
-string regardless of what produced it.
+(max length, truncating). Sign forcing (`+`) and zero-padding (`0`) only
+apply to `Int`/`Float`/`Double`. A numeric base (`x`/`X`/`o`/`b`) only
+applies to `Int`. The alternate form (`#`) requires a numeric base also
+be present in the same spec. Anything outside these is
+`TypeError::InvalidFormatSpec` (`TYPE-115`) for a wrong-type mismatch, or
+`TypeError::AlternateFormatWithoutBase` (`TYPE-119`) for `#` with no
+base (a spec-internal combination problem, not a type problem).
+Width/align/fill/`?` apply to any type, since padding/truncation operate
+on the rendered string regardless of what produced it. `?` and a
+trailing base are mutually exclusive, checked in the parser rather than
+here, since `Int` (the only type a base ever applies to) never diverges
+between `Display` and `debug_string` in the first place, so the
+combination is never grammatically valid to begin with.
 
-## 4. Deliberately deferred (not in this slice)
+## 4. Shipped this delivery
 
-- **Custom fill character.** Padding is always spaces. Rust's
-  `[[fill]align]` (e.g. `{value:*>10}`) isn't supported — only bare
-  align markers.
-- **Sign forcing (`+`).** No way to force a `+` on positive numbers.
-- **Alternate form (`#`) / zero-padding (`0`).** Neither exists.
-- **Numeric bases** (`x`/`X`/`o`/`b` for hex/octal/binary). Not
-  supported — everything renders in the type's normal `Display` base.
+- **Custom fill character.** `[[fill]align]`, e.g. `{value:*>10}`. Only
+  ever recognized when the token right after it is an align marker;
+  restricted to tokens whose own lexeme is exactly one character and
+  aren't `Ident`/a numeric literal, so a fill character can never
+  collide with a numeric base in the trailing position.
+- **Sign forcing (`+`).** Forces a `+` on positive `Int`/`Float`/
+  `Double` values. A value that's already negative renders its own `-`
+  and is untouched.
+- **Alternate form (`#`) and zero-padding (`0`).** `#` prefixes a
+  numeric-base rendering with `0x`/`0X`/`0o`/`0b`; `0` (distinguished
+  from an ordinary width starting past zero by reading the width
+  literal's own source text, the same technique the `width.precision`
+  collision above already used) pads with `0` between the sign/prefix
+  and the digits, not around the outside the way a custom fill
+  character does, and ignores `align` entirely once set.
+- **Numeric bases** (`x`/`X`/`o`/`b` for hex/hex-uppercase/octal/
+  binary). `Int` only. A negative value renders as its 64-bit two's-
+  complement bit pattern in the chosen base, matching Rust's own
+  `{:x}` on a signed integer, not a `-` sign plus the magnitude's
+  digits.
+
+## 5. Still deliberately deferred (not in this slice)
+
 - **A `format!`/positional-args function** separate from interpolation.
   Everything goes through `$"..."` holes; there's no `format(spec,
   arg1, arg2, ...)`-style call.
 
-## 5. What this delivery fixed along the way (not originally in scope)
+
+## 6. What this delivery fixed along the way (not originally in scope)
 
 Two real, pre-existing gaps surfaced while landing format specs — both
 fixed here, not deferred, since each was directly blocking verification
@@ -149,7 +177,7 @@ fixed via `ok_multi_interpolation_and_format_spec.ubl` (several
 interpolated strings, several holes each) and the full existing fixture
 suite re-passing unchanged.
 
-## 6. The Debug-vs-Display split (this delivery)
+## 7. The Debug-vs-Display split (this delivery)
 
 `Value::debug_string()` (`interpreter/value.rs`, right after `equals()`)
 is a plain inherent method, not an `impl fmt::Debug for Value` — `Value`
@@ -199,7 +227,7 @@ that tier lives in the *reference* (`GcRef`/`ArenaRef`/`OwnedRef`),
 never in the type declaration — the same struct type is legitimately
 HIGH tier in one place and MID in another depending on the call site,
 so there's no single "this struct's tier" to look up even in principle.
-And §7 records that the interpreter deliberately shares one
+And §8 records that the interpreter deliberately shares one
 `Rust`-heap-backed `Value` representation across all three tiers today,
 with zero per-instance runtime tier tag — real memory-layout divergence
 is explicitly deferred to an LLVM-lowering phase that doesn't exist
@@ -231,10 +259,10 @@ an independently-reverified clean baseline, so that verification step
 evidently didn't include doctests. Fixed by tagging both fences
 ` ```text `.
 
-## 7. Open questions for the next slice
+## 8. Open questions for the next slice
 
 - Fill character, sign, `#`, `0`-padding, and numeric bases — real
-  Rust-parity would want all of these; §4 has the exact list.
+  Rust-parity would want all of these; §5 has the exact list.
 - `@derive(PartialEq)` for structural equality on `Struct` — the
   attribute grammar already supports a bare comma-list of idents inside
   parens with zero parser changes (`@derive(Debug, Display)` parses

@@ -15,7 +15,7 @@ use crate::ast::common::{AssignOp, BinOp, UnaryOp};
 use crate::ast::expressions::{
     ArgKind, Expr, ExprKind, LambdaBody, MatchArmBody, OrElseFallback,
 };
-use crate::ast::literals::{Align, FormatSpec, InterpolationPart, Literal};
+use crate::ast::literals::{Align, FormatSpec, InterpolationPart, Literal, NumericBase};
 use crate::ast::types::{Type, TypeKind};
 use crate::interpreter::eval::{stmt, pattern, FunctionBody, FunctionDef, Interpreter};
 use crate::interpreter::value::{EvalResult, Signal, Value};
@@ -300,7 +300,7 @@ pub fn eval_expr<'ast>(interp: &mut Interpreter<'ast>, expr: &Expr<'ast>) -> Eva
                 derives_partial_eq: derived.is_some_and(|t| t.contains("PartialEq")),
                 // `Ord` requires `PartialOrd` also be present (checked at
                 // TYPE-117), so checking for `PartialOrd` alone already
-                // catches both — see the `derives_ord` doc comment on
+                // catches both, see the `derives_ord` doc comment on
                 // `Value::Struct` in `interpreter/value.rs`.
                 derives_ord:   derived.is_some_and(|t| t.contains("PartialOrd")),
                 derives_hash:  derived.is_some_and(|t| t.contains("Hash")),
@@ -438,12 +438,21 @@ fn eval_literal<'ast>(interp: &mut Interpreter<'ast>, lit: &Literal<'ast>) -> Ev
     }
 }
 
-/// Renders `val` per `spec` — width/precision/alignment (first slice; see
-/// docs/PRINT_FORMAT_RULES.md for what's deferred: fill character beyond
-/// space, sign forcing, `#`, `0`-padding, numeric bases). `spec == None`
-/// is exactly the old `val.to_string()` behavior, unchanged.
+/// Renders `val` per `spec`: width/precision/alignment/fill/sign/
+/// alternate-form/zero-padding/numeric bases (docs/PRINT_FORMAT_RULES.md
+/// §4). `spec == None` is exactly the old `val.to_string()` behavior,
+/// unchanged.
 fn apply_format_spec(val: &Value, spec: Option<&FormatSpec>) -> String {
     let Some(spec) = spec else { return val.to_string(); };
+
+    // A numeric base only ever applies to Int (TYPE-115), and handles
+    // its own sign/alternate-prefix/zero-pad together, since those three
+    // all land between the sign and the digits, not around an
+    // already-rendered decimal string the way width/align do for
+    // everything else.
+    if let (Value::Int(n), Some(base)) = (val, spec.base) {
+        return render_int_with_base(*n, base, spec);
+    }
 
     // Precision: sema already rejected this combination for anything
     // that isn't Float/Double/Str (TypeError::InvalidFormatSpec,
@@ -470,24 +479,117 @@ fn apply_format_spec(val: &Value, spec: Option<&FormatSpec>) -> String {
         _ => val.to_string(),
     };
 
-    let Some(width) = spec.width else { return base; };
+    // Sign forcing: a negative Int/Float/Double already renders its own
+    // `-` via `to_string()`/the precision branch above; `+` only ever
+    // needs adding for a non-negative one (TYPE-115 already rejects
+    // sign_plus on anything non-numeric, so the wildcard arm below never
+    // needs to worry about e.g. a Str starting with a digit).
+    let base = if spec.sign_plus && is_non_negative_number(val) {
+        format!("+{base}")
+    } else {
+        base
+    };
+
+    pad_to_width(&base, spec.width, spec.zero_pad, spec.fill, spec.align)
+}
+
+fn is_non_negative_number(val: &Value) -> bool {
+    match val {
+        Value::Int(n)    => *n >= 0,
+        Value::Float(f)  => *f >= 0.0,
+        Value::Double(f) => *f >= 0.0,
+        _ => false,
+    }
+}
+
+/// Shared width/fill/align padding, used both for the general case above
+/// and for `render_int_with_base` below. Zero-padding is handled
+/// separately from fill/align: it always pads immediately before the
+/// digits (after any sign), never around the outside the way a custom
+/// fill character does, and ignores `align` entirely, matching the
+/// well-established convention this feature is modeled on (Rust's own
+/// `format!`), not something invented for this one.
+fn pad_to_width(s: &str, width: Option<u32>, zero_pad: bool, fill: Option<char>, align: Option<Align>) -> String {
+    let Some(width) = width else { return s.to_string(); };
     let width = width as usize;
-    let len = base.chars().count();
-    if len >= width { return base; }
+    let len = s.chars().count();
+    if len >= width { return s.to_string(); }
     let pad = width - len;
+
+    if zero_pad {
+        let (sign, rest) = if s.starts_with('-') || s.starts_with('+') {
+            (&s[..1], &s[1..])
+        } else {
+            ("", s)
+        };
+        return format!("{sign}{}{rest}", "0".repeat(pad));
+    }
 
     // No explicit align marker: left-align, matching "text flows left by
     // default" rather than Rust's type-dependent default (right for
-    // numbers, left for strings) — a deliberate simplification since
+    // numbers, left for strings), a deliberate simplification since
     // applying that here would need type info this function doesn't
-    // have. Use `>` explicitly for right-aligned numbers.
-    match spec.align.unwrap_or(Align::Left) {
-        Align::Left   => format!("{base}{}", " ".repeat(pad)),
-        Align::Right  => format!("{}{base}", " ".repeat(pad)),
+    // have. Use `>` explicitly for right-aligned numbers. `fill`
+    // defaults to space, same as it always implicitly did before this
+    // delivery, now just an explicit default rather than the only option.
+    let fill = fill.unwrap_or(' ');
+    match align.unwrap_or(Align::Left) {
+        Align::Left   => format!("{s}{}", fill.to_string().repeat(pad)),
+        Align::Right  => format!("{}{s}", fill.to_string().repeat(pad)),
         Align::Center => {
             let left  = pad / 2;
             let right = pad - left;
-            format!("{}{base}{}", " ".repeat(left), " ".repeat(right))
+            format!("{}{s}{}", fill.to_string().repeat(left), fill.to_string().repeat(right))
+        }
+    }
+}
+
+/// `Int` rendered in a non-decimal base: the sign, the `#` alternate-form
+/// prefix (`0x`/`0X`/`0o`/`0b`), and zero-padding all need to land between
+/// each other in a specific order (sign, then prefix, then zero-fill,
+/// then digits: `-0x00ff`, not `00-0xff`), so this builds the whole thing
+/// directly rather than reusing `pad_to_width`'s generic sign-stripping.
+/// A negative value renders as its 64-bit two's-complement bit pattern in
+/// the chosen base (matching Rust's own `{:x}` on a signed integer), not
+/// a `-` sign plus the magnitude's digits.
+fn render_int_with_base(n: i64, base: NumericBase, spec: &FormatSpec) -> String {
+    let digits = match base {
+        NumericBase::Hex      => format!("{:x}", n),
+        NumericBase::HexUpper => format!("{:X}", n),
+        NumericBase::Octal    => format!("{:o}", n),
+        NumericBase::Binary   => format!("{:b}", n),
+    };
+    let sign = if spec.sign_plus && n >= 0 { "+" } else { "" };
+    let prefix = if spec.alternate {
+        match base {
+            NumericBase::Hex      => "0x",
+            NumericBase::HexUpper => "0X",
+            NumericBase::Octal    => "0o",
+            NumericBase::Binary   => "0b",
+        }
+    } else {
+        ""
+    };
+    let core = format!("{sign}{prefix}{digits}");
+
+    let Some(width) = spec.width else { return core; };
+    let width = width as usize;
+    let len = core.chars().count();
+    if len >= width { return core; }
+    let pad = width - len;
+
+    if spec.zero_pad {
+        format!("{sign}{prefix}{}{digits}", "0".repeat(pad))
+    } else {
+        let fill = spec.fill.unwrap_or(' ');
+        match spec.align.unwrap_or(Align::Left) {
+            Align::Left   => format!("{core}{}", fill.to_string().repeat(pad)),
+            Align::Right  => format!("{}{core}", fill.to_string().repeat(pad)),
+            Align::Center => {
+                let left  = pad / 2;
+                let right = pad - left;
+                format!("{}{core}{}", fill.to_string().repeat(left), fill.to_string().repeat(right))
+            }
         }
     }
 }
@@ -528,13 +630,13 @@ fn eval_binop(op: BinOp, lhs: Value, rhs: Value) -> EvalResult {
         _ => {}
     }
 
-    // Ordering on Str/Struct/Unique/Shared/SyncShared — new this
+    // Ordering on Str/Struct/Unique/Shared/SyncShared, new this
     // delivery, via `Value::partial_cmp` (TYPE-118 has already gated
     // this at sema time for well-formed programs; a bare interpreter
     // test that skips sema still ends up here safely, since
     // `partial_cmp` itself returns `None` for anything not actually
     // comparable, same fallback the `None` arm below reaches). Int/
-    // Float/Double keep using the existing numeric path below —
+    // Float/Double keep using the existing numeric path below,
     // unchanged, not folded into `partial_cmp` here, since it already
     // works and touching it isn't this delivery's job.
     match op {
@@ -1089,7 +1191,7 @@ fn eval_method_call(
         return interp.call_method(fn_id, receiver, args);
     }
     // `.clone()` is a derive-gated pseudo-method (`Value::deep_clone`),
-    // not a real `method_table` entry — checked only once no
+    // not a real `method_table` entry, checked only once no
     // user-defined method by that name exists, so an explicit `fn
     // clone(&self)` a person writes themselves still wins (mirrors
     // sema's own resolution order, `type_infer.rs`'s struct-instance-

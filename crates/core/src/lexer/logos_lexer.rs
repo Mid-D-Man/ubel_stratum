@@ -1,3 +1,7 @@
+// ============================================================================
+// NOTICE: Full documentation, design decisions, and fix history for this file
+// live in docs/ubel_stratum.md, section "lexer/logos_lexer.rs"
+// ============================================================================
 // src/lexer/logos_lexer.rs
 
 use logos::Logos;
@@ -151,6 +155,7 @@ enum LogosToken {
     #[token(":")] Colon,
     #[token(";")] Semicolon,
     #[token("@")] At,
+    #[token("#")] Hash,
 
     // ── Literals ──────────────────────────────────────────────────
     #[regex(r"[0-9][0-9_]*", parse_decimal)]
@@ -505,6 +510,7 @@ impl<'a> LogosLexer<'a> {
             LogosToken::Colon        => TokenType::Colon,
             LogosToken::Semicolon    => TokenType::Semicolon,
             LogosToken::At           => TokenType::At,
+            LogosToken::Hash         => TokenType::Hash,
             LogosToken::IntLit(n)    => TokenType::IntLit(n),
             LogosToken::FloatLit(f)  => {
                 if lexeme.ends_with('f') || lexeme.ends_with('F') {

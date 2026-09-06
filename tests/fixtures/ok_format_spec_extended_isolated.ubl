@@ -1,0 +1,23 @@
+// tests/fixtures/ok_format_spec_extended_isolated.ubl
+// docs/PRINT_FORMAT_RULES.md §4 leftovers, narrow: custom fill char
+// (paired with an explicit align, per the grammar), sign forcing (+),
+// and zero-padding, each checked in isolation on plain Int/Float values,
+// no numeric base involved yet (that's the combined fixture).
+// Expected: sema OK, zero errors. Full pipeline OK.
+
+fn main() void {
+    let n = 255
+    assert($"{n:*>10}" == "*******255", "fill+align right: pads before the digits with the fill char")
+    assert($"{n:*<10}" == "255*******", "fill+align left: pads after the digits with the fill char")
+    assert($"{n:*^10}" == "***255****", "fill+align center: splits padding, extra char goes on the right")
+
+    assert($"{n:+}" == "+255", "sign forcing: + prefix on a positive Int")
+    assert($"{-5:+}" == "-5", "sign forcing: already-negative values are untouched, not doubled up")
+
+    assert($"{n:010}" == "0000000255", "zero-pad: fills between sign and digits, not around the outside")
+    assert($"{-5:05}" == "-0005", "zero-pad: sign stays in front, zeros land after it")
+
+    let pi = 3.14159
+    assert($"{pi:+.2}" == "+3.14", "sign forcing composes with precision")
+    assert($"{pi:08.2}" == "00003.14", "zero-pad composes with precision")
+}

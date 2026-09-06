@@ -948,7 +948,7 @@ fn test_sema_format_spec_precision_on_double_ok() {
     let arena = AstArena::new();
     let pi_lit = arena.alloc(Expr { kind: ExprKind::Lit(Literal::Double(3.14)), span: Z });
     let pi_ident = arena.alloc(Expr { kind: ExprKind::Ident(arena.alloc_str("pi")), span: span_n(1) });
-    let spec = FormatSpec { align: None, width: None, precision: Some(2), debug: false };
+    let spec = FormatSpec { fill: None, align: None, sign_plus: false, alternate: false, zero_pad: false, width: None, precision: Some(2), debug: false, base: None };
     let parts = arena.alloc_slice_copy(&[InterpolationPart::Expr { expr: pi_ident, spec: Some(spec) }]);
     let interp = arena.alloc(Expr { kind: ExprKind::Lit(Literal::InterpolatedStr(parts)), span: Z });
 
@@ -966,7 +966,7 @@ fn test_sema_format_spec_precision_on_int_rejected() {
     let arena = AstArena::new();
     let n_lit = arena.alloc(Expr { kind: ExprKind::Lit(Literal::Int(42)), span: Z });
     let n_ident = arena.alloc(Expr { kind: ExprKind::Ident(arena.alloc_str("n")), span: span_n(1) });
-    let spec = FormatSpec { align: None, width: None, precision: Some(2), debug: false };
+    let spec = FormatSpec { fill: None, align: None, sign_plus: false, alternate: false, zero_pad: false, width: None, precision: Some(2), debug: false, base: None };
     let parts = arena.alloc_slice_copy(&[InterpolationPart::Expr { expr: n_ident, spec: Some(spec) }]);
     let interp = arena.alloc(Expr { kind: ExprKind::Lit(Literal::InterpolatedStr(parts)), span: Z });
 

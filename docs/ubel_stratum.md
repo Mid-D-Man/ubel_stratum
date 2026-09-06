@@ -98,6 +98,22 @@ exercise the sema side end to end; `interpreter/value.rs`'s own test
 module covers the `Value`-level comparison/hash/clone semantics these
 checks gate.
 
+**Decisions (docs/PRINT_FORMAT_RULES.md §4 leftovers):**
+- `check_format_spec` extended: sign forcing and zero-padding are
+  restricted to `Int`/`Float`/`Double` (same `TYPE-115` family
+  `.precision` already used), a numeric base is restricted to `Int`
+  alone (`Float`/`Double`/`Str` don't have a meaningful "value in hex"),
+  and the alternate form is rejected outright when no base is present
+  (new `TypeError::AlternateFormatWithoutBase`, `TYPE-119`: a
+  spec-internal combination problem, not a wrong-type one, so it's its
+  own variant rather than another `InvalidFormatSpec` case).
+- `?` and a trailing base are mutually exclusive, but that check lives
+  in the parser (`rd_parser`'s `parse_format_trailer`), not here:
+  `Int`, the only type a base ever applies to, never diverges between
+  `Display` and `debug_string` in the first place, so there's nothing
+  for sema to type-check; the combination is simply never grammatically
+  valid to begin with.
+
 ### `interpreter/value.rs`
 
 **What it does:** Runtime `Value` representation and its core
@@ -196,6 +212,68 @@ method calls, struct/anon-object construction.
   `.clone()` get checked against `derives_clone`, calling
   `Value::deep_clone`. Mirrors sema's own resolution order for the
   same reason.
+- `apply_format_spec` (docs/PRINT_FORMAT_RULES.md §4 leftovers): a
+  numeric base (`x`/`X`/`o`/`b`) builds its own sign/prefix/zero-pad/
+  digits string directly (`render_int_with_base`) rather than reusing
+  the general path, since those three all need to land between each
+  other in a specific order (sign, alternate-form prefix, zero-fill,
+  then digits, e.g. `-0x00ff`) that the general decimal path never
+  had to think about. A negative `Int` renders as its 64-bit two's-
+  complement bit pattern in the chosen base, matching Rust's own
+  `{:x}` on a signed integer, not a `-` sign plus the magnitude's
+  digits. Zero-padding ignores `align`/`fill` entirely when both are
+  present (the well-established convention this feature is modeled
+  on, Rust's own `format!`, does the same). It always pads
+  immediately before the digits, after any sign and prefix.
+
+**Tests:** the four new fixtures under `ok_format_spec_extended_*` and
+`ok_format_spec_numeric_base_*` / `err_format_spec_*` exercise all of
+this end to end. No unit tests for this function specifically, same
+precedent the original precision-only version of this feature already
+set (fixture-tested only).
+
+### `lexer/logos_lexer.rs`
+
+**What it does:** The actual token generator, a `logos`-derived enum
+(`LogosToken`) mapped onto the public `TokenType` the rest of the
+compiler sees.
+
+**Decisions:**
+- New `#[token("#")] Hash` variant, modeled directly on the adjacent
+  `At` (`@`) token. `#` was not a lexable character in this language
+  at all before this delivery. Needed for the alternate-form flag in
+  a format spec (docs/PRINT_FORMAT_RULES.md §4).
+
+### `lexer/token.rs`
+
+**What it does:** The public `TokenType` enum every other crate sees,
+plus its `Display` impl (used for "expected X, found Y" parser error
+messages).
+
+**Decisions:**
+- `Hash` added alongside `At` in both the enum and the `Display` impl
+  (`write!(f, "#")`), completing the new token from `logos_lexer.rs`
+  above. `cargo build` catches a missing enum variant everywhere a
+  `match` isn't already using a wildcard arm; it does not catch a
+  missing `Display` arm on its own (that one only fails to render
+  correctly, it doesn't fail to compile), so it was checked directly
+  rather than assumed covered by the exhaustiveness check that did
+  cover everything else.
+
+### `ast/literals.rs`
+
+**What it does:** Literal AST nodes, including `FormatSpec`.
+
+**Decisions:**
+- `FormatSpec` gained `fill`, `sign_plus`, `alternate`, `zero_pad`, and
+  `base` (a new `NumericBase` enum: `Hex`/`HexUpper`/`Octal`/`Binary`),
+  completing docs/PRINT_FORMAT_RULES.md §4's four remaining items
+  (fill character, sign forcing, the alternate form and zero-padding,
+  and numeric bases). `fill` is `Option<char>` but only ever
+  meaningful alongside `align`. The parser (`rd_parser`'s
+  `parse_format_spec`) never produces one without the other, so
+  nothing downstream needs to separately guard against that
+  combination.
 
 ### `interpreter/eval/mod.rs`
 
@@ -233,6 +311,11 @@ type checking (TYPE-1xx range).
   neither an incomplete-but-valid derive request nor a real orderability
   failure is "unknown" in the sense that variant's own doc comment
   means.
+- `TypeError::AlternateFormatWithoutBase` (TYPE-119): `#` in a format
+  spec with no trailing base. Kept separate from `InvalidFormatSpec`
+  (TYPE-115) for the same reason as the two above: this isn't `value`
+  having the wrong type, it's the spec itself missing a piece it
+  depends on.
 
 ### `builtins/instance/linqerizer_methods.rs`
 
@@ -331,20 +414,56 @@ type checking (TYPE-1xx range).
   wrong value. Fixed with a synthesized per-position placeholder name
   instead of dropping the slot; see the Decisions note above.
 
+### `tests/string_interpolation_test.rs`
+
+- This file, along with three siblings, sat in a root-level `tests/`
+  directory with no package of its own, so `cargo test --workspace`
+  never ran any of it (housekeeping item on the roadmap). Moving
+  `basic_tokens_test.rs`, `comment_test.rs`, and `error_recovery_test.rs`
+  into `crates/core/tests/` (where Cargo auto-discovers them as real
+  integration tests) needed no code changes at all, confirmed by running
+  them, not assumed. This file needed a real fix: `InterpolationPart::
+  Expr` used to hold the hole's raw source text (`String`) and at some
+  point since these tests were written became a pre-tokenized
+  `Vec<Token>` instead, so every assertion comparing a hole's contents
+  against a source string no longer compiled. Rewrote every affected
+  assertion to check actual token kinds instead, verified empirically
+  against the real lexer output for each case (including the nested-
+  braces case, `arr[{idx}]`, confirmed still handled correctly by the
+  existing brace-depth counting) rather than guessed.
+- Two more root-level test files turned up during the same housekeeping
+  pass, neither in the roadmap's original list of four, handled
+  differently on purpose rather than uniformly: `tests/lexer/
+  keywords_test.rs` was confirmed (via `diff`, not assumed) to be a
+  strict subset of `basic_tokens_test.rs` with zero unique coverage, so
+  it was deleted rather than also wired in. `tests/sema/
+  name_resolution_tests.rs` references `ubel_stratum::parser` and
+  `SemaType::contains_arena_ref`, neither of which exist anymore (looks
+  like it predates the parser's extraction into its own crate), a real
+  port, not a wiring job, so it was left alone rather than either fixed
+  unasked or deleted outright.
+
 ## Documentation convention: scope note
 
 `interpreter/value.rs`, `interpreter/eval/mod.rs`, `interpreter/eval/expr.rs`,
-`sema/type_infer.rs`, `error_management/errors/types/mod.rs`, and
-`builtins/instance/linqerizer_methods.rs` were all touched this
-delivery, so all six got NOTICE headers, and every line actually added
-or rewritten this delivery follows the style rules (no em dashes, no
-first/second person). What did not happen: a retroactive sweep of each
-file's full pre-existing comment history. Several of these files
-predate DOCUMENTATION_AND_COMMENTING_GUIDELINES.md by multiple earlier
-sessions and carry hundreds of pre-existing em dashes each (`type_infer.rs`
-alone has well over a hundred). Rewriting all of that was not part of
-this delivery's actual work and risks introducing real bugs by touching
-thousands of unrelated lines under time pressure, for a purely
-cosmetic gain. Same incremental principle the guidelines file itself
-states for the documentation split: real, separate future work if
+`sema/type_infer.rs`, `error_management/errors/types/mod.rs`,
+`builtins/instance/linqerizer_methods.rs`, `lexer/logos_lexer.rs`,
+`lexer/token.rs`, `ast/literals.rs`, `crates/rd_parser/src/parsers/
+parse_expr.rs`, and the four relocated `crates/core/tests/*.rs` files
+were touched across the two deliveries this session (`@derive`, then
+the print-format leftovers), so all of them got NOTICE headers, and
+every line actually added or rewritten follows the style rules (no em
+dashes, no first/second person), checked twice for the first delivery,
+not once: a few lines were missed on the initial pass and only caught
+while writing this delivery's own documentation, then fixed
+retroactively rather than left standing. What did not happen: a
+retroactive sweep of each file's full pre-existing comment history.
+Several of these files predate DOCUMENTATION_AND_COMMENTING_GUIDELINES.md
+by multiple earlier sessions and carry hundreds of pre-existing em dashes
+each (`type_infer.rs` alone has well over a hundred). Rewriting all of
+that was not part of either delivery's actual work and risks introducing
+real bugs by touching thousands of unrelated lines under time pressure,
+for a purely cosmetic gain. Same incremental principle the guidelines
+file itself states for the documentation split: real, separate future
+work if
 wanted, not assumed, ask first.

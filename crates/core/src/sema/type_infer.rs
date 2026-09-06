@@ -227,14 +227,14 @@ struct InferCtx<'a> {
     struct_methods:   HashMap<DefId, Vec<(String, MethodShape)>>,
     /// Populated once per struct by `collect_struct_sig`, alongside
     /// `check_derive_attrs`'s own validation of the same `@derive(...)`
-    /// list. Sema's own copy — not shared with `Interpreter::
+    /// list. Sema's own copy, not shared with `Interpreter::
     /// struct_derives`, which is type-name-keyed and built later, at
     /// `run_program` time, from the same source (each pass re-derives
     /// this fact from the AST rather than one borrowing the other's
     /// table, the same relationship this file's other struct tables
     /// already have with the interpreter's). Consulted so far only by
     /// the `.clone()` instance-method special case below (`ExprKind::
-    /// Call`'s struct-instance-method arm) — recognizing `.clone()` as
+    /// Call`'s struct-instance-method arm), recognizing `.clone()` as
     /// a real, typed method when `@derive(Clone)` is present, instead
     /// of it always reaching `NoSuchMethod`.
     struct_derives:   HashMap<DefId, HashSet<String>>,
@@ -2381,7 +2381,7 @@ impl<'a> InferCtx<'a> {
                                         // `.clone()` isn't a real entry in
                                         // `struct_methods` (nothing in
                                         // `StructDecl::members` produced
-                                        // one) — it's a derive-gated
+                                        // one). It's a derive-gated
                                         // pseudo-method, recognized here
                                         // directly instead. Mirrors the
                                         // interpreter's own dispatch order
@@ -2487,7 +2487,7 @@ impl<'a> InferCtx<'a> {
                             .map(|ms| ms.iter().any(|(n, _)| n == field))
                             .unwrap_or(false)
                             // `.clone()` is a derive-gated pseudo-method,
-                            // not a real `struct_methods` entry — this
+                            // not a real `struct_methods` entry. This
                             // `Field` node is only ever the pre-inferred
                             // *callee* of an enclosing `Call` when it's
                             // "clone" (there's no real field of that
@@ -2827,13 +2827,13 @@ impl<'a> InferCtx<'a> {
         }
     }
 
-    /// `TYPE-116`/`TYPE-117` — `@derive(...)` recognizes six trait names
+    /// `TYPE-116`/`TYPE-117`: `@derive(...)` recognizes six trait names
     /// today: `PartialEq`, `Eq`, `Hash`, `Ord`, `PartialOrd`, `Clone`,
     /// all struct-only for now (`on_enum`: an `enum`'s `==` is already
-    /// structural — `Value::equals`'s Enum arm — so `@derive(PartialEq)`
+    /// structural, `Value::equals`'s Enum arm, so `@derive(PartialEq)`
     /// there is exactly as redundant as `@derive(Debug)` is everywhere;
     /// the other five simply aren't implemented for enum declarations
-    /// yet — no derived ordering/hash/clone exists for an enum at all,
+    /// yet, no derived ordering/hash/clone exists for an enum at all,
     /// so a request for one is treated the same as any other name this
     /// function doesn't recognize *in this context*, same as
     /// `UnknownDeriveTrait`'s own doc comment already frames the
@@ -2845,20 +2845,20 @@ impl<'a> InferCtx<'a> {
     /// here) and separately records which of the six were accepted; the
     /// second checks prerequisite chains against that full set,
     /// regardless of what order the names were written in (`@derive(Eq,
-    /// PartialEq)` and `@derive(PartialEq, Eq)` are both fine) — `Eq`
+    /// PartialEq)` and `@derive(PartialEq, Eq)` are both fine): `Eq`
     /// needs `PartialEq`, `PartialOrd` needs `PartialEq`, `Ord` needs
     /// both `PartialOrd` and `Eq` (checked directly, not just
     /// transitively through `PartialOrd`, so `@derive(Ord)` alone
     /// reports both gaps rather than only the first one found), `Hash`
     /// needs `Eq` (not a real Rust supertrait bound for `Hash`, but the
     /// bound every actual hash-map API uses, and this project's whole
-    /// reason for wanting `Hash` — a future `Dict` key). `Clone` has no
+    /// reason for wanting `Hash`, a future `Dict` key. `Clone` has no
     /// prerequisite.
     ///
     /// Walks `attribute.args` directly rather than going through
     /// `ast::common::derive_trait_names` specifically so a non-`Ident`
     /// arg (`@derive("PartialEq")`, `@derive(x = 1)`) gets reported
-    /// instead of silently vanishing — that helper exists for a
+    /// instead of silently vanishing. That helper exists for a
     /// different consumer (the interpreter, post-validation) that
     /// deliberately doesn't want to see those.
     fn check_derive_attrs(&mut self, attributes: &[Attribute], on_enum: bool) {
@@ -2908,22 +2908,43 @@ impl<'a> InferCtx<'a> {
     }
 
     /// `.precision` only means something for Float/Double (decimal
-    /// places) or Str (max length, truncating) — anything else is a real
-    /// error (`TYPE-115`), not a silent no-op. Width/align/`?` apply to
-    /// any type (padding/truncation work on the rendered string
-    /// regardless), so nothing else to check yet.
+    /// places) or Str (max length, truncating); `+`/zero-pad only mean
+    /// something for Int/Float/Double; a numeric base only means
+    /// something for Int; `#` only means something alongside a base.
+    /// Anything else is a real error (`TYPE-115`/`TYPE-119`), not a
+    /// silent no-op. Width/align/fill/`?` apply to any type (padding/
+    /// truncation work on the rendered string regardless), so nothing
+    /// to check for those.
     fn check_format_spec(&mut self, spec: &FormatSpec, hole_ty: TypeId, span: Span) {
+        let resolved = self.ctx.types.get(hole_ty);
+        let is_numeric = matches!(resolved, SemaType::Int | SemaType::Float | SemaType::Double);
+        let on_type = || resolved.display(&self.ctx.types, &self.ctx.symbols);
+
         if spec.precision.is_some() {
-            let resolved = self.ctx.types.get(hole_ty);
             let ok = matches!(resolved, SemaType::Float | SemaType::Double | SemaType::Str);
             if !ok {
-                let on_type = resolved.display(&self.ctx.types, &self.ctx.symbols);
                 self.errors.add_type_error(TypeError::InvalidFormatSpec {
-                    spec_part: "precision".to_string(),
-                    on_type,
-                    span,
+                    spec_part: "precision".to_string(), on_type: on_type(), span,
                 });
             }
+        }
+        if spec.sign_plus && !is_numeric {
+            self.errors.add_type_error(TypeError::InvalidFormatSpec {
+                spec_part: "sign (+)".to_string(), on_type: on_type(), span,
+            });
+        }
+        if spec.zero_pad && !is_numeric {
+            self.errors.add_type_error(TypeError::InvalidFormatSpec {
+                spec_part: "zero-pad (0)".to_string(), on_type: on_type(), span,
+            });
+        }
+        if spec.base.is_some() && !matches!(resolved, SemaType::Int) {
+            self.errors.add_type_error(TypeError::InvalidFormatSpec {
+                spec_part: "numeric base".to_string(), on_type: on_type(), span,
+            });
+        }
+        if spec.alternate && spec.base.is_none() {
+            self.errors.add_type_error(TypeError::AlternateFormatWithoutBase { span });
         }
     }
 
@@ -2940,7 +2961,7 @@ impl<'a> InferCtx<'a> {
                 self.unify(lhs, rhs, span);
                 self.bool_ty()
             }
-            // TYPE-118 — previously nothing checked here at all: this
+            // TYPE-118: previously nothing checked here at all, this
             // arm used to cover Eq/Ne/Lt/Le/Gt/Ge together, unifying the
             // operand types and calling it done, so `"a" < "b"` or two
             // structs compared with `<` sailed through sema only to hit
@@ -2949,8 +2970,8 @@ impl<'a> InferCtx<'a> {
             // Int/Float/Double (the pre-existing numeric behavior,
             // unchanged), Str (newly real), and a struct that's
             // `@derive`d `PartialOrd`/`Ord` (newly real). Everything
-            // else — `Bool` included, which used to reach the same
-            // runtime panic Str did — now fails here instead, with a
+            // else (`Bool` included, which used to reach the same
+            // runtime panic Str did) now fails here instead, with a
             // real message pointing at the missing derive instead of an
             // opaque runtime crash.
             BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
@@ -2963,7 +2984,7 @@ impl<'a> InferCtx<'a> {
                     // Genuinely unresolved (e.g. a Linqerizer lambda
                     // parameter's type, still pending unification with
                     // the pipeline's element type at the point this
-                    // particular comparison gets visited) — "don't know
+                    // particular comparison gets visited). "Don't know
                     // yet" isn't "known to be wrong". Not flagging this
                     // matches every other type check in this file: none
                     // of them treat `SemaType::Unknown` as a positive

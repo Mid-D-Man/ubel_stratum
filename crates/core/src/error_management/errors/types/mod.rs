@@ -75,6 +75,17 @@ pub enum TypeError {
         span:      Span,
     },
 
+    /// `#` (the alternate form) with no trailing numeric base (`x`/`X`/
+    /// `o`/`b`) in the same format spec. Distinct from
+    /// `InvalidFormatSpec`: this isn't about `value`'s type at all (a
+    /// `#` on an `Int` with no base is just as invalid as one on a
+    /// `Str`), it's about a spec-internal combination that's missing its
+    /// other half, the same shape `DeriveRequiresOther` covers for
+    /// `@derive(...)`.
+    AlternateFormatWithoutBase {
+        span: Span,
+    },
+
     /// `@derive(X)` named something that isn't a recognized, supported
     /// derive trait *in this context*. Covers three distinct real cases
     /// with one variant: a genuinely unknown name; `Debug`/`Display`
@@ -93,13 +104,13 @@ pub enum TypeError {
 
     /// `@derive(X)` named a real, recognized trait, but without a
     /// companion trait it depends on also being present in the same
-    /// `@derive(...)` list — `Eq` needs `PartialEq`, `PartialOrd` needs
+    /// `@derive(...)` list. `Eq` needs `PartialEq`, `PartialOrd` needs
     /// `PartialEq`, `Ord` needs `PartialOrd` (which transitively covers
     /// `PartialEq` too, but both are checked directly rather than
     /// relying on transitivity, so the message always names the
-    /// *immediate* gap), `Hash` needs `Eq` — not a real Rust supertrait
+    /// *immediate* gap), `Hash` needs `Eq` (not a real Rust supertrait
     /// bound for `Hash` specifically, but the bound every actual
-    /// hash-map API uses in practice (`K: Eq + Hash`), and the entire
+    /// hash-map API uses in practice, `K: Eq + Hash`), and the entire
     /// reason this project wants `Hash` at all (a future `Dict` key).
     /// `Clone` has no prerequisite. Distinct from `UnknownDeriveTrait`
     /// on purpose: this isn't an invalid or unrecognized name, it's a
@@ -112,12 +123,12 @@ pub enum TypeError {
 
     /// `<`/`<=`/`>`/`>=` used on a type with no ordering: anything other
     /// than `Int`/`Float`/`Double`/`Str`/`Bool`, or a `struct` that
-    /// hasn't `@derive`d `PartialOrd`/`Ord`. Previously a silent gap —
+    /// hasn't `@derive`d `PartialOrd`/`Ord`. Previously a silent gap:
     /// these operators only ever worked for numeric operands
     /// (`eval_binop`'s `promote_numeric`), and anything else reached a
     /// runtime panic (`"arithmetic not supported on {type}"`) with no
     /// sema-time check at all. `on_type` is the resolved type as
-    /// displayed to the person, not necessarily a struct — this also
+    /// displayed to the person, not necessarily a struct. This also
     /// catches e.g. two `List`s compared with `<`, which never had an
     /// ordering to begin with and isn't expected to gain one here.
     TypeNotOrderable {
@@ -201,6 +212,7 @@ impl TypeError {
             TypeError::AwaitOnNonTask             { span, .. } => *span,
             TypeError::DerefOnNonReference        { span, .. } => *span,
             TypeError::InvalidFormatSpec          { span, .. } => *span,
+            TypeError::AlternateFormatWithoutBase { span, .. } => *span,
             TypeError::UnknownDeriveTrait          { span, .. } => *span,
             TypeError::DeriveRequiresOther          { span, .. } => *span,
             TypeError::TypeNotOrderable             { span, .. } => *span,
@@ -239,6 +251,9 @@ impl TypeError {
 
             TypeError::InvalidFormatSpec { spec_part, on_type, .. } =>
                 format!("`{}` in a format spec doesn't apply to type `{}`", spec_part, on_type),
+
+            TypeError::AlternateFormatWithoutBase { .. } =>
+                "`#` in a format spec needs a numeric base (`x`/`X`/`o`/`b`)".to_string(),
 
             TypeError::UnknownDeriveTrait { trait_name, .. }
                 if trait_name == "Debug" || trait_name == "Display" || trait_name == "PartialEq" =>
@@ -305,6 +320,18 @@ impl TypeError {
             TypeError::InvalidFormatSpec { spec_part, .. } if spec_part == "precision" =>
                 Some("`.precision` only applies to float/double (decimal places) or string (max length) — drop it, or format a value of one of those types".to_string()),
 
+            TypeError::InvalidFormatSpec { spec_part, .. } if spec_part == "sign (+)" =>
+                Some("`+` only applies to int/float/double, drop it or format a numeric value".to_string()),
+
+            TypeError::InvalidFormatSpec { spec_part, .. } if spec_part == "zero-pad (0)" =>
+                Some("zero-padding only applies to int/float/double, drop the leading 0 or format a numeric value".to_string()),
+
+            TypeError::InvalidFormatSpec { spec_part, .. } if spec_part == "numeric base" =>
+                Some("`x`/`X`/`o`/`b` only apply to int, drop it or format an int value".to_string()),
+
+            TypeError::AlternateFormatWithoutBase { .. } =>
+                Some("add a trailing base, e.g. `{value:#x}`, or drop the `#`".to_string()),
+
             TypeError::UnknownDeriveTrait { trait_name, .. }
                 if trait_name == "Debug" || trait_name == "Display" || trait_name == "PartialEq" =>
                 Some(format!("drop `@derive({})` — it has no effect", trait_name)),
@@ -352,6 +379,7 @@ impl crate::error_management::render::Diagnosable for TypeError {
             TypeError::InlineListCapacityNotLiteral { .. } => "TYPE-113",
             TypeError::DerefOnNonReference { .. }          => "TYPE-114",
             TypeError::InvalidFormatSpec { .. }            => "TYPE-115",
+            TypeError::AlternateFormatWithoutBase { .. }   => "TYPE-119",
             TypeError::UnknownDeriveTrait { .. }            => "TYPE-116",
             TypeError::DeriveRequiresOther { .. }           => "TYPE-117",
             TypeError::TypeNotOrderable { .. }              => "TYPE-118",
