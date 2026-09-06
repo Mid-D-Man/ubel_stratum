@@ -261,14 +261,6 @@ evidently didn't include doctests. Fixed by tagging both fences
 
 ## 8. Open questions for the next slice
 
-- Fill character, sign, `#`, `0`-padding, and numeric bases — real
-  Rust-parity would want all of these; §5 has the exact list.
-- `@derive(PartialEq)` for structural equality on `Struct` — the
-  attribute grammar already supports a bare comma-list of idents inside
-  parens with zero parser changes (`@derive(Debug, Display)` parses
-  today on the existing `AttrArgs ::= "(" AttrArg ("," AttrArg)* ")"`
-  rule); what's not built is the sema flag it would set and the
-  `equals()` branch that checks it. Genuinely deferred, not started.
 - Whether nested string literals inside a `{}` hole should be
   supported — currently `$"{cond} {"literal"}"`-style holes containing
   their own `"..."` string will confuse the *outer* interpolated
